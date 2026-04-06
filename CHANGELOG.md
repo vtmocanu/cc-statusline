@@ -6,6 +6,20 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.1.2]
+
+### Fixed
+- **Linux portability**: `statusline.sh` and `hooks/session-topic-capture.sh` no longer call BSD-only `stat -f %m`. Replaced with `date -r FILE +%s`, which works on both BSD/macOS and GNU/Linux. The previous form crashed on Linux with `line 350: File: unbound variable` because GNU stat's `-f` is filesystem-stat mode, whose default output contains a `File:` line that bash arithmetic then tried to evaluate as a variable name.
+- **`tail -r` portability**: replaced with a `_reverse_file` helper that tries `tac` (GNU) first, then `tail -r` (BSD), then `cat` as a last resort. This affected the effort-level detection in `statusline.sh`.
+- **`format_reset` runaway output**: rate-limit reset times more than 99 days in the future now display as `99d+` instead of `95191d2h`. A garbage `resets_at` value can no longer blow out line 2.
+
+### Added
+- **`CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env vars**: override the service-status cache file path and the fetcher script path. Used by the test harness for isolation; defaults preserve existing behaviour.
+
+### Tests
+- The harness now sets the new env vars to scratch-dir paths so tests don't pollute `/tmp/claude-service-status` or spawn the real `curl`-driven fetcher in the background.
+- Fixtures use `resets_at: 0` so the time display is deterministic regardless of when CI runs.
+
 ## [v2.1.1]
 
 ### Fixed
@@ -47,7 +61,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...HEAD
+[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.2...HEAD
+[v2.1.2]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...v2.1.2
 [v2.1.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.0...v2.1.1
 [v2.1.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.1...v2.1.0
 [v2.0.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.0...v2.0.1

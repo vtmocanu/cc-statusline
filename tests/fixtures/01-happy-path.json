@@ -8,7 +8,7 @@
   "session_id": "test-happy",
   "transcript_path": "",
   "rate_limits": {
-    "five_hour": {"used_percentage": 15, "resets_at": 9999999999},
-    "seven_day": {"used_percentage": 2, "resets_at": 9999999999}
+    "five_hour": {"used_percentage": 15, "resets_at": 0},
+    "seven_day": {"used_percentage": 2, "resets_at": 0}
   }
 }

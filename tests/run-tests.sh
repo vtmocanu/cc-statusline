@@ -34,6 +34,13 @@ trap 'rm -rf "$SCRATCH"' EXIT
 export KUBECONFIG=/dev/null
 unset GIT_DIR GIT_WORK_TREE
 
+# Isolate the service-status cache and fetcher from the host. The
+# statusline reads CC_STATUSLINE_SVC_CACHE / CC_STATUSLINE_SVC_FETCH env
+# vars (added in v2.1.x) to avoid touching /tmp/claude-service-status or
+# spawning a real curl in the background during tests.
+export CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-cache"
+export CC_STATUSLINE_SVC_FETCH="$SCRATCH/no-such-fetcher.sh"
+
 pass=0
 fail=0
 errors=()

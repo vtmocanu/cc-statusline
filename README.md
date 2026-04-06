@@ -4,6 +4,8 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 
 ![cc-statusline screenshot](images/screenshot.png)
 
+> Design notes, screenshots, and the story behind the script: **[Custom Claude Code Status Line on hai.wxs.ro](https://hai.wxs.ro/ai-stuff/claude-statusline/)**
+
 ## Features
 
 - **Two-line layout** with project-colored top line and dark bottom line

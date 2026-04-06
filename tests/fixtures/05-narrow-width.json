@@ -5,7 +5,7 @@
   "cost": {"total_duration_ms": 7200000},
   "session_id": "test-narrow",
   "rate_limits": {
-    "five_hour": {"used_percentage": 30, "resets_at": 9999999999},
-    "seven_day": {"used_percentage": 10, "resets_at": 9999999999}
+    "five_hour": {"used_percentage": 30, "resets_at": 0},
+    "seven_day": {"used_percentage": 10, "resets_at": 0}
   }
 }

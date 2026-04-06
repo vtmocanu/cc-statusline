@@ -34,7 +34,9 @@ fi
 
 # Prevent concurrent generation
 if [ -f "$LOCK_FILE" ]; then
-    lock_age=$(($(date +%s) - $(stat -f %m "$LOCK_FILE" 2>/dev/null || echo 0)))
+    # Portable mtime: `date -r FILE +%s` works on both BSD and GNU.
+    lock_mtime=$(date -r "$LOCK_FILE" +%s 2>/dev/null || echo 0)
+    lock_age=$(($(date +%s) - lock_mtime))
     [ "$lock_age" -lt 30 ] && exit 0
 fi
 touch "$LOCK_FILE"

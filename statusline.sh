@@ -3,6 +3,19 @@ set -uo pipefail  # no -e: external commands (git, kubectl, jq) can fail; silent
 trap 'printf "\n"' EXIT  # ensure at least empty output on crash
 [ "${STATUSLINE_DEBUG:-}" = "1" ] && exec 2>/tmp/statusline-debug.log
 
+# ── Portable helpers (BSD/macOS vs GNU/Linux) ───────────────────────────────
+# File mtime as Unix epoch. `date -r FILE +%s` works on both BSD and GNU.
+# Returns 0 on missing file or error.
+_file_mtime() {
+    date -r "$1" +%s 2>/dev/null || echo 0
+}
+# Reverse a file's lines: BSD has `tail -r`, GNU has `tac`. Fall back to cat.
+_reverse_file() {
+    tac "$1" 2>/dev/null \
+        || tail -r "$1" 2>/dev/null \
+        || cat "$1" 2>/dev/null
+}
+
 DATA=$(timeout 2 cat 2>/dev/null) || DATA=""
 [ -z "$DATA" ] && exit 0
 
@@ -57,7 +70,7 @@ TOPIC=""  # populated after SESSION_ID is extracted below
 EFFORT=""
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Read from end of file for speed on large transcripts
-    EFFORT=$(tail -r "$TRANSCRIPT_PATH" 2>/dev/null \
+    EFFORT=$(_reverse_file "$TRANSCRIPT_PATH" \
         | grep -m1 -E '"content":"<local-command-stdout>(Set model to.*effort|Set effort level to)' \
         | grep -oE '\b(low|medium|high|max)\b' | tail -1 || true)
 fi
@@ -187,6 +200,9 @@ make_bar() {
 }
 
 # ── Rate limit reset formatter (takes Unix epoch) ─────────────────────────
+# Output is capped to keep line 2 width predictable: anything more than 99
+# days into the future is clamped to "99d+" so a malformed/test epoch can't
+# blow up the layout.
 format_reset() {
     local epoch="$1"
     [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
@@ -196,8 +212,9 @@ format_reset() {
     [ "$diff" -le 0 ] && { printf "now"; return; }
     [ "$diff" -lt 60 ] && { printf "<1m"; return; }
     local d=$((diff / 86400)) h=$(((diff % 86400) / 3600)) m=$(((diff % 3600) / 60))
-    if   [ "$d" -gt 0 ]; then printf "%dd%dh" "$d" "$h"
-    elif [ "$h" -gt 0 ]; then printf "%dh%dm" "$h" "$m"
+    if   [ "$d" -gt 99 ]; then printf "99d+"
+    elif [ "$d" -gt 0 ];  then printf "%dd%dh" "$d" "$h"
+    elif [ "$h" -gt 0 ];  then printf "%dh%dm" "$h" "$m"
     else printf "%dm" "$m"
     fi
 }
@@ -342,12 +359,14 @@ if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
 fi
 
 # ── Claude service status (auto-refresh every 60s in background) ────────────
-SVC_CACHE="/tmp/claude-service-status"
+# Both paths are env-overridable so tests can isolate themselves from a
+# real cache file or disable the background fetcher entirely.
+SVC_CACHE="${CC_STATUSLINE_SVC_CACHE:-/tmp/claude-service-status}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-SVC_FETCH="${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh"
+SVC_FETCH="${CC_STATUSLINE_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
 if [ -x "$SVC_FETCH" ]; then
     SVC_AGE=9999
-    [ -f "$SVC_CACHE" ] && SVC_AGE=$(($(date +%s) - $(stat -f %m "$SVC_CACHE" 2>/dev/null || echo 0)))
+    [ -f "$SVC_CACHE" ] && SVC_AGE=$(($(date +%s) - $(_file_mtime "$SVC_CACHE")))
     if [ "$SVC_AGE" -ge 60 ]; then
         ("$SVC_FETCH" >/dev/null 2>/dev/null &)
     fi
