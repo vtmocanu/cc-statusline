@@ -1,0 +1,19 @@
+{
+  "_comment": "Map project root paths (output of `git rev-parse --show-toplevel`) to a palette index (0-11). Save this file at ~/.claude/statusline-color-overrides.json",
+  "_palette": {
+    "0": "blue",
+    "1": "green",
+    "2": "pink",
+    "3": "amber",
+    "4": "teal",
+    "5": "purple",
+    "6": "sky",
+    "7": "olive",
+    "8": "coral",
+    "9": "steel",
+    "10": "khaki",
+    "11": "violet"
+  },
+  "/Users/me/code/important-project": 3,
+  "/Users/me/code/dangerous-prod-repo": 8
+}
