@@ -73,12 +73,14 @@ touch "$LOCK_FILE"
     PROJECT_DIR=$(basename "${CWD:-unknown}")
 
     # Call Haiku for topic generation
+    # Note: this endpoint accepts the user's Claude Code OAuth token via the
+    # oauth-2025-04-20 beta header. We identify ourselves with our own UA.
     RESPONSE=$(curl -s --max-time 8 \
         -H "Authorization: Bearer $token" \
         -H "anthropic-beta: oauth-2025-04-20" \
         -H "Content-Type: application/json" \
         -H "anthropic-version: 2023-06-01" \
-        -H "User-Agent: claude-code/2.1.4" \
+        -H "User-Agent: cc-statusline/2.0.1" \
         https://api.anthropic.com/v1/messages \
         -d "$(jq -n --arg excerpt "$EXCERPT" --arg project "$PROJECT_DIR" '{
             model: "claude-haiku-4-5-20251001",

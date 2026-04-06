@@ -373,8 +373,11 @@ fi
 L2C+=" "
 
 # ── Set terminal tab title ───────────────────────────────────────────────────
+# Wrap in a brace block so 2>/dev/null catches the redirection-setup error
+# (e.g. "/dev/tty: Device not configured" in non-tty contexts), not just
+# printf's own stderr.
 _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
-printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty 2>/dev/null || true
+{ printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
 
 # ── Pad shorter line to match longer ────────────────────────────────────────
 {
