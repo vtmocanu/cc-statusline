@@ -1,0 +1,7 @@
+{
+  "model": {"display_name": "Claude Sonnet 4.6", "id": "sonnet"},
+  "cwd": "/home/test/another-project",
+  "context_window": {"remaining_percentage": 50, "context_window_size": 200000},
+  "cost": {"total_duration_ms": 60000},
+  "session_id": "test-no-limits"
+}

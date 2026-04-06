@@ -28,7 +28,12 @@ data=$(curl -s --max-time 8 \
 
 [ -z "$data" ] && exit 0
 
-# Extract all fields in a single jq call
+# Extract all fields in a single jq call. Initialise first so a jq failure
+# leaves the variables defined (and so shellcheck SC2154 doesn't trip).
+indicator="unknown"
+description=""
+incident_count=0
+incident_name="Incident"
 eval "$(echo "$data" | jq -r '
     @sh "indicator=\(.status.indicator // "unknown")",
     @sh "description=\(.status.description // "")",

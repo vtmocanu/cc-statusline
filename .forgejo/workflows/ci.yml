@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: docker
+    container:
+      image: koalaman/shellcheck-alpine:stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run shellcheck on all scripts
+        shell: sh
+        run: |
+          set -e
+          fail=0
+          for f in statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh; do
+            [ -f "$f" ] || continue
+            echo "==> shellcheck $f"
+            shellcheck -x -S warning "$f" || fail=1
+          done
+          exit "$fail"
+
+  bash-syntax:
+    runs-on: docker
+    container:
+      image: bash:5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: bash -n on all scripts
+        shell: sh
+        run: |
+          set -e
+          for f in statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh; do
+            [ -f "$f" ] || continue
+            echo "==> bash -n $f"
+            bash -n "$f"
+          done
+
+  tests:
+    runs-on: docker
+    container:
+      image: alpine:3.20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: apk add --no-cache bash jq perl coreutils git
+      - name: Run test harness
+        run: bash tests/run-tests.sh
