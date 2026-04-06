@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.1.3]
+
+### Fixed
+- **Test harness locale dependency**: `tests/run-tests.sh` `vis_cols` was using `LC_ALL=en_US.UTF-8 wc -m` to count visible columns. On CI containers (notably `ghcr.io/catthehacker/ubuntu:act-latest`) the `en_US.UTF-8` locale isn't generated, glibc silently falls back to `C`, and `wc -m` then counts **bytes** instead of characters. Each multi-byte char on line 2 (`▰▱│·` plus the powerline corners and Nerd Font icons) inflated the count by 2-3, pushing measured width from ~111 to ~143 cols and failing fixtures 01/04/05. Replaced with a perl one-liner using `Encode::decode("UTF-8", ...)` and `length()`, matching the script's own `measure_cols` helper. Locale-independent.
+
 ## [v2.1.2]
 
 ### Fixed
@@ -61,7 +66,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.2...HEAD
+[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.3...HEAD
+[v2.1.3]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.2...v2.1.3
 [v2.1.2]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...v2.1.2
 [v2.1.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.0...v2.1.1
 [v2.1.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.1...v2.1.0

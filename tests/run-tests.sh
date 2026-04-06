@@ -46,7 +46,17 @@ fail=0
 errors=()
 
 vis_cols() {
-    perl -pe 's/\e\[[0-9;]*m//g' | tr -d '\n' | LC_ALL=en_US.UTF-8 wc -m | tr -d ' '
+    # Use perl with explicit UTF-8 decoding so column counting is independent
+    # of the runner's locale. `wc -m` falls back to byte-counting under C
+    # locale, which inflates the count for multi-byte chars (▰▱│ etc.).
+    perl -e '
+        use Encode qw(decode);
+        my $s = do { local $/; <STDIN> };
+        $s =~ s/\e\[[0-9;]*m//g;
+        $s =~ s/\n+$//;
+        my $decoded = decode("UTF-8", $s, Encode::FB_DEFAULT);
+        print length($decoded);
+    '
 }
 
 run_one() {
