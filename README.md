@@ -1,5 +1,9 @@
 # cc-statusline
 
+[![ci](https://codeberg.org/vtmocanu/cc-statusline/actions/workflows/ci.yml/badge.svg?branch=main)](https://codeberg.org/vtmocanu/cc-statusline/actions)
+[![release](https://img.shields.io/gitea/v/release/vtmocanu/cc-statusline?gitea_url=https%3A%2F%2Fcodeberg.org&label=release)](https://codeberg.org/vtmocanu/cc-statusline/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-code) with project-aware colors, git status, Kubernetes context, rate-limit bars, Claude service health, and AI-generated session topics.
 
 ![cc-statusline screenshot](images/screenshot.png)
