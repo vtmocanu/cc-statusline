@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.1.1]
+
+### Fixed
+- `.forgejo/workflows/ci.yml` no longer uses `runs-on: docker`, which is not a valid label on Codeberg's hosted Forgejo Actions runners. The workflow now targets `codeberg-small` and consolidates the previous three jobs (shellcheck, bash-syntax, tests) into one job using the default `ghcr.io/catthehacker/ubuntu:act-latest` image, with apt-installed dependencies. See [codeberg.org/actions/meta](https://codeberg.org/actions/meta) for the runner labels.
+
 ## [v2.1.0]
 
 ### Added
@@ -42,7 +47,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.0...HEAD
+[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...HEAD
+[v2.1.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.0...v2.1.1
 [v2.1.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.1...v2.1.0
 [v2.0.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.0...v2.0.1
 [v2.0.0]: https://codeberg.org/vtmocanu/cc-statusline/releases/tag/v2.0.0
