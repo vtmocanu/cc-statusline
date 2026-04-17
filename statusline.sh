@@ -72,7 +72,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Read from end of file for speed on large transcripts
     EFFORT=$(_reverse_file "$TRANSCRIPT_PATH" \
         | grep -m1 -E '"content":"<local-command-stdout>(Set model to.*effort|Set effort level to)' \
-        | grep -oE '\b(low|medium|high|max)\b' | tail -1 || true)
+        | grep -oE '\b(low|medium|high|xhigh|max)\b' | tail -1 || true)
 fi
 if [ -z "$EFFORT" ]; then
     EFFORT=$(jq -r '.effortLevel // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
@@ -318,6 +318,7 @@ CTX_BAR=$(make_bar "$PCT" 7 "$CTX_CLR" "$L2_DIM")
 # Effort level color
 case $EFFORT in
     max)    EFFORT_CLR="\033[38;2;150;210;150m" ;;  # sage
+    xhigh)  EFFORT_CLR="\033[38;2;150;210;150m" ;;  # sage
     high)   EFFORT_CLR="\033[38;2;150;210;150m" ;;  # sage
     medium) EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray (blends in)
     low)    EFFORT_CLR="\033[38;2;225;150;150m" ;;  # coral (warning)
