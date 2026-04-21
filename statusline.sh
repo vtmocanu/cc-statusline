@@ -147,8 +147,8 @@ L2_DIM="\033[38;2;80;80;80m"      # dim gray for separators + resets
 pct_txt_color() {
     local p=${1:-0}
     p=${p%%.*}  # safety: strip decimal if any
-    if   [ "${p:-0}" -gt 80 ] 2>/dev/null; then printf "\033[38;2;225;150;150m"   # coral
-    elif [ "${p:-0}" -gt 50 ] 2>/dev/null; then printf "\033[38;2;215;195;125m"   # gold
+    if   [ "${p:-0}" -gt 70 ] 2>/dev/null; then printf "\033[38;2;225;150;150m"   # coral
+    elif [ "${p:-0}" -gt 35 ] 2>/dev/null; then printf "\033[38;2;215;195;125m"   # gold
     else                                         printf "\033[38;2;150;210;150m"   # sage
     fi
 }
