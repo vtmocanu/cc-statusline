@@ -156,7 +156,12 @@ pct_txt_color() {
 # ── Git info ────────────────────────────────────────────────────────────────
 BRANCH=$(git -c core.useBuiltinFSMonitor=false branch --show-current 2>/dev/null || echo "")
 GIT_STATUS=""
-if [ -n "$BRANCH" ]; then
+# Skip status counts if not inside a real work tree (e.g. the root of a
+# bare-clone-with-child-worktrees layout, where `.git` is a pointer file
+# to `.bare/`. There, `git diff --cached` would report every tracked file
+# as staged, producing a bogus "+N".)
+IN_WORKTREE=$(git rev-parse --is-inside-work-tree 2>/dev/null || echo "false")
+if [ -n "$BRANCH" ] && [ "$IN_WORKTREE" = "true" ]; then
   STAGED=$(git diff --cached --numstat 2>/dev/null | wc -l | tr -d " ")
   MODIFIED=$(git diff --numstat 2>/dev/null | wc -l | tr -d " ")
   UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l | tr -d " ")
