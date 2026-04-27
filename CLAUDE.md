@@ -8,7 +8,7 @@ If you're working on a Forgejo/tea/Codeberg operation against this repo (creatin
 
 A two-line ANSI statusline for [Claude Code](https://claude.com/claude-code). It's a small bash-based tool, but the codebase has accumulated real lessons about portable shell, ANSI rendering, terminal width estimation, and Claude Code's undocumented statusline renderer behaviors. **Read `KNOWN_ISSUES.md` and the comments in `statusline.sh` before changing any width-related logic.**
 
-The primary maintainer's machine has `~/.claude/settings.json` pointing `statusLine.command` directly at `~/stuff/gitrepos/cb/cc-statusline/statusline.sh` (the working tree, not an installed copy). This means edits to `statusline.sh` are picked up immediately on the next render. Public users go through `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`.
+The primary maintainer's machine has `~/.claude/settings.json` pointing `statusLine.command` directly at `~/stuff/gitrepos/cb/vtmocanu/cc-statusline/statusline.sh` (the working tree, not an installed copy). This means edits to `statusline.sh` are picked up immediately on the next render. Public users go through `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`.
 
 Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 
@@ -78,7 +78,7 @@ Semver: `vMAJOR.MINOR.PATCH`. The 2.x line is continuous with the script's pre-p
 ### Release process (recipe)
 
 ```bash
-cd ~/stuff/gitrepos/cb/cc-statusline
+cd ~/stuff/gitrepos/cb/vtmocanu/cc-statusline
 
 # 1. Make code changes, test (see Validate section above)
 
