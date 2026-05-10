@@ -347,11 +347,11 @@ if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
         FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
         FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
         L2C+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${B2}"
-        [ -n "${FIVE_TIME:-}" ] && L2C+=" ${L2_DIM}${FIVE_TIME}${B2}"
+        [ -n "${FIVE_TIME:-}" ] && L2C+=" ${L2_TXT}${FIVE_TIME}${B2}"
         SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
         SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
         L2C+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${B2}"
-        [ -n "${SEVEN_TIME:-}" ] && L2C+=" ${L2_DIM}${SEVEN_TIME}${B2}"
+        [ -n "${SEVEN_TIME:-}" ] && L2C+=" ${L2_TXT}${SEVEN_TIME}${B2}"
     elif [ "$RATE_AVAIL" -gt 25 ] 2>/dev/null; then
         # Compact: bars + pct, no reset times
         FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
