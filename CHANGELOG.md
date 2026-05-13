@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.2.0] - 2026-05-13
+
+### Added
+- **Opt-in account profile badge** (line 2): for users who switch between multiple Claude Code logins (work/personal), the statusline can now show a colored chip after the effort level identifying the active account. Reads the access token from the macOS Keychain, calls `https://api.anthropic.com/api/oauth/profile`, and looks up the returned `account.uuid` in `~/.claude/profile-labels.json` for a user-defined label + color. Result is cached in `/tmp/claude-profile-label` keyed by the access token, so the network call only fires on token rotation (every few hours) or when you switch accounts. Disabled by default — feature is off unless the JSON file exists with `enabled: true`. Also disabled when `STATUSLINE_PROFILE=0`. macOS-only (uses the `security` CLI); silently no-ops on other platforms. Named colors: `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `cyan`, `gray`. Unknown UUIDs render as a `XXXXXX?` hint in gray so users know to add a mapping.
+
 ## [v2.1.3]
 
 ### Fixed
@@ -66,7 +71,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.3...HEAD
+[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.2.0...HEAD
+[v2.2.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.6...v2.2.0
 [v2.1.3]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.2...v2.1.3
 [v2.1.2]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...v2.1.2
 [v2.1.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.0...v2.1.1

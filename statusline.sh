@@ -79,6 +79,63 @@ if [ -z "$EFFORT" ]; then
 fi
 EFFORT=${EFFORT:-medium}
 
+# ── Profile badge (opt-in: requires ~/.claude/profile-labels.json) ────────
+# Identifies which Claude Code account is logged in. Keyed by the stable
+# account UUID from Anthropic's OAuth profile endpoint (refresh tokens
+# rotate — fingerprinting them is unreliable). Cache file is keyed by the
+# current access token so we only call the network on token rotation.
+#
+# Cache file format (4 lines): access_token, label, color, uuid.
+# Disabled if STATUSLINE_PROFILE=0, file absent, or `enabled: false`.
+PROFILE_LABEL=""
+PROFILE_COLOR=""
+PROFILE_FILE="${HOME}/.claude/profile-labels.json"
+PROFILE_CACHE="/tmp/claude-profile-label"
+if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && command -v security >/dev/null 2>&1; then
+    PROFILE_ENABLED=$(jq -r '.enabled // true' "$PROFILE_FILE" 2>/dev/null)
+    if [ "$PROFILE_ENABLED" = "true" ]; then
+        ACCESS_TOKEN=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+                       | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+        if [ -n "$ACCESS_TOKEN" ]; then
+            CACHED_AT=$(sed -n '1p' "$PROFILE_CACHE" 2>/dev/null)
+            if [ "$ACCESS_TOKEN" = "$CACHED_AT" ]; then
+                # Cache hit — access token unchanged, reuse label
+                PROFILE_LABEL=$(sed -n '2p' "$PROFILE_CACHE" 2>/dev/null)
+                PROFILE_COLOR=$(sed -n '3p' "$PROFILE_CACHE" 2>/dev/null)
+            else
+                # Token rotated or account switched — refetch profile (blocking, ~300ms)
+                UUID=$(curl -s -m 3 -H "Authorization: Bearer $ACCESS_TOKEN" \
+                       "https://api.anthropic.com/api/oauth/profile" 2>/dev/null \
+                       | jq -r '.account.uuid // empty' 2>/dev/null)
+                if [ -n "$UUID" ]; then
+                    PROFILE_LABEL=$(jq -r --arg u "$UUID" '.profiles[$u].label // ""' "$PROFILE_FILE" 2>/dev/null)
+                    PROFILE_COLOR=$(jq -r --arg u "$UUID" '.profiles[$u].color // "gray"' "$PROFILE_FILE" 2>/dev/null)
+                    if [ -z "$PROFILE_LABEL" ]; then
+                        # Unknown UUID — show short hint so user knows to label it
+                        PROFILE_LABEL="${UUID:0:6}?"
+                        PROFILE_COLOR="gray"
+                    fi
+                    printf '%s\n%s\n%s\n%s\n' "$ACCESS_TOKEN" "$PROFILE_LABEL" "$PROFILE_COLOR" "$UUID" \
+                        > "$PROFILE_CACHE" 2>/dev/null
+                fi
+                # If network failed, PROFILE_LABEL stays empty — badge omitted this render
+            fi
+        fi
+    fi
+fi
+# Map named color -> ANSI 24-bit (gray fallback)
+case "${PROFILE_COLOR:-}" in
+    red)        PROFILE_FG="\033[38;2;225;100;100m" ;;
+    orange)     PROFILE_FG="\033[38;2;245;165;80m"  ;;
+    yellow)     PROFILE_FG="\033[38;2;225;200;100m" ;;
+    green)      PROFILE_FG="\033[38;2;150;210;150m" ;;
+    blue)       PROFILE_FG="\033[38;2;110;170;230m" ;;
+    purple)     PROFILE_FG="\033[38;2;200;140;220m" ;;
+    cyan)       PROFILE_FG="\033[38;2;120;200;215m" ;;
+    gray|grey|"") PROFILE_FG="\033[38;2;170;170;170m" ;;
+    *)          PROFILE_FG="\033[38;2;170;170;170m" ;;
+esac
+
 # ── Nerd Font icons ───────────────────────────────────────────────────────
 NF_GIT=$'\xee\x82\xa0'       # U+E0A0 powerline branch
 NF_FOLDER="󰉋"               # nf-md-folder (kept from v1)
@@ -330,11 +387,14 @@ case $EFFORT in
     *)      EFFORT_CLR="\033[38;2;170;170;170m" ;;  # fallback: gray
 esac
 
-L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2} ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
+L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2}"
+[ -n "$PROFILE_LABEL" ] && L2C+=" ${L2_DIM}·${B2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
+L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
 
 # Estimate L2 base width with bash (same approach as L1: count visible chars)
-# Model + effort + separator + clock + time + separator + bar(7) + pct + "of Xk"
+# Model + (optional) profile badge + effort + separator + clock + time + separator + bar(7) + pct + "of Xk"
 L2_BASE_W=$((2 + 2 + ${#MODEL} + 1 + ${#EFFORT} + 3 + 2 + ${#TIME} + 3 + 7 + 1 + ${#PCT} + 1 + 4 + ${#CTX_SIZE_K} + 1))
+[ -n "$PROFILE_LABEL" ] && L2_BASE_W=$((L2_BASE_W + ${#PROFILE_LABEL} + 3))  # " · LABEL"
 L2_BASE_W=${L2_BASE_W:-50}
 RATE_AVAIL=$((SAFE_WIDTH - L2_BASE_W - 5))   # reserve 5 for incident icon
 
