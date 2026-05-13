@@ -6,6 +6,15 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.2.1] - 2026-05-13
+
+### Changed
+- **Profile badge: read account UUID from `~/.claude.json` instead of calling the OAuth API.** Claude Code itself maintains `.oauthAccount.accountUuid` (plus `.emailAddress` and `.organizationName`) in `~/.claude.json` on every login. Tools like [claude-account-switcher](https://github.com/Symbioose/claude-account-switcher) swap this field atomically when you switch accounts. By reading from this file directly, the statusline:
+  - **Drops the network call** to `api.anthropic.com/api/oauth/profile` — instant render, no latency, works offline.
+  - **Drops the Keychain dependency** — no more `security` CLI requirement, so the feature now works on **Linux as well as macOS**.
+  - **Drops the access-token cache** — the local jq read is fast enough to do on every render.
+- `~/.claude/label-current-profile.sh` helper now reads from `~/.claude.json` too (same single source of truth); no API call needed.
+
 ## [v2.2.0] - 2026-05-13
 
 ### Added
@@ -71,7 +80,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.2.0...HEAD
+[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.2.1...HEAD
+[v2.2.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.2.0...v2.2.1
 [v2.2.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.6...v2.2.0
 [v2.1.3]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.2...v2.1.3
 [v2.1.2]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...v2.1.2

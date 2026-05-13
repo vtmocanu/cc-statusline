@@ -80,45 +80,29 @@ fi
 EFFORT=${EFFORT:-medium}
 
 # ── Profile badge (opt-in: requires ~/.claude/profile-labels.json) ────────
-# Identifies which Claude Code account is logged in. Keyed by the stable
-# account UUID from Anthropic's OAuth profile endpoint (refresh tokens
-# rotate — fingerprinting them is unreliable). Cache file is keyed by the
-# current access token so we only call the network on token rotation.
+# Identifies which Claude Code account is logged in. Reads the active
+# account UUID directly from ~/.claude.json's .oauthAccount.accountUuid
+# (maintained by Claude Code itself; also swapped by tools like
+# claude-account-switcher). No network call, no Keychain access, fully
+# portable across macOS/Linux.
 #
-# Cache file format (4 lines): access_token, label, color, uuid.
-# Disabled if STATUSLINE_PROFILE=0, file absent, or `enabled: false`.
+# Disabled if STATUSLINE_PROFILE=0, the mapping file is absent, or
+# `enabled: false` is set in the JSON.
 PROFILE_LABEL=""
 PROFILE_COLOR=""
 PROFILE_FILE="${HOME}/.claude/profile-labels.json"
-PROFILE_CACHE="/tmp/claude-profile-label"
-if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && command -v security >/dev/null 2>&1; then
+CLAUDE_STATE="${HOME}/.claude.json"
+if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && [ -r "$CLAUDE_STATE" ]; then
     PROFILE_ENABLED=$(jq -r '.enabled // true' "$PROFILE_FILE" 2>/dev/null)
     if [ "$PROFILE_ENABLED" = "true" ]; then
-        ACCESS_TOKEN=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-                       | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-        if [ -n "$ACCESS_TOKEN" ]; then
-            CACHED_AT=$(sed -n '1p' "$PROFILE_CACHE" 2>/dev/null)
-            if [ "$ACCESS_TOKEN" = "$CACHED_AT" ]; then
-                # Cache hit — access token unchanged, reuse label
-                PROFILE_LABEL=$(sed -n '2p' "$PROFILE_CACHE" 2>/dev/null)
-                PROFILE_COLOR=$(sed -n '3p' "$PROFILE_CACHE" 2>/dev/null)
-            else
-                # Token rotated or account switched — refetch profile (blocking, ~300ms)
-                UUID=$(curl -s -m 3 -H "Authorization: Bearer $ACCESS_TOKEN" \
-                       "https://api.anthropic.com/api/oauth/profile" 2>/dev/null \
-                       | jq -r '.account.uuid // empty' 2>/dev/null)
-                if [ -n "$UUID" ]; then
-                    PROFILE_LABEL=$(jq -r --arg u "$UUID" '.profiles[$u].label // ""' "$PROFILE_FILE" 2>/dev/null)
-                    PROFILE_COLOR=$(jq -r --arg u "$UUID" '.profiles[$u].color // "gray"' "$PROFILE_FILE" 2>/dev/null)
-                    if [ -z "$PROFILE_LABEL" ]; then
-                        # Unknown UUID — show short hint so user knows to label it
-                        PROFILE_LABEL="${UUID:0:6}?"
-                        PROFILE_COLOR="gray"
-                    fi
-                    printf '%s\n%s\n%s\n%s\n' "$ACCESS_TOKEN" "$PROFILE_LABEL" "$PROFILE_COLOR" "$UUID" \
-                        > "$PROFILE_CACHE" 2>/dev/null
-                fi
-                # If network failed, PROFILE_LABEL stays empty — badge omitted this render
+        UUID=$(jq -r '.oauthAccount.accountUuid // empty' "$CLAUDE_STATE" 2>/dev/null)
+        if [ -n "$UUID" ]; then
+            PROFILE_LABEL=$(jq -r --arg u "$UUID" '.profiles[$u].label // ""' "$PROFILE_FILE" 2>/dev/null)
+            PROFILE_COLOR=$(jq -r --arg u "$UUID" '.profiles[$u].color // "gray"' "$PROFILE_FILE" 2>/dev/null)
+            if [ -z "$PROFILE_LABEL" ]; then
+                # Unknown UUID — show short hint so user knows to label it
+                PROFILE_LABEL="${UUID:0:6}?"
+                PROFILE_COLOR="gray"
             fi
         fi
     fi
