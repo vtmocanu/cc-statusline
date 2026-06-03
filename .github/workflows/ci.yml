@@ -18,6 +18,11 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Taskfile.yml includes the reusable shell.yml from github.com/vtmocanu/task
+      # over https in CI; remote Taskfiles are an experimental Task feature behind
+      # this flag, and `task --yes` auto-confirms the one-time remote-trust prompt.
+      TASK_X_REMOTE_TASKFILES: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -31,13 +36,13 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: bash -n (syntax check)
-        run: task syntax
+        run: task --yes shell:syntax
 
       - name: shellcheck
-        run: task lint
+        run: task --yes shell:lint
 
       - name: Run test harness
-        run: task test
+        run: task --yes test
 
       - name: Run test harness (broken locale)
-        run: task test-c-locale
+        run: task --yes test-c-locale

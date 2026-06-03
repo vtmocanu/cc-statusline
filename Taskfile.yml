@@ -1,41 +1,28 @@
 ---
 # Taskfile for cc-statusline. CI (.github/workflows/ci.yml) runs these same
 # tasks; run `task ci` locally before committing (see CLAUDE.md).
+#
+# Shell validation (syntax + shellcheck) comes from the reusable shell.yml in
+# github.com/vtmocanu/task: local checkout while developing, public raw URL in
+# CI. Remote includes are experimental Task behavior: CI sets
+# TASK_X_REMOTE_TASKFILES=1 and uses `task --yes`.
 version: "3"
 
 vars:
-  SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh
+  TASK_REPO_LOCAL: ~/stuff/gitrepos/gh/vtmocanu/task
+  TASK_REPO_RAW: https://raw.githubusercontent.com/vtmocanu/task/main
+
+includes:
+  shell:
+    taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/shell.yml{{else}}{{.TASK_REPO_LOCAL}}/shell.yml{{end}}"
+    vars:
+      SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh
 
 tasks:
   default:
     desc: Show available tasks
     cmds:
       - task --list
-
-  syntax:
-    desc: bash -n syntax check on all scripts
-    cmds:
-      - |
-        set -e
-        for f in {{.SCRIPTS}}; do
-          [ -f "$f" ] || continue
-          echo "==> bash -n $f"
-          bash -n "$f"
-        done
-
-  lint:
-    desc: shellcheck (warning severity) on all scripts
-    preconditions:
-      - sh: command -v shellcheck
-        msg: "shellcheck must be installed"
-    cmds:
-      - |
-        set -e
-        for f in {{.SCRIPTS}}; do
-          [ -f "$f" ] || continue
-          echo "==> shellcheck $f"
-          shellcheck -x -S warning "$f"
-        done
 
   test:
     desc: Run the fixture test harness
@@ -48,9 +35,8 @@ tasks:
       - LC_ALL=C bash tests/run-tests.sh
 
   ci:
-    desc: Full validation (syntax + lint + tests + C-locale tests)
+    desc: Full validation (shell syntax + lint + tests + C-locale tests)
     cmds:
-      - task: syntax
-      - task: lint
+      - task: shell:check
       - task: test
       - task: test-c-locale

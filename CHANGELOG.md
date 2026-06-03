@@ -7,7 +7,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- `Taskfile.yml` with the validation suite (`task syntax`, `task lint`, `task test`, `task test-c-locale`, `task ci`). CI now installs [go-task](https://taskfile.dev) via `arduino/setup-task` and runs these tasks instead of inline shell, so local validation and CI are the same commands.
+- `Taskfile.yml` with the validation suite (`task shell:syntax`, `task shell:lint`, `task test`, `task test-c-locale`, `task ci`). The `shell:` tasks are included from the reusable [`shell.yml` in vtmocanu/task](https://github.com/vtmocanu/task) (local checkout when developing, public raw URL in CI). CI installs [go-task](https://taskfile.dev) via `arduino/setup-task` and runs these tasks instead of inline shell, so local validation and CI are the same commands.
 
 ### Changed
 - **Project moved from Codeberg to GitHub**: the repo now lives at [github.com/vtmocanu/cc-statusline](https://github.com/vtmocanu/cc-statusline). The Codeberg repo is archived and kept as a pointer. CI moved from Forgejo Actions (`.forgejo/workflows/ci.yml`) to GitHub Actions (`.github/workflows/ci.yml`), which now also runs the test harness under `LC_ALL=C` to guard the v2.1.3 locale regression.

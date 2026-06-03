@@ -26,7 +26,7 @@ cc-statusline/
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
 │   └── fixtures/*.json               5 mock JSON inputs (happy path, empty, no rate limits, near-full context, narrow width)
-├── Taskfile.yml                      Validation tasks (syntax, lint, test, test-c-locale, ci); used locally and by CI
+├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, ci); used locally and by CI
 ├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
 ├── images/screenshot.png             Hero image used by README
 ├── README.md                         Public-facing docs
@@ -48,11 +48,13 @@ The script lives where it runs. Edit `statusline.sh` directly; the maintainer's 
 task ci              # all four checks in order
 
 # or individually:
-task syntax          # 1. bash -n on all scripts
-task lint            # 2. shellcheck -x -S warning (matches CI)
+task shell:syntax    # 1. bash -n on all scripts
+task shell:lint      # 2. shellcheck -x -S warning (matches CI)
 task test            # 3. test harness (tests/run-tests.sh)
 task test-c-locale   # 4. test harness under LC_ALL=C (catches wc-m / bash-string-length issues)
 ```
+
+The `shell:` tasks come from the reusable `shell.yml` in [github.com/vtmocanu/task](https://github.com/vtmocanu/task): the local checkout at `~/stuff/gitrepos/gh/vtmocanu/task` when developing, the public raw URL in CI (with `TASK_X_REMOTE_TASKFILES=1` and `task --yes`).
 
 The fourth check is **mandatory** for any change that touches width calculation or string measurement. We've burned a CI cycle on this exact bug already (see `CHANGELOG.md` v2.1.3).
 
@@ -139,7 +141,7 @@ The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env var
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and PR. One job, four steps, each calling the matching Taskfile task (`syntax`, `lint`, `test`, `test-c-locale`); the `LC_ALL=C` run guards the v2.1.3 locale regression. `task` itself is installed via `arduino/setup-task` (SHA-pinned).
+`.github/workflows/ci.yml` runs on every push and PR. One job, four steps, each calling the matching Taskfile task (`shell:syntax`, `shell:lint`, `test`, `test-c-locale`); the `LC_ALL=C` run guards the v2.1.3 locale regression. `task` itself is installed via `arduino/setup-task` (SHA-pinned), and the `shell:` tasks are fetched from the public raw URL of github.com/vtmocanu/task (`TASK_X_REMOTE_TASKFILES=1` + `task --yes`).
 
 House CI baseline (keep these when editing the workflow):
 - Top-level `permissions: contents: read` (least privilege)
