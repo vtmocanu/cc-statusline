@@ -2,13 +2,13 @@
 
 This file gives Claude Code (and any other agentic coding tool) the context it needs to work productively on **cc-statusline** without re-discovering the gotchas the maintainer has already hit.
 
-If you're working on a Forgejo/tea/Codeberg operation against this repo (creating releases, editing labels, hitting any `tea api` endpoint), **load the `dot-ai-forgejo-api` skill first**. It documents every Forgejo gotcha we've encountered.
+The repo lives on GitHub: **github.com/vtmocanu/cc-statusline**. Use the `gh` CLI for all hosting operations (releases, CI runs, repo settings). It previously lived on Codeberg (codeberg.org/vtmocanu/cc-statusline, now archived as a pointer); historical CHANGELOG entries up to v2.2.1 reference Codeberg CI and Forgejo specifics.
 
 ## What this repo is
 
 A two-line ANSI statusline for [Claude Code](https://claude.com/claude-code). It's a small bash-based tool, but the codebase has accumulated real lessons about portable shell, ANSI rendering, terminal width estimation, and Claude Code's undocumented statusline renderer behaviors. **Read `KNOWN_ISSUES.md` and the comments in `statusline.sh` before changing any width-related logic.**
 
-The primary maintainer's machine has `~/.claude/settings.json` pointing `statusLine.command` directly at `~/stuff/gitrepos/cb/vtmocanu/cc-statusline/statusline.sh` (the working tree, not an installed copy). This means edits to `statusline.sh` are picked up immediately on the next render. Public users go through `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`.
+The primary maintainer's machine has `~/.claude/settings.json` pointing `statusLine.command` directly at `~/stuff/gitrepos/gh/vtmocanu/cc-statusline/statusline.sh` (the working tree, not an installed copy). This means edits to `statusline.sh` are picked up immediately on the next render. Public users go through `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`.
 
 Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 
@@ -26,7 +26,7 @@ cc-statusline/
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
 │   └── fixtures/*.json               5 mock JSON inputs (happy path, empty, no rate limits, near-full context, narrow width)
-├── .forgejo/workflows/ci.yml         Codeberg CI: shellcheck + bash -n + test harness on push/PR
+├── .github/workflows/ci.yml          GitHub Actions CI: shellcheck + bash -n + test harness (default + LC_ALL=C) on push/PR
 ├── images/screenshot.png             Hero image used by README
 ├── README.md                         Public-facing docs
 ├── CHANGELOG.md                      Keep-a-Changelog format, one section per tag
@@ -78,7 +78,7 @@ Semver: `vMAJOR.MINOR.PATCH`. The 2.x line is continuous with the script's pre-p
 ### Release process (recipe)
 
 ```bash
-cd ~/stuff/gitrepos/cb/vtmocanu/cc-statusline
+cd ~/stuff/gitrepos/gh/vtmocanu/cc-statusline
 
 # 1. Make code changes, test (see Validate section above)
 
@@ -101,21 +101,17 @@ git tag -a vX.Y.Z -m "vX.Y.Z - short title matching the CHANGELOG"
 # 5. Push
 git push origin main --tags
 
-# 6. Wait for CI to go green on Codeberg before creating the release entry.
-#    https://codeberg.org/vtmocanu/cc-statusline/actions
+# 6. Wait for CI to go green before creating the release entry.
+gh run watch "$(gh run list --workflow=ci.yml --branch=main --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
 
-# 7. Create the Codeberg Release entry from the CHANGELOG section
-#    (tea releases create is interactive, use tea api instead)
+# 7. Create the GitHub Release entry from the CHANGELOG section
 awk -v tag="vX.Y.Z" '
   /^## \[/ { if (in_section) exit; if ($0 ~ "## \\[" tag "\\]") { in_section = 1; next } }
   /^\[.*\]: / { if (in_section) exit }
   in_section { print }
 ' CHANGELOG.md > /tmp/release-notes.md
 
-tea api -X POST /repos/{owner}/{repo}/releases \
-  -f tag_name="vX.Y.Z" \
-  -f name="vX.Y.Z: short title without commas" \
-  -F body=@/tmp/release-notes.md
+gh release create vX.Y.Z --title "vX.Y.Z: short title" --notes-file /tmp/release-notes.md
 
 rm -f /tmp/release-notes.md
 ```
@@ -150,17 +146,16 @@ The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env var
 
 ## CI
 
-`.forgejo/workflows/ci.yml` runs on every push and PR. One job, three steps.
+`.github/workflows/ci.yml` runs on every push and PR. One job: `bash -n`, `shellcheck -S warning`, the test harness, and the test harness again under `LC_ALL=C` (guards the v2.1.3 locale regression).
 
-### The runner label is `codeberg-small`, NOT `docker`
-Codeberg's hosted runners advertise `codeberg-tiny`, `codeberg-small`, `codeberg-medium`. Stock Forgejo Actions docs say `runs-on: docker`, which doesn't work on Codeberg ("No matching online runner with label: docker"). We learned this the hard way (see CHANGELOG v2.1.1).
+House CI baseline (keep these when editing the workflow):
+- Top-level `permissions: contents: read` (least privilege)
+- `persist-credentials: false` on checkout (test-only workflow, never pushes)
+- Every action SHA-pinned with a trailing `# vX.Y.Z` comment; Renovate bumps the SHA + comment
+- `timeout-minutes` on the job, `concurrency` group with `cancel-in-progress: true` keyed on `github.ref`
+- Triggers: `push` to main + tags, `pull_request` (never `pull_request_target`)
 
-The default container image is `ghcr.io/catthehacker/ubuntu:act-latest`, which is Ubuntu-based and has `apt-get`. We install `shellcheck jq perl bash coreutils` at runtime.
-
-### Releases must be enabled in Repo Settings before any release API calls
-Forgejo's `has_releases: false` is a per-repo **feature toggle**, not a "no releases yet" indicator. With it disabled, `POST /repos/.../releases` returns `404 "The target couldn't be found."` with no useful error. Enable it in **Repo Settings → Advanced Settings → Features → tick "Releases" → Update Settings**. The same toggle pattern applies to packages, wiki, actions, issues, and pull requests.
-
-This is documented in the `dot-ai-forgejo-api` skill; load that skill before running release-creation commands.
+`ubuntu-latest` ships `shellcheck`, `jq`, `perl`, and `bash` preinstalled; no apt-get step needed.
 
 ## Portability gotchas
 
@@ -190,15 +185,11 @@ If you're modifying the hook:
 - **Don't change the User-Agent** to something that impersonates the official Claude Code client. Use `cc-statusline/X.Y.Z`. We had `claude-code/2.1.4` in v2.0.0 and removed it in v2.0.1 specifically because the public repo shouldn't ship UA spoofing.
 - **Keep the rate limit** (currently: prompt 1 + every 10 prompts). Removing it would burn the user's API quota and is rude.
 
-## Forgejo / Codeberg API gotchas (when interacting with the repo via tea/api)
+## GitHub interaction notes
 
-These have all bitten the maintainer. Load the `dot-ai-forgejo-api` skill for the full reference; the highlights:
-
-- **`has_releases: false` is a feature toggle** that returns `404 "target couldn't be found"` from every `/releases` endpoint. Enable in repo settings before any release API calls.
-- **`tea releases create` is interactive only.** Use `tea api -X POST /repos/{owner}/{repo}/releases` with `-f tag_name=...`, `-f name=...`, `-F body=@/tmp/notes.md`.
-- **`-f` splits values on commas (CSV-style).** Avoid commas in release titles and label names. For multi-line/comma-heavy bodies, use `-F body=@file` (read from a file, bypasses the parser).
-- **`-F` cannot send JSON arrays.** A value like `["a","b"]` is sent as a string, not parsed. Tea returns 422. For endpoints expecting arrays (e.g., `/topics` with `{"topics":[...]}`), use the per-item endpoint instead (`PUT /repos/{owner}/{repo}/topics/{topic}` one at a time) or fall back to `curl`.
-- **Tea auto-detects the right login** from the git remote when run inside the repo, so you don't need `--login codeberg`. If you're outside the repo, add `-r vtmocanu/cc-statusline`.
+- Use the **`gh` CLI** for everything (releases, runs, settings). Never `tea`/`fj-ex`; those are Forgejo-only and the Codeberg repo is archived.
+- Repo settings baseline (applied at migration, keep intact): `GITHUB_TOKEN` default read-only, SHA-pinning required for actions, secret scanning + push protection on, private vulnerability reporting on, branch protection on `main` blocking force-pushes and deletion (direct pushes still allowed).
+- Renovate handles dependency/action bumps; do not also enable Dependabot version updates.
 
 ## What NOT to do
 

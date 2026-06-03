@@ -1,7 +1,7 @@
 # cc-statusline
 
-[![ci](https://codeberg.org/vtmocanu/cc-statusline/actions/workflows/ci.yml/badge.svg?branch=main)](https://codeberg.org/vtmocanu/cc-statusline/actions)
-[![release](https://img.shields.io/gitea/v/release/vtmocanu/cc-statusline?gitea_url=https%3A%2F%2Fcodeberg.org&label=release)](https://codeberg.org/vtmocanu/cc-statusline/releases)
+[![ci](https://github.com/vtmocanu/cc-statusline/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vtmocanu/cc-statusline/actions)
+[![release](https://img.shields.io/github/v/release/vtmocanu/cc-statusline?label=release)](https://github.com/vtmocanu/cc-statusline/releases)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-code) with project-aware colors, git status, Kubernetes context, rate-limit bars, Claude service health, and AI-generated session topics.
@@ -47,7 +47,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 ## Install
 
 ```bash
-git clone https://codeberg.org/vtmocanu/cc-statusline.git
+git clone https://github.com/vtmocanu/cc-statusline.git
 cd cc-statusline
 ./install.sh
 ```
@@ -158,7 +158,7 @@ Runs the harness against the JSON fixtures in `tests/fixtures/`. Each fixture is
 - visible columns within `SAFE_WIDTH + WIDTH_SLOP` (default 110 + 5)
 - empty stderr
 
-CI runs the same harness on every push and pull request via `.forgejo/workflows/ci.yml`.
+CI runs the same harness on every push and pull request via `.github/workflows/ci.yml`, both under the default locale and under `LC_ALL=C`.
 
 ## Troubleshooting
 

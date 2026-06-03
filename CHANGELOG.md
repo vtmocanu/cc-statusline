@@ -6,6 +6,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Project moved from Codeberg to GitHub**: the repo now lives at [github.com/vtmocanu/cc-statusline](https://github.com/vtmocanu/cc-statusline). The Codeberg repo is archived and kept as a pointer. CI moved from Forgejo Actions (`.forgejo/workflows/ci.yml`) to GitHub Actions (`.github/workflows/ci.yml`), which now also runs the test harness under `LC_ALL=C` to guard the v2.1.3 locale regression.
+
 ## [v2.2.1] - 2026-05-13
 
 ### Changed
@@ -80,12 +83,12 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.2.1...HEAD
-[v2.2.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.2.0...v2.2.1
-[v2.2.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.6...v2.2.0
-[v2.1.3]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.2...v2.1.3
-[v2.1.2]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.1...v2.1.2
-[v2.1.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.1.0...v2.1.1
-[v2.1.0]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.1...v2.1.0
-[v2.0.1]: https://codeberg.org/vtmocanu/cc-statusline/compare/v2.0.0...v2.0.1
-[v2.0.0]: https://codeberg.org/vtmocanu/cc-statusline/releases/tag/v2.0.0
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.1...HEAD
+[v2.2.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.0...v2.2.1
+[v2.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.6...v2.2.0
+[v2.1.3]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.2...v2.1.3
+[v2.1.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.1...v2.1.2
+[v2.1.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.0...v2.1.1
+[v2.1.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.0.1...v2.1.0
+[v2.0.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.0.0...v2.0.1
+[v2.0.0]: https://github.com/vtmocanu/cc-statusline/releases/tag/v2.0.0

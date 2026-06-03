@@ -59,7 +59,7 @@ fi
 # Check we're in a git checkout
 if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "$REPO_DIR is not a git checkout. Clone the repo first:"
-    err "  git clone https://codeberg.org/vtmocanu/cc-statusline.git"
+    err "  git clone https://github.com/vtmocanu/cc-statusline.git"
     exit 1
 fi
 
