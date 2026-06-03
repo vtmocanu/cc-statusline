@@ -3,3 +3,6 @@
 *.swo
 *.bak
 /tmp/
+
+# Task remote-include cache
+.task/
