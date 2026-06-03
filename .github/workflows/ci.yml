@@ -24,26 +24,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install task
+        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: bash -n (syntax check)
-        run: |
-          set -e
-          for f in statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh; do
-            [ -f "$f" ] || continue
-            echo "==> bash -n $f"
-            bash -n "$f"
-          done
+        run: task syntax
 
       - name: shellcheck
-        run: |
-          set -e
-          for f in statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh; do
-            [ -f "$f" ] || continue
-            echo "==> shellcheck $f"
-            shellcheck -x -S warning "$f"
-          done
+        run: task lint
 
       - name: Run test harness
-        run: bash tests/run-tests.sh
+        run: task test
 
       - name: Run test harness (broken locale)
-        run: LC_ALL=C bash tests/run-tests.sh
+        run: task test-c-locale

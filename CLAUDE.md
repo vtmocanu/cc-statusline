@@ -26,7 +26,8 @@ cc-statusline/
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
 │   └── fixtures/*.json               5 mock JSON inputs (happy path, empty, no rate limits, near-full context, narrow width)
-├── .github/workflows/ci.yml          GitHub Actions CI: shellcheck + bash -n + test harness (default + LC_ALL=C) on push/PR
+├── Taskfile.yml                      Validation tasks (syntax, lint, test, test-c-locale, ci); used locally and by CI
+├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
 ├── images/screenshot.png             Hero image used by README
 ├── README.md                         Public-facing docs
 ├── CHANGELOG.md                      Keep-a-Changelog format, one section per tag
@@ -41,24 +42,16 @@ cc-statusline/
 The script lives where it runs. Edit `statusline.sh` directly; the maintainer's live statusline reflects changes on the next render.
 
 ### Validate
-**Always run all four checks before committing:**
+**Always run all four checks before committing.** They live in `Taskfile.yml` (requires [go-task](https://taskfile.dev)); CI runs the exact same tasks:
 
 ```bash
-# 1. Syntax check
-bash -n statusline.sh
-bash -n claude-status-fetch.sh
-bash -n install.sh
-bash -n hooks/session-topic-capture.sh
-bash -n tests/run-tests.sh
+task ci              # all four checks in order
 
-# 2. Shellcheck (matches CI's -S warning level)
-shellcheck -S warning statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh
-
-# 3. Test harness
-bash tests/run-tests.sh
-
-# 4. Test harness under broken locale (catches wc-m / bash-string-length issues)
-LC_ALL=C bash tests/run-tests.sh
+# or individually:
+task syntax          # 1. bash -n on all scripts
+task lint            # 2. shellcheck -x -S warning (matches CI)
+task test            # 3. test harness (tests/run-tests.sh)
+task test-c-locale   # 4. test harness under LC_ALL=C (catches wc-m / bash-string-length issues)
 ```
 
 The fourth check is **mandatory** for any change that touches width calculation or string measurement. We've burned a CI cycle on this exact bug already (see `CHANGELOG.md` v2.1.3).
@@ -146,7 +139,7 @@ The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env var
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and PR. One job: `bash -n`, `shellcheck -S warning`, the test harness, and the test harness again under `LC_ALL=C` (guards the v2.1.3 locale regression).
+`.github/workflows/ci.yml` runs on every push and PR. One job, four steps, each calling the matching Taskfile task (`syntax`, `lint`, `test`, `test-c-locale`); the `LC_ALL=C` run guards the v2.1.3 locale regression. `task` itself is installed via `arduino/setup-task` (SHA-pinned).
 
 House CI baseline (keep these when editing the workflow):
 - Top-level `permissions: contents: read` (least privilege)

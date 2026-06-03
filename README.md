@@ -149,6 +149,9 @@ To roll back:
 
 ```bash
 bash tests/run-tests.sh
+
+# or, with go-task installed, the full validation suite (syntax + shellcheck + tests):
+task ci
 ```
 
 Runs the harness against the JSON fixtures in `tests/fixtures/`. Each fixture is piped through `statusline.sh` and asserted on:

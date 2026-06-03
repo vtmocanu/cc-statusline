@@ -1,0 +1,56 @@
+---
+# Taskfile for cc-statusline. CI (.github/workflows/ci.yml) runs these same
+# tasks; run `task ci` locally before committing (see CLAUDE.md).
+version: "3"
+
+vars:
+  SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  syntax:
+    desc: bash -n syntax check on all scripts
+    cmds:
+      - |
+        set -e
+        for f in {{.SCRIPTS}}; do
+          [ -f "$f" ] || continue
+          echo "==> bash -n $f"
+          bash -n "$f"
+        done
+
+  lint:
+    desc: shellcheck (warning severity) on all scripts
+    preconditions:
+      - sh: command -v shellcheck
+        msg: "shellcheck must be installed"
+    cmds:
+      - |
+        set -e
+        for f in {{.SCRIPTS}}; do
+          [ -f "$f" ] || continue
+          echo "==> shellcheck $f"
+          shellcheck -x -S warning "$f"
+        done
+
+  test:
+    desc: Run the fixture test harness
+    cmds:
+      - bash tests/run-tests.sh
+
+  test-c-locale:
+    desc: Run the test harness under LC_ALL=C (locale regression guard, see CHANGELOG v2.1.3)
+    cmds:
+      - LC_ALL=C bash tests/run-tests.sh
+
+  ci:
+    desc: Full validation (syntax + lint + tests + C-locale tests)
+    cmds:
+      - task: syntax
+      - task: lint
+      - task: test
+      - task: test-c-locale
