@@ -41,6 +41,15 @@ unset GIT_DIR GIT_WORK_TREE
 export CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-cache"
 export CC_STATUSLINE_SVC_FETCH="$SCRATCH/no-such-fetcher.sh"
 
+# Pin the clock so rate-limit reset countdowns and pace arrows are
+# deterministic across runs and locales. Fixtures with future resets_at are
+# authored relative to this epoch. Fixtures with resets_at=0 are unaffected.
+export CC_STATUSLINE_NOW=1700000000
+# Disable the profile badge so the runner's ~/.claude/profile-labels.json
+# (present on the maintainer's machine, absent in CI) can't change line-2
+# width between environments.
+export STATUSLINE_PROFILE=0
+
 pass=0
 fail=0
 errors=()

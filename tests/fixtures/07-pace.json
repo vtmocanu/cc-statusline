@@ -1,0 +1,23 @@
+{
+  "model": {"display_name": "Claude Sonnet 4.6", "id": "sonnet"},
+  "cwd": "/home/test/example-project",
+  "context_window": {
+    "remaining_percentage": 70,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 5000,
+      "output_tokens": 1200,
+      "cache_creation_input_tokens": 3000,
+      "cache_read_input_tokens": 250000
+    }
+  },
+  "cost": {"total_duration_ms": 600000},
+  "agent": {"name": ""},
+  "mode": "",
+  "session_id": "test-pace",
+  "transcript_path": "",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 50, "resets_at": 1700016200},
+    "seven_day": {"used_percentage": 50, "resets_at": 1700302400}
+  }
+}

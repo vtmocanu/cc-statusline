@@ -6,7 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.3.0] - 2026-06-19
+
 ### Added
+- **Cache hit rate (line 2)**: a compact `⚡ NN%` readout tucked right after the context size (`of 1000k ⚡ 92%`), showing what fraction of the last API call's input tokens was served from the prompt cache (`cache_read_input_tokens / (input_tokens + cache_creation_input_tokens + cache_read_input_tokens)`, from `context_window.current_usage`). The percentage color is inverted relative to the context bar: green when most of the context is cached (good), coral when caching is cold. The segment is omitted when `current_usage` is `null` (before the first API call and after `/compact`) or when no input tokens are present. It is the lowest-priority line-2 element: the rate-limit detail claims width first (its tier is chosen from the base width excluding cache, so the reset countdowns are never squeezed out), and cache renders only in the measured leftover. Raise `STATUSLINE_WIDTH` to fit both comfortably. Opt out with `STATUSLINE_CACHE=0`. Fixture `06-cache.json` covers it.
+- **Rate-limit pace arrows (line 2)**: each rate limit can show an arrow after its percentage projecting where usage is headed by the window reset (`projected% = used% × window_duration / elapsed`, integer math, no `bc`): `↑` coral when you'll exhaust the cap before reset (projected > 115%), `→` gold when roughly on pace (85-115%). Under-consuming (the common case) shows **no** arrow, so the glyph reads as an alert and reclaims its width. Suppressed during the first 2% of a window and whenever `resets_at` is missing/zero. Opt out with `STATUSLINE_PACE=0`. Fixture `07-pace.json` covers both directions deterministically via the new `CC_STATUSLINE_NOW` clock override; the harness also pins that clock and disables the profile badge so width is identical across machines and locales.
 - `Taskfile.yml` with the validation suite (`task shell:syntax`, `task shell:lint`, `task test`, `task test-c-locale`, `task ci`). The `shell:` tasks are included from the reusable [`shell.yml` in vtmocanu/task](https://github.com/vtmocanu/task) (local checkout when developing, public raw URL in CI). CI installs [go-task](https://taskfile.dev) via `arduino/setup-task` and runs these tasks instead of inline shell, so local validation and CI are the same commands.
 
 ### Changed
@@ -86,7 +90,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.0...HEAD
+[v2.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.1...v2.3.0
 [v2.2.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.0...v2.2.1
 [v2.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.6...v2.2.0
 [v2.1.3]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.2...v2.1.3

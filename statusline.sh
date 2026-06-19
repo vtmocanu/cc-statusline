@@ -37,6 +37,13 @@ eval "$(echo "$DATA" | jq -r '
         else 0 end
     ) catch 0)",
     @sh "CTX_SIZE=\(.context_window.context_window_size // 200000)",
+    @sh "CACHE_PCT=\(try (
+        (.context_window.current_usage) as $u
+        | if ($u == null) then ""
+          else (($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)) as $tot
+            | (if $tot > 0 then (($u.cache_read_input_tokens // 0) * 100 / $tot) | floor else "" end)
+          end
+    ) catch "")",
     @sh "DURATION_MS=\(.cost.total_duration_ms // 0)",
     @sh "AGENT=\(.agent.name // "")",
     @sh "MODE=\(.mode // "")",
@@ -56,13 +63,19 @@ AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
 FIVE_RESET_TS=${FIVE_RESET_TS:-}; SEVEN_RESET_TS=${SEVEN_RESET_TS:-}
+CACHE_PCT=${CACHE_PCT:-}
 
 PCT=${PCT%%.*}  # truncate jq float rounding (e.g. 14.000000000000002 -> 14)
 FIVE_PCT=${FIVE_PCT%%.*}   # also truncate rate limit floats
 SEVEN_PCT=${SEVEN_PCT%%.*}
+CACHE_PCT=${CACHE_PCT%%.*}  # "" stays "" (segment omitted)
 CTX_SIZE_K=$((CTX_SIZE / 1000))
 # Max line width before Claude Code's cli-truncate drops line 2
 SAFE_WIDTH=${STATUSLINE_WIDTH:-110}
+# Current epoch, overridable so tests can pin time and get deterministic
+# rate-limit reset countdowns and pace arrows (see CC_STATUSLINE_NOW in the
+# test harness). Used by format_reset and pace_arrow.
+NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
 
 TOPIC=""  # populated after SESSION_ID is extracted below
 
@@ -126,6 +139,7 @@ NF_FOLDER="󰉋"               # nf-md-folder (kept from v1)
 NF_MODEL="󰚩"                # nf-md-robot (kept from v1)
 NF_K8S="󱃾"                  # nf-md-kubernetes (kept from v1)
 NF_CLOCK=$'\xef\x80\x97'     # U+F017 clock
+NF_CACHE=$'\xef\x83\xa7'     # U+F0E7 zap (prompt-cache hit rate)
 NF_CORNER_TL=$'\xee\x82\xba'    # U+E0BA lower-right fill (top-left corner)
 NF_CORNER_BL=$'\xee\x82\xbe'    # U+E0BE upper-right fill (bottom-left corner)
 NF_CORNER_TR=$'\xee\x82\xb8'    # U+E0B8 lower-left fill -> top-right corner cut
@@ -194,6 +208,17 @@ pct_txt_color() {
     fi
 }
 
+# Cache hit rate uses the inverted scale: high is GOOD (most of the context
+# served from cache), so green at the top and coral when caching is cold.
+cache_pct_color() {
+    local p=${1:-0}
+    p=${p%%.*}
+    if   [ "${p:-0}" -gt 70 ] 2>/dev/null; then printf "\033[38;2;150;210;150m"   # sage
+    elif [ "${p:-0}" -gt 35 ] 2>/dev/null; then printf "\033[38;2;215;195;125m"   # gold
+    else                                         printf "\033[38;2;225;150;150m"   # coral
+    fi
+}
+
 # ── Git info ────────────────────────────────────────────────────────────────
 BRANCH=$(git -c core.useBuiltinFSMonitor=false branch --show-current 2>/dev/null || echo "")
 GIT_STATUS=""
@@ -253,7 +278,7 @@ format_reset() {
     local epoch="$1"
     [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
     local now diff
-    now=$(date +%s)
+    now=${NOW:-$(date +%s)}
     diff=$((epoch - now))
     [ "$diff" -le 0 ] && { printf "now"; return; }
     [ "$diff" -lt 60 ] && { printf "<1m"; return; }
@@ -262,6 +287,31 @@ format_reset() {
     elif [ "$d" -gt 0 ];  then printf "%dd%dh" "$d" "$h"
     elif [ "$h" -gt 0 ];  then printf "%dh%dm" "$h" "$m"
     else printf "%dm" "$m"
+    fi
+}
+
+# ── Rate-limit pace arrow (projects window exhaustion) ─────────────────────
+# Extrapolate current usage to the window's reset:
+#   projected% = used% * window_duration / elapsed
+# where elapsed = now - (resets_at - window_duration) is how far into the
+# current window we are. Integer-only (no bc).
+#   ↑ coral  projected > 115 — burning fast, will hit the cap before reset
+#   → gold   projected 85-115 — roughly on pace to land at ~100%
+#   (empty)  projected < 85  — under-consuming, safe; no arrow is shown so the
+#            glyph reads as an alert (silence = fine), and the common case
+#            reclaims its 2 columns.
+# Also empty during the first 2% of the window (too little signal) or on
+# missing/zero input — so test fixtures with resets_at=0 and the
+# pre-first-exchange state render no arrow.
+pace_arrow() {
+    local used="${1%%.*}" resets_at="$2" duration="$3" now="$4"
+    { [ -z "$used" ] || [ -z "$resets_at" ] || [ "$resets_at" = "0" ] || [ "$resets_at" = "null" ]; } && return
+    [ "$used" -le 0 ] 2>/dev/null && return
+    local elapsed=$(( now - (resets_at - duration) ))
+    [ "$elapsed" -le $(( duration / 50 )) ] 2>/dev/null && return
+    local projected=$(( used * duration / elapsed ))
+    if   [ "$projected" -gt 115 ]; then printf '\033[38;2;225;150;150m↑'
+    elif [ "$projected" -gt 85  ]; then printf '\033[38;2;215;195;125m→'
     fi
 }
 
@@ -380,33 +430,72 @@ L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2} ${L2_DIM}�
 L2_BASE_W=$((2 + 2 + ${#MODEL} + 1 + ${#EFFORT} + 3 + 2 + ${#TIME} + 3 + 7 + 1 + ${#PCT} + 1 + 4 + ${#CTX_SIZE_K} + 1))
 [ -n "$PROFILE_LABEL" ] && L2_BASE_W=$((L2_BASE_W + ${#PROFILE_LABEL} + 3))  # " · LABEL"
 L2_BASE_W=${L2_BASE_W:-50}
-RATE_AVAIL=$((SAFE_WIDTH - L2_BASE_W - 5))   # reserve 5 for incident icon
 
+# Pace arrows reserve 2 extra columns (one glyph per limit) on top of the
+# incident-icon reserve, so the full/compact tiers downgrade a touch sooner.
+# Opt out with STATUSLINE_PACE=0.
+PACE_ON=1; [ "${STATUSLINE_PACE:-1}" = "0" ] && PACE_ON=0
+RATE_RESERVE=5; [ "$PACE_ON" = "1" ] && RATE_RESERVE=7
+RATE_AVAIL=$((SAFE_WIDTH - L2_BASE_W - RATE_RESERVE))
+
+# Build the rate-limit detail into RATE_STR (appended further below, after the
+# cache readout). Rate detail gets FIRST claim on width: its tier is chosen
+# from L2_BASE_W *without* the cache segment, so the reset countdowns are never
+# squeezed out by cache. The cache block then takes only the measured leftover.
+RATE_STR=""
 if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
     FIVE_CLR=$(pct_txt_color "$FIVE_PCT")
     SEVEN_CLR=$(pct_txt_color "$SEVEN_PCT")
 
+    # Pace arrows: where current usage is heading by reset (empty unless we
+    # have a real future resets_at, so test fixtures with resets_at=0 are
+    # unaffected). 5h window = 18000s, 7d = 604800s.
+    FIVE_ARROW=""; SEVEN_ARROW=""
+    if [ "$PACE_ON" = "1" ]; then
+        FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" 18000 "$NOW")
+        SEVEN_ARROW=$(pace_arrow "$SEVEN_PCT" "$SEVEN_RESET_TS" 604800 "$NOW")
+    fi
+
     if [ "$RATE_AVAIL" -gt 40 ] 2>/dev/null; then
-        # Full: bars + pct + reset times
+        # Full: bars + pct + pace arrow + reset times
         FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
         FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
-        L2C+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${B2}"
-        [ -n "${FIVE_TIME:-}" ] && L2C+=" ${L2_TXT}${FIVE_TIME}${B2}"
+        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        [ -n "${FIVE_TIME:-}" ] && RATE_STR+=" ${L2_TXT}${FIVE_TIME}${B2}"
         SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
         SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
-        L2C+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${B2}"
-        [ -n "${SEVEN_TIME:-}" ] && L2C+=" ${L2_TXT}${SEVEN_TIME}${B2}"
+        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        [ -n "${SEVEN_TIME:-}" ] && RATE_STR+=" ${L2_TXT}${SEVEN_TIME}${B2}"
     elif [ "$RATE_AVAIL" -gt 25 ] 2>/dev/null; then
-        # Compact: bars + pct, no reset times
+        # Compact: bars + pct + pace arrow, no reset times
         FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
-        L2C+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${B2}"
+        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
         SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
-        L2C+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${B2}"
+        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
     elif [ "$RATE_AVAIL" -gt 15 ] 2>/dev/null; then
-        # Minimal: just percentages
-        L2C+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${B2}"
+        # Minimal: percentages + pace arrow
+        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
     fi
 fi
+
+# ── Cache hit rate (prompt-cache efficiency from the last API call) ─────────
+# Tucked right after the context size ("of 1000k ⚡ 92%"); only the percentage
+# carries the inverted color (green = mostly cached/good, coral = cold).
+# CACHE_PCT is "" before the first API call and after /compact (current_usage
+# null), so the segment is omitted then. It is the LOWEST-priority line-2
+# element: shown only in the width left after the rate-limit detail (measured
+# exactly with measure_cols), so a wide rate line keeps its reset countdowns.
+# Bump STATUSLINE_WIDTH to fit both. Opt out with STATUSLINE_CACHE=0.
+if [ "${STATUSLINE_CACHE:-1}" != "0" ] && [ -n "${CACHE_PCT:-}" ]; then
+    RATE_W=0; [ -n "$RATE_STR" ] && RATE_W=$(measure_cols "$RATE_STR")
+    RATE_W=${RATE_W:-0}
+    if [ "$((L2_BASE_W + 4 + ${#CACHE_PCT} + RATE_W + 5))" -le "$SAFE_WIDTH" ] 2>/dev/null; then
+        CACHE_CLR=$(cache_pct_color "$CACHE_PCT")
+        L2C+=" ${L2_TXT}${NF_CACHE} ${CACHE_CLR}${CACHE_PCT}%${B2}"
+    fi
+fi
+
+L2C+="$RATE_STR"
 
 # ── Claude service status (auto-refresh every 60s in background) ────────────
 # Both paths are env-overridable so tests can isolate themselves from a

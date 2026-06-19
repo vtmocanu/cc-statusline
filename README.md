@@ -18,7 +18,9 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Kubernetes context**: current `kubectl` context (with timeout to avoid exec-auth hangs)
 - **Session metrics**: model name, effort level (low/medium/high/max), elapsed time
 - **Context window**: colored bar and percentage
+- **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); hidden before the first call and after `/compact`
 - **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width
+- **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
 - **Session topic**: optional hook calls Claude Haiku to label each session with `Project: Focus`
 - **Tab title**: sets the terminal tab title from the topic or directory
@@ -125,6 +127,8 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line. Lower this if you see line 2 disappearing. |
+| `STATUSLINE_CACHE` | `1` | Set to `0` to hide the prompt-cache hit-rate readout (`⚡ NN%`) on line 2. |
+| `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
 
