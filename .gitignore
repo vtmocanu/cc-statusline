@@ -6,3 +6,6 @@
 
 # Task remote-include cache
 .task/
+
+# Agent-team runtime task briefs (the team definition is committed; per-task briefs are not)
+.claude/agent-team-tasks/
