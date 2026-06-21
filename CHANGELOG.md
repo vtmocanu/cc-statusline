@@ -6,6 +6,33 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.4.0] - 2026-06-21
+
+### Added
+- New env var `STATUSLINE_GLYPH_MARGIN` (default `3`): reserves columns for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim those columns.
+- `VERSION` file at the repo root: single source of truth for the script version. The topic hook and status fetcher now send `User-Agent: cc-statusline/<version>` on every request (was a hardcoded stale `cc-statusline/2.0.1` in the hook and an off-convention `claude-code-statusline/1.0` in the fetcher).
+
+### Changed
+- **Width measurement rebuilt**: the bash character-count estimate (`L1_EST`/`L2_BASE_W`) is replaced by `measure_cols`-driven truncation run before truncation decisions. All truncation paths (K8s context, branch, topic, DIR, rate-detail tier) now use one ANSI-aware codepoint measurement, eliminating the documented off-by-2 between the estimate and post-truncation recalculations.
+- **Rate-detail tier selection**: the compact/minimal fallback tier is now chosen from a real measurement of each candidate (full/compact/minimal) with the service icon reserved, not from a fixed character reserve. Fixes line 2 overflow at 116 visible columns (width 110) caused by 3-digit percentages, long reset countdowns, or a trailing service-status icon.
+- **DIR truncation (new)**: a long single cwd path segment on line 1 is now truncatable (trimmed keeping the tail/leaf). Previously there was no DIR truncation, causing overflow at ~132 cols.
+- Test harness `WIDTH_SLOP` now defaults to `0`: the script and harness measure identically, so no tolerance slop is needed.
+- Runtime files (lock, counter, service-status cache) moved from predictable world-writable `/tmp` paths to a per-user mode-700 runtime directory (`XDG_RUNTIME_DIR` / `TMPDIR`, uid-scoped `/tmp` fallback).
+
+### Fixed
+- Line 2 could exceed the safe width and be dropped by Claude Code's `cli-truncate`: the rate-detail tier was chosen from a fixed reserve that ignored 3-digit percentages, long reset countdowns, and the trailing service-status icon. Now bounded. Reproduced at 116 cols (width 110).
+- A long single cwd path segment overflowed line 1: no DIR truncation existed. Reproduced at 132 cols. DIR is now truncatable.
+- Width off-by-2 between the initial bash estimate and post-truncation recalculations: all truncation now uses `measure_cols` (one ANSI-aware codepoint pass).
+- Topic silently vanished on Linux: used `gsed` with no fallback on line 160. Now uses `perl` (already a hard dependency).
+- `install.sh` dependency check incorrectly required `gsed` on macOS and was Linux-blind. Removed (perl covers the use case).
+- Displayed percentages are clamped to 0-100: a malformed field could previously print `105%` or `-30%`.
+- DIR mishandled a trailing slash in cwd.
+
+### Security
+- Session topic and profile label are sanitized of ANSI/OSC/control bytes before printing: a crafted or model-generated topic could otherwise spoof the terminal tab title or clear the screen. The hook also strips control bytes when writing the topic file.
+- `session_id` is validated to a safe charset before use in any file path (path-traversal guard), in both the statusline and the hook.
+- Runtime files moved out of predictable world-writable `/tmp` paths into a per-user mode-700 directory (see Changed above).
+
 ## [v2.3.1] - 2026-06-21
 
 ### Fixed
@@ -95,7 +122,9 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.4.0...HEAD
+[v2.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.1...v2.4.0
+[v2.3.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.0...v2.3.1
 [v2.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.1...v2.3.0
 [v2.2.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.0...v2.2.1
 [v2.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.1.6...v2.2.0

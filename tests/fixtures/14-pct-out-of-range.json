@@ -1,0 +1,11 @@
+{
+  "model": {"display_name": "Claude Opus 4.6", "id": "opus"},
+  "cwd": "/home/test/example-project",
+  "context_window": {"remaining_percentage": -20, "context_window_size": 1000000},
+  "cost": {"total_duration_ms": 300000},
+  "session_id": "test-pct-oor",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 130, "resets_at": 0},
+    "seven_day": {"used_percentage": -45, "resets_at": 0}
+  }
+}

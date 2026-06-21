@@ -15,6 +15,32 @@ _reverse_file() {
         || tail -r "$1" 2>/dev/null \
         || cat "$1" 2>/dev/null
 }
+# Strip ANSI/OSC/control sequences AND bare control bytes from untrusted text
+# (the session topic comes from a model response on disk; a crafted value must
+# not be able to move the cursor, clear the screen, or spoof the tab title when
+# we print it). Byte-oriented: only deletes C0 controls + DEL + ESC-introduced
+# sequences, never multibyte UTF-8 (those bytes are all >= 0x80).
+_strip_ctl() {
+    perl -pe '
+        s/\e\][^\a\e]*(?:\a|\e\\)//g;     # OSC ... (BEL or ST)
+        s/\eP.*?\e\\//g;                  # DCS ... ST
+        s/\e\[[0-9;?]*[ -\/]*[@-~]//g;    # CSI ... final (includes SGR colors)
+        s/\e[@-Z\\-_]//g;                 # other 2-byte ESC sequences
+        s/[\x00-\x1f\x7f]//g;             # residual C0 controls + DEL (BEL, ESC, ...)
+    ' 2>/dev/null
+}
+# Per-user runtime dir (mode 700) for cache/lock/counter files. Replaces the
+# old predictable, world-writable /tmp paths (symlink / cache-poison risk on
+# multi-user hosts). XDG_RUNTIME_DIR (Linux) and TMPDIR (macOS) are already
+# per-user mode-700; the bare /tmp fallback gets a uid-scoped subdir.
+_state_dir() {
+    local base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local uid d
+    uid=$(id -u 2>/dev/null || echo 0)
+    d="${base%/}/cc-statusline-${uid}"
+    mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null
+    printf '%s' "$d"
+}
 
 DATA=$(timeout 2 cat 2>/dev/null) || DATA=""
 [ -z "$DATA" ] && exit 0
@@ -24,8 +50,7 @@ DATA=$(timeout 2 cat 2>/dev/null) || DATA=""
 # empty fields become VAR='' instead of being silently swallowed.
 eval "$(echo "$DATA" | jq -r '
     @sh "MODEL=\(.model.display_name // "Claude" | gsub(" \\(.*\\)"; ""))",
-    @sh "MODEL_ID=\(try (.model.id // "unknown") catch "unknown")",
-    @sh "DIR=\(.cwd // "~" | split("/") | .[-2:] | join("/"))",
+    @sh "DIR=\(.cwd // "~" | sub("/+$"; "") | split("/") | .[-2:] | join("/"))",
     @sh "PCT=\(try (
         if (.context_window.remaining_percentage // null) != null then
             100 - (.context_window.remaining_percentage | floor)
@@ -57,21 +82,47 @@ eval "$(echo "$DATA" | jq -r '
 ' 2>/dev/null)" 2>/dev/null
 
 # Guard: if jq failed completely, use safe defaults
-MODEL=${MODEL:-Claude}; MODEL_ID=${MODEL_ID:-unknown}; DIR=${DIR:-~}
+MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
 PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}; DURATION_MS=${DURATION_MS:-0}
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}
+# Safety: strip control bytes from every JSON-sourced field we print, so a
+# crafted value can't inject terminal escapes (defense in depth; topic/profile
+# are handled separately). Multibyte UTF-8 (bytes >= 0x80) is preserved.
+DIR="${DIR//[$'\001'-$'\037\177']/}"
+MODEL="${MODEL//[$'\001'-$'\037\177']/}"
+AGENT="${AGENT//[$'\001'-$'\037\177']/}"
+MODE="${MODE//[$'\001'-$'\037\177']/}"
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
 FIVE_RESET_TS=${FIVE_RESET_TS:-}; SEVEN_RESET_TS=${SEVEN_RESET_TS:-}
 CACHE_PCT=${CACHE_PCT:-}
 
-PCT=${PCT%%.*}  # truncate jq float rounding (e.g. 14.000000000000002 -> 14)
-FIVE_PCT=${FIVE_PCT%%.*}   # also truncate rate limit floats
-SEVEN_PCT=${SEVEN_PCT%%.*}
-CACHE_PCT=${CACHE_PCT%%.*}  # "" stays "" (segment omitted)
+# Truncate jq float rounding (e.g. 14.000000000000002 -> 14) and clamp the
+# displayed value to [0,100] so a malformed field can't print "105%"/"-30%".
+# Empty stays empty (segment omitted); non-numeric passes through untouched.
+_clamp_pct() {
+    local v="${1%%.*}"
+    # Clamp a well-formed integer (optional single leading minus) to [0,100].
+    # Anything else (empty, bare "-", "5-5", "abc") becomes "" so the caller
+    # treats it as absent rather than feeding garbage into bar/arrow arithmetic.
+    [[ "$v" =~ ^-?[0-9]+$ ]] || { printf ''; return; }
+    [ "$v" -lt 0 ]   && v=0
+    [ "$v" -gt 100 ] && v=100
+    printf '%s' "$v"
+}
+PCT=$(_clamp_pct "$PCT"); PCT=${PCT:-0}   # context % is mandatory; default 0
+FIVE_PCT=$(_clamp_pct "$FIVE_PCT")
+SEVEN_PCT=$(_clamp_pct "$SEVEN_PCT")
+CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
 CTX_SIZE_K=$((CTX_SIZE / 1000))
 # Max line width before Claude Code's cli-truncate drops line 2
 SAFE_WIDTH=${STATUSLINE_WIDTH:-110}
+# Width is measured in Unicode codepoints (see measure_cols), but Nerd Font
+# icons can render 1-2 terminal cells depending on the font/terminal. Reserve a
+# few columns so truncation stays conservative on terminals that render the
+# folder/git/k8s/model glyphs double-width. Power users on a known mono-width
+# font can reclaim them with STATUSLINE_GLYPH_MARGIN=0.
+WIDE_GLYPH_MARGIN=${STATUSLINE_GLYPH_MARGIN:-3}
 # Current epoch, overridable so tests can pin time and get deterministic
 # rate-limit reset countdowns and pace arrows (see CC_STATUSLINE_NOW in the
 # test harness). Used by format_reset and pace_arrow.
@@ -122,6 +173,8 @@ if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && [ -r "$CLA
         fi
     fi
 fi
+# Safety: strip control bytes from the user-authored label before printing.
+PROFILE_LABEL="${PROFILE_LABEL//[$'\001'-$'\037\177']/}"
 # Map named color -> ANSI 24-bit (gray fallback)
 case "${PROFILE_COLOR:-}" in
     red)        PROFILE_FG="\033[38;2;225;100;100m" ;;
@@ -153,13 +206,21 @@ PROJECT_ROOT=$(git -C "$CWD_FULL" rev-parse --show-toplevel 2>/dev/null || echo 
 PHASH=$(printf '%s' "${SESSION_ID:-$CWD_FULL}" | cksum | cut -d' ' -f1 || echo "0")
 
 # ── Session topic ─────────────────────────────────────────────────────────
-if [ -n "${SESSION_ID:-}" ]; then
-    TOPIC_FILE="$HOME/.claude/session-topics/${SESSION_ID}.txt"
-    if [ -f "$TOPIC_FILE" ]; then
-        # Strip ANSI escape sequences and limit to 40 chars
-        TOPIC=$(cat "$TOPIC_FILE" 2>/dev/null | tr -d '\n' | gsed 's/\x1b\[[0-9;]*m//g' 2>/dev/null | cut -c1-40)
-    fi
-fi
+# Validate SESSION_ID to a safe charset before building a file path from it
+# (defends against path traversal via a crafted session_id).
+case "${SESSION_ID:-}" in
+    ''|*[!A-Za-z0-9_-]*) : ;;   # empty or out-of-charset -> no topic
+    *)
+        TOPIC_FILE="$HOME/.claude/session-topics/${SESSION_ID}.txt"
+        if [ -f "$TOPIC_FILE" ]; then
+            # Strip color/control sequences (portable: perl, already a hard
+            # dep, replacing the macOS-only gsed) and limit to 40 chars.
+            # _strip_ctl also neutralises any cursor/OSC/BEL bytes a model
+            # response on disk might contain before we print the topic.
+            TOPIC=$(_strip_ctl < "$TOPIC_FILE" 2>/dev/null | tr -d '\n' | cut -c1-40)
+        fi
+        ;;
+esac
 
 # Check for manual color override
 COLOR_OVERRIDES="$HOME/.claude/statusline-color-overrides.json"
@@ -201,23 +262,20 @@ B2="${RST}${BG2}"
 L2_TXT="\033[38;2;170;170;170m"   # light gray
 L2_DIM="\033[38;2;80;80;80m"      # dim gray for separators + resets
 
-pct_txt_color() {
-    local p=${1:-0}
-    p=${p%%.*}  # safety: strip decimal if any
-    if   [ "${p:-0}" -gt 70 ] 2>/dev/null; then printf "\033[38;2;225;150;150m"   # coral
-    elif [ "${p:-0}" -gt 35 ] 2>/dev/null; then printf "\033[38;2;215;195;125m"   # gold
-    else                                         printf "\033[38;2;150;210;150m"   # sage
-    fi
-}
-
-# Cache hit rate uses the inverted scale: high is GOOD (most of the context
-# served from cache), so green at the top and coral when caching is cold.
-cache_pct_color() {
-    local p=${1:-0}
+CLR_SAGE="\033[38;2;150;210;150m"   # green: good
+CLR_GOLD="\033[38;2;215;195;125m"   # amber: caution
+CLR_CORAL="\033[38;2;225;150;150m"  # coral: warning
+# Threshold color for a percentage. Default scale: low is good (sage), high is
+# bad (coral). Pass "invert" as $2 for metrics where high is GOOD, e.g. the
+# cache hit rate (green when most of the context is served from cache, coral
+# when caching is cold).
+pct_color() {
+    local p=${1:-0} hi="$CLR_CORAL" lo="$CLR_SAGE"
     p=${p%%.*}
-    if   [ "${p:-0}" -gt 70 ] 2>/dev/null; then printf "\033[38;2;150;210;150m"   # sage
-    elif [ "${p:-0}" -gt 35 ] 2>/dev/null; then printf "\033[38;2;215;195;125m"   # gold
-    else                                         printf "\033[38;2;225;150;150m"   # coral
+    [ "${2:-}" = "invert" ] && { hi="$CLR_SAGE"; lo="$CLR_CORAL"; }
+    if   [ "${p:-0}" -gt 70 ] 2>/dev/null; then printf '%b' "$hi"
+    elif [ "${p:-0}" -gt 35 ] 2>/dev/null; then printf '%b' "$CLR_GOLD"
+    else                                         printf '%b' "$lo"
     fi
 }
 
@@ -261,7 +319,7 @@ fi
 make_bar() {
     local pct=${1:-0} width=${2:-5} fill_clr="$3" empty_clr="$4" bar=""
     pct=${pct%%.*}  # safety: strip decimal
-    [ -z "$pct" ] && pct=0
+    case "$pct" in ''|*[!0-9]*) pct=0 ;; esac  # non-numeric -> 0 (set -u arith)
     local filled=$((pct * width / 100))
     [ "$pct" -gt 0 ] 2>/dev/null && [ "$filled" -eq 0 ] && filled=1
     [ "$filled" -gt "$width" ] && filled=$width
@@ -279,6 +337,7 @@ make_bar() {
 format_reset() {
     local epoch="$1"
     [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
+    case "$epoch" in *[!0-9]*) return ;; esac  # non-numeric -> no countdown (set -u arith)
     local now diff
     now=${NOW:-$(date +%s)}
     diff=$((epoch - now))
@@ -308,6 +367,9 @@ format_reset() {
 pace_arrow() {
     local used="${1%%.*}" resets_at="$2" duration="$3" now="$4"
     { [ -z "$used" ] || [ -z "$resets_at" ] || [ "$resets_at" = "0" ] || [ "$resets_at" = "null" ]; } && return
+    # non-numeric used/resets_at -> no arrow (avoid set -u arithmetic error)
+    case "$used" in *[!0-9]*) return ;; esac
+    case "$resets_at" in *[!0-9]*) return ;; esac
     [ "$used" -le 0 ] 2>/dev/null && return
     local elapsed=$(( now - (resets_at - duration) ))
     [ "$elapsed" -le $(( duration / 50 )) ] 2>/dev/null && return
@@ -331,123 +393,51 @@ measure_cols() {
     ' 2>/dev/null
 }
 
-# ── Line 1: build with bash-based width tracking (no perl) ─────────────────
-# Estimate visible width per component from known text lengths.
-# Each component's ANSI overhead cancels out; we just count visible chars.
-# Corner char = 1, each separator "│" = 1, icon = 1-2, spaces counted explicitly.
-# Add 3-char safety margin for Nerd Font icons that render wider than 1 codepoint.
-L1_EST=5  # corner char(1) + trailing space(1) + icon safety margin(3)
-
-[ -n "$TOPIC" ] && L1_EST=$((L1_EST + 1 + ${#TOPIC} + 3))   # " TOPIC │"
-L1_EST=$((L1_EST + 1 + 2 + ${#DIR} + 1))                     # " icon DIR "
-if [ -n "$BRANCH" ]; then
-    L1_EST=$((L1_EST + 1 + 1 + 2 + ${#BRANCH}))              # "│ icon BRANCH"
-    [ -n "$GIT_STATUS" ] && L1_EST=$((L1_EST + 1 + ${#GIT_STATUS}))
-fi
-[ -n "$AGENT" ] && L1_EST=$((L1_EST + 1 + ${#AGENT}))
-[ -n "$MODE" ]  && L1_EST=$((L1_EST + 3 + ${#MODE}))         # " │ MODE"
-[ -n "$K8S_CTX" ] && L1_EST=$((L1_EST + 1 + 1 + 2 + ${#K8S_CTX}))  # " │ icon K8S"
-
-# Truncate if over SAFE_WIDTH (order: K8S > BRANCH > TOPIC)
-if [ "$L1_EST" -gt "$SAFE_WIDTH" ] && [ -n "$K8S_CTX" ]; then
-    OVER=$((L1_EST - SAFE_WIDTH))
-    K8S_MAX=$((${#K8S_CTX} - OVER - 2))
-    if [ "$K8S_MAX" -gt 5 ]; then
-        K8S_CTX="${K8S_CTX:0:$K8S_MAX}.."
-    else
-        K8S_CTX=""
-    fi
-    # Recalculate
-    L1_EST=2; [ -n "$TOPIC" ] && L1_EST=$((L1_EST + 1 + ${#TOPIC} + 3))
-    L1_EST=$((L1_EST + 1 + 2 + ${#DIR} + 1))
-    [ -n "$BRANCH" ] && { L1_EST=$((L1_EST + 1 + 1 + 2 + ${#BRANCH})); [ -n "$GIT_STATUS" ] && L1_EST=$((L1_EST + 1 + ${#GIT_STATUS})); }
-    [ -n "$AGENT" ] && L1_EST=$((L1_EST + 1 + ${#AGENT}))
-    [ -n "$MODE" ]  && L1_EST=$((L1_EST + 3 + ${#MODE}))
-    [ -n "$K8S_CTX" ] && L1_EST=$((L1_EST + 1 + 1 + 2 + ${#K8S_CTX}))
-fi
-
-if [ "$L1_EST" -gt "$SAFE_WIDTH" ] && [ -n "$BRANCH" ]; then
-    OVER=$((L1_EST - SAFE_WIDTH))
-    BR_MAX=$((${#BRANCH} - OVER - 2))
-    if [ "$BR_MAX" -gt 5 ]; then
-        BRANCH="${BRANCH:0:$BR_MAX}.."
-    else
-        BRANCH="${BRANCH:0:8}.."
-    fi
-    # No need to recalculate again; next truncation target (TOPIC) is rare
-fi
-
-if [ "$L1_EST" -gt "$SAFE_WIDTH" ] && [ -n "$TOPIC" ]; then
-    # Recalculate after branch truncation
-    L1_EST=2; [ -n "$TOPIC" ] && L1_EST=$((L1_EST + 1 + ${#TOPIC} + 3))
-    L1_EST=$((L1_EST + 1 + 2 + ${#DIR} + 1))
-    [ -n "$BRANCH" ] && { L1_EST=$((L1_EST + 1 + 1 + 2 + ${#BRANCH})); [ -n "$GIT_STATUS" ] && L1_EST=$((L1_EST + 1 + ${#GIT_STATUS})); }
-    [ -n "$AGENT" ] && L1_EST=$((L1_EST + 1 + ${#AGENT}))
-    [ -n "$MODE" ]  && L1_EST=$((L1_EST + 3 + ${#MODE}))
-    [ -n "$K8S_CTX" ] && L1_EST=$((L1_EST + 1 + 1 + 2 + ${#K8S_CTX}))
-    if [ "$L1_EST" -gt "$SAFE_WIDTH" ]; then
-        OVER=$((L1_EST - SAFE_WIDTH))
-        T_MAX=$((${#TOPIC} - OVER - 2))
-        if [ "$T_MAX" -gt 5 ]; then
-            TOPIC="${TOPIC:0:$T_MAX}.."
-        else
-            TOPIC=""
-        fi
-    fi
-fi
-
-# Assemble Line 1 from (possibly truncated) components
+# ── Line 1 assembly (measured truncation, no bash estimate) ────────────────
+# assemble_l1 rebuilds L1C from the current (possibly truncated) component
+# vars. All width decisions below are driven by measure_cols (true codepoint
+# width) rather than a hand-maintained character-count estimate: that is what
+# removes the old off-by-2 between the initial estimate (seed 5) and the
+# recalculation paths after each truncation (which re-seeded to 2).
 L1_PREFIX="${RST}${PROJ_FG}${NF_CORNER_TL}${BG1}"
-L1C="${L1_PREFIX}"
-[ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
-L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
-if [ -n "$BRANCH" ]; then
-    L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
-    [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
-fi
-[ -n "$AGENT" ] && L1C+=" ${TXT_FG}${AGENT}${B}"
-[ -n "$MODE" ]  && L1C+=" ${SEP}${B} \033[1;38;2;150;100;0m${MODE}${B}"
-[ -n "$K8S_CTX" ] && L1C+=" ${SEP}${B} ${TXT_FG}${NF_K8S} ${K8S_CTX}${B}"
-L1C+=" "
+assemble_l1() {
+    L1C="${L1_PREFIX}"
+    [ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
+    L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
+    if [ -n "$BRANCH" ]; then
+        L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
+        [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
+    fi
+    [ -n "$AGENT" ] && L1C+=" ${TXT_FG}${AGENT}${B}"
+    [ -n "$MODE" ]  && L1C+=" ${SEP}${B} \033[1;38;2;150;100;0m${MODE}${B}"
+    [ -n "$K8S_CTX" ] && L1C+=" ${SEP}${B} ${TXT_FG}${NF_K8S} ${K8S_CTX}${B}"
+    L1C+=" "
+}
 
-# ── Line 2 content ──────────────────────────────────────────────────────────
-CTX_CLR=$(pct_txt_color "$PCT")
+# ── Line 2 base content (model / effort / profile / clock / context) ────────
+CTX_CLR=$(pct_color "$PCT")
 CTX_BAR=$(make_bar "$PCT" 7 "$CTX_CLR" "$L2_DIM")
 # Effort level color
 case $EFFORT in
-    max)    EFFORT_CLR="\033[38;2;150;210;150m" ;;  # sage
-    xhigh)  EFFORT_CLR="\033[38;2;150;210;150m" ;;  # sage
-    high)   EFFORT_CLR="\033[38;2;150;210;150m" ;;  # sage
-    medium) EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray (blends in)
-    low)    EFFORT_CLR="\033[38;2;225;150;150m" ;;  # coral (warning)
-    *)      EFFORT_CLR="\033[38;2;170;170;170m" ;;  # fallback: gray
+    max|xhigh|high) EFFORT_CLR="$CLR_SAGE" ;;            # sage: thinking hard
+    low)            EFFORT_CLR="$CLR_CORAL" ;;           # coral: warning
+    *)              EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray: medium/unknown
 esac
 
 L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2}"
 [ -n "$PROFILE_LABEL" ] && L2C+=" ${L2_DIM}·${B2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
 L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
 
-# Estimate L2 base width with bash (same approach as L1: count visible chars)
-# Model + (optional) profile badge + effort + separator + clock + time + separator + bar(7) + pct + "of Xk"
-L2_BASE_W=$((2 + 2 + ${#MODEL} + 1 + ${#EFFORT} + 3 + 2 + ${#TIME} + 3 + 7 + 1 + ${#PCT} + 1 + 4 + ${#CTX_SIZE_K} + 1))
-[ -n "$PROFILE_LABEL" ] && L2_BASE_W=$((L2_BASE_W + ${#PROFILE_LABEL} + 3))  # " · LABEL"
-L2_BASE_W=${L2_BASE_W:-50}
-
-# Pace arrows reserve 2 extra columns (one glyph per limit) on top of the
-# incident-icon reserve, so the full/compact tiers downgrade a touch sooner.
-# Opt out with STATUSLINE_PACE=0.
+# ── Rate-limit detail candidates (full / compact / minimal) ────────────────
+# Build all three tiers up front so the widest one that actually FITS can be
+# picked from a real measurement below. The old code chose the tier from a
+# fixed reserve that could not see 3-digit percentages, long reset countdowns,
+# or the trailing service icon, which let line 2 overflow and get dropped.
 PACE_ON=1; [ "${STATUSLINE_PACE:-1}" = "0" ] && PACE_ON=0
-RATE_RESERVE=5; [ "$PACE_ON" = "1" ] && RATE_RESERVE=7
-RATE_AVAIL=$((SAFE_WIDTH - L2_BASE_W - RATE_RESERVE))
-
-# Build the rate-limit detail into RATE_STR (appended further below, after the
-# cache readout). Rate detail gets FIRST claim on width: its tier is chosen
-# from L2_BASE_W *without* the cache segment, so the reset countdowns are never
-# squeezed out by cache. The cache block then takes only the measured leftover.
-RATE_STR=""
+RATE_FULL=""; RATE_COMPACT=""; RATE_MINIMAL=""
 if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
-    FIVE_CLR=$(pct_txt_color "$FIVE_PCT")
-    SEVEN_CLR=$(pct_txt_color "$SEVEN_PCT")
+    FIVE_CLR=$(pct_color "$FIVE_PCT")
+    SEVEN_CLR=$(pct_color "$SEVEN_PCT")
 
     # Pace arrows: where current usage is heading by reset (empty unless we
     # have a real future resets_at, so test fixtures with resets_at=0 are
@@ -457,78 +447,122 @@ if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
         FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" 18000 "$NOW")
         SEVEN_ARROW=$(pace_arrow "$SEVEN_PCT" "$SEVEN_RESET_TS" 604800 "$NOW")
     fi
+    FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
+    SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
+    FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
+    SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
 
-    if [ "$RATE_AVAIL" -gt 40 ] 2>/dev/null; then
-        # Full: bars + pct + pace arrow + reset times
-        FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
-        FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
-        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-        [ -n "${FIVE_TIME:-}" ] && RATE_STR+=" ${L2_TXT}${FIVE_TIME}${B2}"
-        SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
-        SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
-        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-        [ -n "${SEVEN_TIME:-}" ] && RATE_STR+=" ${L2_TXT}${SEVEN_TIME}${B2}"
-    elif [ "$RATE_AVAIL" -gt 25 ] 2>/dev/null; then
-        # Compact: bars + pct + pace arrow, no reset times
-        FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
-        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-        SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
-        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-    elif [ "$RATE_AVAIL" -gt 15 ] 2>/dev/null; then
-        # Minimal: percentages + pace arrow
-        RATE_STR+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-    fi
+    # Full: bars + pct + pace arrow + reset countdowns
+    RATE_FULL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+    [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_TXT}${FIVE_TIME}${B2}"
+    RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+    [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_TXT}${SEVEN_TIME}${B2}"
+    # Compact: bars + pct + pace arrow, no reset countdowns
+    RATE_COMPACT=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+    # Minimal: percentages + pace arrow only
+    RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
 fi
 
-# ── Cache hit rate (prompt-cache efficiency from the last API call) ─────────
+# ── Cache hit-rate candidate (lowest-priority line-2 element) ──────────────
 # Tucked right after the context size ("of 1000k ⚡ 92%"); only the percentage
-# carries the inverted color (green = mostly cached/good, coral = cold).
-# CACHE_PCT is "" before the first API call and after /compact (current_usage
-# null), so the segment is omitted then. It is the LOWEST-priority line-2
-# element: shown only in the width left after the rate-limit detail (measured
-# exactly with measure_cols), so a wide rate line keeps its reset countdowns.
-# Bump STATUSLINE_WIDTH to fit both. Opt out with STATUSLINE_CACHE=0.
+# carries the inverted color (green = mostly cached/good, coral = cold). Empty
+# before the first API call and after /compact (current_usage null). Opt out
+# with STATUSLINE_CACHE=0.
+CACHE_SEG=""
 if [ "${STATUSLINE_CACHE:-1}" != "0" ] && [ -n "${CACHE_PCT:-}" ]; then
-    RATE_W=0; [ -n "$RATE_STR" ] && RATE_W=$(measure_cols "$RATE_STR")
-    RATE_W=${RATE_W:-0}
-    if [ "$((L2_BASE_W + 4 + ${#CACHE_PCT} + RATE_W + 5))" -le "$SAFE_WIDTH" ] 2>/dev/null; then
-        CACHE_CLR=$(cache_pct_color "$CACHE_PCT")
-        L2C+=" ${L2_TXT}${NF_CACHE} ${CACHE_CLR}${CACHE_PCT}%${B2}"
-    fi
+    CACHE_CLR=$(pct_color "$CACHE_PCT" invert)
+    CACHE_SEG=" ${L2_TXT}${NF_CACHE} ${CACHE_CLR}${CACHE_PCT}%${B2}"
 fi
 
-L2C+="$RATE_STR"
-
-# ── Claude service status (auto-refresh every 60s in background) ────────────
-# Both paths are env-overridable so tests can isolate themselves from a
-# real cache file or disable the background fetcher entirely.
-SVC_CACHE="${CC_STATUSLINE_SVC_CACHE:-/tmp/claude-service-status}"
+# ── Claude service status (read now so its exact width can be reserved) ─────
+# Both paths are env-overridable so tests can isolate from a real cache file or
+# disable the background fetcher. The default cache lives in the per-user state
+# dir (mode 700), not a predictable /tmp path; it auto-refreshes every 60s in
+# the background. The icon is appended to line 2 below, and SVC_W reserves
+# exactly its width during tier selection (0 when no status is shown), so the
+# rate detail is only downgraded when the icon genuinely needs the room.
+SVC_CACHE="${CC_STATUSLINE_SVC_CACHE:-$(_state_dir)/service-status}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 SVC_FETCH="${CC_STATUSLINE_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
 if [ -x "$SVC_FETCH" ]; then
     SVC_AGE=9999
     [ -f "$SVC_CACHE" ] && SVC_AGE=$(($(date +%s) - $(_file_mtime "$SVC_CACHE")))
     if [ "$SVC_AGE" -ge 60 ]; then
-        ("$SVC_FETCH" >/dev/null 2>/dev/null &)
+        # Pass the resolved cache path so the fetcher writes exactly where we read.
+        (CC_STATUSLINE_SVC_CACHE="$SVC_CACHE" "$SVC_FETCH" >/dev/null 2>/dev/null &)
     fi
 fi
+SVC_SEG=""
 if [ -f "$SVC_CACHE" ]; then
-    SVC_RAW=$(head -1 "$SVC_CACHE" 2>/dev/null)
-    case "${SVC_RAW:-}" in
-        operational)
-            L2C+=" ${L2_DIM}│${B2} \033[38;2;100;200;120m✓${B2}"
-            ;;
-        incident:*)
-            L2C+=" ${L2_DIM}│${B2} \033[38;2;225;150;100m⚠${B2}"
-            ;;
-        degraded_performance:*)
-            L2C+=" ${L2_DIM}│${B2} \033[38;2;215;195;125m~${B2}"
-            ;;
-        partial_outage:*|major_outage:*)
-            L2C+=" ${L2_DIM}│${B2} \033[38;2;225;100;100m✗${B2}"
-            ;;
+    case "$(head -1 "$SVC_CACHE" 2>/dev/null)" in
+        operational)                     SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;100;200;120m✓${B2}" ;;
+        incident:*)                      SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;150;100m⚠${B2}" ;;
+        degraded_performance:*)          SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;215;195;125m~${B2}" ;;
+        partial_outage:*|major_outage:*) SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;100;100m✗${B2}" ;;
     esac
 fi
+
+# ── One batch measurement: full L1 + L2 base + every L2 candidate ──────────
+# measure_cols takes N strings and emits N codepoint counts in a single perl
+# call, so the common (no-overflow) render costs just this measurement plus
+# the trailing line-padding measurement further down.
+TARGET=$((SAFE_WIDTH - WIDE_GLYPH_MARGIN))
+assemble_l1
+read -r L1_COLS BASE_W RFULL_W RCOMPACT_W RMINIMAL_W CACHE_W SVC_W < <(
+    measure_cols "$L1C" "$L2C" "$RATE_FULL" "$RATE_COMPACT" "$RATE_MINIMAL" "$CACHE_SEG" "$SVC_SEG" | tr '\n' ' '
+)
+L1_COLS=${L1_COLS:-0}; BASE_W=${BASE_W:-0}
+RFULL_W=${RFULL_W:-0}; RCOMPACT_W=${RCOMPACT_W:-0}; RMINIMAL_W=${RMINIMAL_W:-0}
+CACHE_W=${CACHE_W:-0}; SVC_W=${SVC_W:-0}
+
+# ── Line 1 truncation, measured. Priority (least to most essential, so the
+# leaf dir is preserved longest): K8S > BRANCH > AGENT > MODE > TOPIC > DIR.
+# Each round trims one component by the measured overage (plus 2 for "..") and
+# re-measures. The common case takes zero rounds; only an overflowing line
+# re-measures, keeping the perl-call budget at ~2 per render.
+for _t in K8S BRANCH AGENT MODE TOPIC DIR; do
+    [ "$L1_COLS" -le "$TARGET" ] 2>/dev/null && break
+    OVER=$((L1_COLS - TARGET))
+    case $_t in
+        K8S)    [ -n "$K8S_CTX" ] || continue
+                MAX=$((${#K8S_CTX} - OVER - 2))
+                if [ "$MAX" -gt 5 ]; then K8S_CTX="${K8S_CTX:0:$MAX}.."; else K8S_CTX=""; fi ;;
+        BRANCH) [ -n "$BRANCH" ] || continue
+                MAX=$((${#BRANCH} - OVER - 2))
+                if [ "$MAX" -gt 5 ]; then BRANCH="${BRANCH:0:$MAX}.."; else BRANCH="${BRANCH:0:8}.."; fi ;;
+        AGENT)  [ -n "$AGENT" ] || continue
+                MAX=$((${#AGENT} - OVER - 2))
+                if [ "$MAX" -gt 3 ]; then AGENT="${AGENT:0:$MAX}.."; else AGENT="${AGENT:0:3}.."; fi ;;
+        MODE)   [ -n "$MODE" ] || continue
+                MAX=$((${#MODE} - OVER - 2))
+                if [ "$MAX" -gt 3 ]; then MODE="${MODE:0:$MAX}.."; else MODE="${MODE:0:3}.."; fi ;;
+        TOPIC)  [ -n "$TOPIC" ] || continue
+                MAX=$((${#TOPIC} - OVER - 2))
+                if [ "$MAX" -gt 5 ]; then TOPIC="${TOPIC:0:$MAX}.."; else TOPIC=""; fi ;;
+        DIR)    [ -n "$DIR" ] || continue
+                MAX=$((${#DIR} - OVER - 2))                 # keep the tail (leaf dir)
+                if [ "$MAX" -gt 5 ]; then DIR="..${DIR: -$MAX}"; else DIR="${DIR: -6}"; fi ;;
+    esac
+    assemble_l1
+    L1_COLS=$(measure_cols "$L1C"); L1_COLS=${L1_COLS:-0}
+done
+
+# ── Line 2: widest rate tier that fits, then cache if room remains ─────────
+# Rate detail gets FIRST claim on the leftover width (so reset countdowns are
+# not squeezed out by cache); cache takes only what is left after it. Only the
+# service icon's actual width is reserved (SVC_W is 0 when no status is shown),
+# so the full tier with reset countdowns is kept whenever it genuinely fits.
+AVAIL=$((TARGET - BASE_W - SVC_W))
+RATE_STR=""; RATE_W=0
+if   [ "$RFULL_W"    -gt 0 ] && [ "$RFULL_W"    -le "$AVAIL" ] 2>/dev/null; then RATE_STR="$RATE_FULL";    RATE_W=$RFULL_W
+elif [ "$RCOMPACT_W" -gt 0 ] && [ "$RCOMPACT_W" -le "$AVAIL" ] 2>/dev/null; then RATE_STR="$RATE_COMPACT"; RATE_W=$RCOMPACT_W
+elif [ "$RMINIMAL_W" -gt 0 ] && [ "$RMINIMAL_W" -le "$AVAIL" ] 2>/dev/null; then RATE_STR="$RATE_MINIMAL"; RATE_W=$RMINIMAL_W
+fi
+if [ "$CACHE_W" -gt 0 ] && [ "$((BASE_W + CACHE_W + RATE_W + SVC_W))" -le "$TARGET" ] 2>/dev/null; then
+    L2C+="$CACHE_SEG"
+fi
+L2C+="$RATE_STR"
+L2C+="$SVC_SEG"
 
 L2C+=" "
 

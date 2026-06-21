@@ -63,15 +63,12 @@ if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     exit 1
 fi
 
-# Sanity-check dependencies (statusline + hook)
+# Sanity-check dependencies (statusline + hook). perl handles all ANSI/control
+# stripping now, so there is no gsed/gnu-sed requirement on macOS anymore.
 missing=()
 for cmd in bash jq perl curl; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
-# gsed is only required by the topic hook on macOS
-if [ "$(uname)" = "Darwin" ] && ! command -v gsed >/dev/null 2>&1; then
-    missing+=("gsed (brew install gnu-sed)")
-fi
 if [ ${#missing[@]} -gt 0 ]; then
     err "missing required commands: ${missing[*]}"
     err "  Install them and re-run the installer."
@@ -121,6 +118,9 @@ mkdir -p "$INSTALL_DIR/hooks"
 install -m 0755 "$STAGE_DIR/statusline.sh"                  "$INSTALL_DIR/statusline.sh"
 install -m 0755 "$STAGE_DIR/claude-status-fetch.sh"         "$INSTALL_DIR/claude-status-fetch.sh"
 install -m 0755 "$STAGE_DIR/hooks/session-topic-capture.sh" "$INSTALL_DIR/hooks/session-topic-capture.sh"
+# VERSION is the human semver used in the scripts' User-Agent. Absent in tags
+# that predate it (the scripts then fall back to "dev"), so guard the copy.
+[ -f "$STAGE_DIR/VERSION" ] && install -m 0644 "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"
 printf '%s\n' "$INSTALLED_REF" > "$INSTALL_DIR/.version"
 
 if [ -n "$PREV_REF" ] && [ "$PREV_REF" != "$INSTALLED_REF" ]; then

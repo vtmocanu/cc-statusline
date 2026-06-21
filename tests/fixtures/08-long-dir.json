@@ -1,0 +1,11 @@
+{
+  "model": {"display_name": "Claude Opus 4.6", "id": "opus"},
+  "cwd": "/home/test/this-is-an-extremely-long-single-directory-segment-name-that-far-exceeds-the-safe-width-and-must-be-truncated",
+  "context_window": {"remaining_percentage": 75, "context_window_size": 1000000},
+  "cost": {"total_duration_ms": 300000},
+  "session_id": "test-long-dir",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 15, "resets_at": 0},
+    "seven_day": {"used_percentage": 2, "resets_at": 0}
+  }
+}

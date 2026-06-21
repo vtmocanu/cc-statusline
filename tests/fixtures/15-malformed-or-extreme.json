@@ -1,0 +1,20 @@
+{
+  "model": {"display_name": "Claude Opus 4.6 Extended Thinking Preview Edition", "id": "opus"},
+  "cwd": "/home/test/a/b/c/d/e/f/g/deeply/nested/path/leaf-directory",
+  "context_window": {
+    "remaining_percentage": 0.0000001,
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 500000,
+      "output_tokens": 9999,
+      "cache_creation_input_tokens": 400000,
+      "cache_read_input_tokens": 9000000
+    }
+  },
+  "cost": {"total_duration_ms": 999999999999},
+  "session_id": "test-malformed-extreme",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 99.9999999, "resets_at": 0},
+    "seven_day": {"used_percentage": 250, "resets_at": 0}
+  }
+}

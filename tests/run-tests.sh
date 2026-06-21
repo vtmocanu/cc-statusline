@@ -5,8 +5,8 @@
 #   - exit code is 0
 #   - stdout has exactly 2 lines
 #   - each visible line is within STATUSLINE_WIDTH + WIDTH_SLOP columns
-#     (the script uses bash-based width estimation with a small safety
-#      margin; actual measured cols can be a few over the soft limit)
+#     (the script truncates against the same ANSI-aware codepoint count this
+#      harness measures, so WIDTH_SLOP defaults to 0)
 #   - stderr is empty
 #
 # Run from anywhere; resolves the repo root from this script's location.
@@ -21,10 +21,12 @@ FIXTURES="$SCRIPT_DIR/fixtures"
 # Default safe width matches statusline.sh's default
 SAFE_WIDTH="${STATUSLINE_WIDTH:-110}"
 export STATUSLINE_WIDTH="$SAFE_WIDTH"
-# Tolerance for the script's bash-based width estimate vs measured cols.
-# The script's truncation logic targets SAFE_WIDTH but underestimates by
-# a few columns in some paths. Treat anything within 5 cols as acceptable.
-WIDTH_SLOP="${WIDTH_SLOP:-5}"
+# Tolerance for the script's width measurement vs the harness's. The statusline
+# now drives all truncation off the same ANSI-aware codepoint count this harness
+# uses (measure_cols == vis_cols), so no slop is needed: the script targets
+# SAFE_WIDTH - WIDE_GLYPH_MARGIN and never exceeds SAFE_WIDTH. Overridable for
+# debugging.
+WIDTH_SLOP="${WIDTH_SLOP:-0}"
 
 # Run from a scratch directory so the cwd-derived git/k8s state of the
 # test runner doesn't leak into output. Also unset KUBECONFIG so the

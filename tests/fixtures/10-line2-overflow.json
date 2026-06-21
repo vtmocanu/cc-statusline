@@ -1,0 +1,20 @@
+{
+  "model": {"display_name": "Claude Opus 4.6", "id": "opus"},
+  "cwd": "/home/test/example-project",
+  "context_window": {
+    "remaining_percentage": 5,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 12000,
+      "output_tokens": 1500,
+      "cache_creation_input_tokens": 18000,
+      "cache_read_input_tokens": 380000
+    }
+  },
+  "cost": {"total_duration_ms": 14400000},
+  "session_id": "test-line2-overflow",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 100, "resets_at": 1700015900},
+    "seven_day": {"used_percentage": 100, "resets_at": 1700565200}
+  }
+}

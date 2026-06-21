@@ -17,7 +17,7 @@ Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 ```
 cc-statusline/
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
-├── claude-status-fetch.sh            Background helper, polls status.claude.com every 60s, writes /tmp/claude-service-status
+├── claude-status-fetch.sh            Background helper, polls status.claude.com every 60s, writes the per-user service-status cache
 ├── hooks/
 │   └── session-topic-capture.sh      Optional UserPromptSubmit hook, calls Claude Haiku to label sessions
 ├── install.sh                        Installer for public users (--version vX.Y.Z, --uninstall, --help)
@@ -31,7 +31,7 @@ cc-statusline/
 ├── images/screenshot.png             Hero image used by README
 ├── README.md                         Public-facing docs
 ├── CHANGELOG.md                      Keep-a-Changelog format, one section per tag
-├── KNOWN_ISSUES.md                   Width estimation off-by-2, gsed dependency, /dev/tty no-op contexts
+├── KNOWN_ISSUES.md                   Wide-glyph width margin, perl dependency, /dev/tty no-op contexts
 ├── LICENSE                           MIT
 └── CLAUDE.md                         This file
 ```
@@ -77,9 +77,11 @@ cd ~/stuff/gitrepos/gh/vtmocanu/cc-statusline
 
 # 1. Make code changes, test (see Validate section above)
 
-# 2. Update CHANGELOG.md
-#    Add a new ## [vX.Y.Z] section under [Unreleased] with ### Added / ### Changed / ### Fixed
+# 2. Update CHANGELOG.md and bump the VERSION file
+#    Move [Unreleased] entries into a new ## [vX.Y.Z] section (### Added / Changed / Fixed / Security)
 #    Update the link references at the bottom (compare URL + new tag entry)
+#    Set VERSION to X.Y.Z (no leading "v"): it single-sources the User-Agent in
+#    the hook + fetcher, so it must be bumped every release or the UA goes stale.
 
 # 3. Commit
 git add -A
@@ -120,15 +122,15 @@ For an urgent patch (CI broken, security issue): follow the same recipe but bump
 For each fixture in `tests/fixtures/`:
 - Exit code 0
 - Exactly 2 stdout lines
-- Each visible column count within `SAFE_WIDTH + WIDTH_SLOP` (default 110 + 5)
+- Each visible column count within `SAFE_WIDTH + WIDTH_SLOP` (default 110 + 0)
 - Empty stderr
 
-### Why `WIDTH_SLOP=5`
-The script's bash-based width estimation underestimates real visible columns by 1-3 characters in some paths (the recalculation paths after K8s/branch/topic truncation drop the documented "3-char icon safety margin"). See `KNOWN_ISSUES.md` for the full diagnosis. The proper fix is to rebuild width measurement with a single perl-based ANSI-aware pass during truncation, but that's a careful refactor. Until then, tests tolerate the slop.
+### Why `WIDTH_SLOP=0`
+Width measurement was rebuilt around a single ANSI-aware `measure_cols` (perl) pass: the script truncates against the exact same codepoint count the harness measures, so it never exceeds `SAFE_WIDTH` and the slop is gone. The script still keeps a small real-terminal cushion via `WIDE_GLYPH_MARGIN` (truncating to `SAFE_WIDTH - 3`), but that is invisible to the harness (it only makes lines shorter). See `KNOWN_ISSUES.md`. `WIDTH_SLOP` stays overridable for debugging.
 
 ### Why tests use `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH`
-The statusline normally writes to `/tmp/claude-service-status` and spawns `claude-status-fetch.sh` in the background when the cache is stale. In tests this would:
-- Pollute `/tmp` on the maintainer's machine (and fight with their real Claude Code statusline)
+The statusline normally writes the service-status cache under a per-user mode-700 runtime dir (`$XDG_RUNTIME_DIR`/`$TMPDIR`, uid-scoped) and spawns `claude-status-fetch.sh` in the background when the cache is stale. In tests this would:
+- Pollute the real service-status cache on the maintainer's machine (and fight with their real Claude Code statusline)
 - Cause cross-fixture contamination (test 01 spawns the fetcher, test 03 then sees the cache)
 
 The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env vars (added in v2.1.2) to override both paths. The test harness sets them to scratch-dir paths, so the real fetcher never runs.
@@ -165,11 +167,11 @@ Other portable patterns we use:
 - `printf '%b'` (not `echo -e`) for escape handling
 - Explicit `2>/dev/null` and `|| true` on every external command, since `set -uo pipefail` (no `-e`) means external failures shouldn't crash the script
 
-## Width estimation off-by-2 (known issue)
+## Width measurement (rebuilt)
 
-The script estimates line widths in pure bash (`L1_EST`, `L2_BASE_W`) for speed. The estimate undercounts by 1-3 characters in some paths, so actual measured width can exceed `STATUSLINE_WIDTH` by a few columns. See `KNOWN_ISSUES.md` for the diagnosis. The test harness tolerates this with `WIDTH_SLOP=5`.
+Line widths are measured with a single ANSI-aware `measure_cols` (perl) helper, run **before** truncation decisions, not estimated in bash. One batched call measures line 1, line 2's base, every rate-detail tier candidate, the cache segment, and the service icon; truncation (priority K8s > branch > agent > mode > topic > dir) re-measures only when a line actually overflows. Line 2 picks the widest rate-detail tier that fits, reserving the service icon's real width. This replaced the old bash `L1_EST`/`L2_BASE_W` estimate and its off-by-2. Common-case cost is ~2 perl invocations per render.
 
-**Don't try to fix this with a quick patch.** The proper fix is a perl-based ANSI-aware width pass during truncation, replacing the bash estimate. That requires careful re-validation of all truncation paths (K8s, branch, topic) and the line-1-vs-line-2 padding logic. Probably worth a v2.2.0 minor bump.
+`WIDE_GLYPH_MARGIN` (env `STATUSLINE_GLYPH_MARGIN`, default 3) keeps a small real-terminal cushion for Nerd Font glyphs that render double-width; see `KNOWN_ISSUES.md`.
 
 ## Hook security note
 
@@ -190,7 +192,7 @@ If you're modifying the hook:
 
 - **Don't add `Co-Authored-By: Claude` trailers** to commits. The maintainer prefers clean attribution.
 - **Don't use em dashes** in commit messages, code comments, or docs. Prefer commas, colons, or hyphens.
-- **Don't refactor the width calculation as a "quick fix".** It's a known issue with a documented workaround. Touch it only as a deliberate v2.2.0+ effort.
+- **Don't reintroduce a bash width *estimate*.** Width is now measured with `measure_cols` before truncation (the deliberate v2.4.0 rebuild). If you touch truncation, keep it measurement-driven, re-validate every path in both locales, and keep `WIDTH_SLOP=0`. Don't paper over an overflow by bumping `WIDTH_SLOP` or `WIDE_GLYPH_MARGIN`.
 - **Don't push directly to `main` without CI green.** The maintainer pushed v2.1.0/v2.1.1 in quick succession and burned several CI cycles diagnosing failures. Always verify the test harness passes locally (including `LC_ALL=C`) before tagging.
 - **Don't bypass `install.sh`'s `git archive` flow** by using `git checkout vX.Y.Z` again. v2.1.0's installer mutated the user's working tree; v2.1.0 → v2.1.0 (later commit) fixed it to use `git archive` so the working tree stays clean. Don't regress.
 - **Don't commit the `images/` PNG without first checking it's the current screenshot.** The maintainer's blog post and the README share the same image. If you're updating one, update both.

@@ -33,14 +33,13 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - `jq`
 - `perl` (for ANSI-aware width measurement)
 - `curl` (for service status and the optional session-topic hook)
-- `gsed` on macOS (`brew install gnu-sed`), used by the optional session-topic hook
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal for the icons
 
 ### Per-OS dependency install
 
 | OS | Command |
 |---|---|
-| macOS (Homebrew) | `brew install bash jq perl curl gnu-sed` |
+| macOS (Homebrew) | `brew install bash jq perl curl` |
 | Debian/Ubuntu | `sudo apt install bash jq perl curl` |
 | Fedora/RHEL | `sudo dnf install bash jq perl curl` |
 | Arch | `sudo pacman -S bash jq perl curl` |
@@ -129,6 +128,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_CACHE` | `1` | Set to `0` to hide the prompt-cache hit-rate readout (`⚡ NN%`) on line 2. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
+| `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
 
@@ -162,7 +162,7 @@ Runs the harness against the JSON fixtures in `tests/fixtures/`. Each fixture is
 
 - exit code 0
 - exactly 2 stdout lines
-- visible columns within `SAFE_WIDTH + WIDTH_SLOP` (default 110 + 5)
+- visible columns within `SAFE_WIDTH + WIDTH_SLOP` (default 110 + 0)
 - empty stderr
 
 CI runs the same harness on every push and pull request via `.github/workflows/ci.yml`, both under the default locale and under `LC_ALL=C`.

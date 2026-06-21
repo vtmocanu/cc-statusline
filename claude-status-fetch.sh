@@ -12,7 +12,28 @@
 
 set -uo pipefail  # no -e: jq failures shouldn't leave orphan tmp files
 
-CACHE_FILE="/tmp/claude-service-status"
+# Per-user runtime dir (mode 700); matches the statusline's _state_dir so the
+# default cache path agrees on both sides. The statusline also passes the
+# resolved path via CC_STATUSLINE_SVC_CACHE when it spawns this fetcher, which
+# takes precedence (and lets the test harness redirect it to a scratch dir).
+_state_dir() {
+    local base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local uid d
+    uid=$(id -u 2>/dev/null || echo 0)
+    d="${base%/}/cc-statusline-${uid}"
+    mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null
+    printf '%s' "$d"
+}
+# Single-sourced version for the User-Agent. Reads the tracked VERSION file
+# shipped next to the install; "dev" if absent.
+_cc_version() {
+    local d
+    d="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    { cat "$d/VERSION" "$d/../VERSION"; } 2>/dev/null | head -1
+}
+VERSION="$(_cc_version)"; VERSION="${VERSION:-dev}"
+
+CACHE_FILE="${CC_STATUSLINE_SVC_CACHE:-$(_state_dir)/service-status}"
 TMP_FILE="${CACHE_FILE}.tmp"
 
 # Clean up tmp file on any exit (crash, signal, normal)
@@ -20,7 +41,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 
 data=$(curl -s --max-time 8 \
     -H "Accept: application/json" \
-    -H "User-Agent: claude-code-statusline/1.0" \
+    -H "User-Agent: cc-statusline/${VERSION}" \
     "https://status.claude.com/api/v2/summary.json" 2>/dev/null) || {
     # On network error, leave existing cache intact
     exit 0

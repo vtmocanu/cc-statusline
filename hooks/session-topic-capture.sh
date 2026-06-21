@@ -4,20 +4,43 @@
 # Writes to ~/.claude/session-topics/{session_id}.txt
 set -uo pipefail  # no -e: jq/security failures shouldn't crash silently
 
+# Per-user runtime dir (mode 700) for the lock/counter files. Replaces the
+# predictable, world-writable /tmp paths the hook used before (symlink /
+# state-poison risk on multi-user hosts).
+_state_dir() {
+    local base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local uid d
+    uid=$(id -u 2>/dev/null || echo 0)
+    d="${base%/}/cc-statusline-${uid}"
+    mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null
+    printf '%s' "$d"
+}
+# Single-sourced version for the User-Agent (cc-statusline/X.Y.Z). Reads the
+# tracked VERSION file shipped next to the install; "dev" if absent.
+_cc_version() {
+    local d
+    d="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    { cat "$d/VERSION" "$d/../VERSION"; } 2>/dev/null | head -1
+}
+VERSION="$(_cc_version)"; VERSION="${VERSION:-dev}"
+
 HOOK_DATA=$(cat)
 
 SESSION_ID=$(echo "$HOOK_DATA" | jq -r '.session_id // empty' 2>/dev/null)
 [ -z "$SESSION_ID" ] && exit 0
+# Validate to a safe charset before using it in any file path (path traversal).
+case "$SESSION_ID" in *[!A-Za-z0-9_-]*) exit 0 ;; esac
 
 TOPIC_DIR="$HOME/.claude/session-topics"
 TOPIC_FILE="${TOPIC_DIR}/${SESSION_ID}.txt"
-LOCK_FILE="/tmp/session-topic-${SESSION_ID}.lock"
+STATE_DIR="$(_state_dir)"
+LOCK_FILE="${STATE_DIR}/topic-${SESSION_ID}.lock"
 
 # Get transcript path from hook data
 TRANSCRIPT_PATH=$(echo "$HOOK_DATA" | jq -r '.transcript_path // empty' 2>/dev/null)
 
 # Rate limit: only regenerate every 10 prompts or if no topic exists yet
-COUNTER_FILE="/tmp/session-topic-counter-${SESSION_ID}"
+COUNTER_FILE="${STATE_DIR}/topic-counter-${SESSION_ID}"
 COUNT=0
 if [ -f "$COUNTER_FILE" ]; then
     _raw=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)
@@ -82,7 +105,7 @@ touch "$LOCK_FILE"
         -H "anthropic-beta: oauth-2025-04-20" \
         -H "Content-Type: application/json" \
         -H "anthropic-version: 2023-06-01" \
-        -H "User-Agent: cc-statusline/2.0.1" \
+        -H "User-Agent: cc-statusline/${VERSION}" \
         https://api.anthropic.com/v1/messages \
         -d "$(jq -n --arg excerpt "$EXCERPT" --arg project "$PROJECT_DIR" '{
             model: "claude-haiku-4-5-20251001",
@@ -93,7 +116,10 @@ touch "$LOCK_FILE"
             }]
         }')" 2>/dev/null)
 
-    TOPIC=$(echo "$RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null | tr -d '\n' | cut -c1-40)
+    # Strip newlines AND any control bytes (ESC/BEL/...) so the on-disk topic
+    # can never carry terminal escapes (defense in depth; the statusline also
+    # sanitizes on read). Multibyte UTF-8 (bytes >= 0x80) is preserved.
+    TOPIC=$(echo "$RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null | tr -d '\000-\037\177' | cut -c1-40)
 
     # Reject topics that look like JSON (Haiku sometimes mimics JSON from transcript)
     if [[ "$TOPIC" =~ ^\{ ]] || [[ "$TOPIC" =~ ^\[ ]]; then
