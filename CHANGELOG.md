@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.3.1] - 2026-06-21
+
+### Fixed
+- **Profile badge `enabled: false` toggle never worked.** The gate read the flag with `jq -r '.enabled // true'`, but jq's `//` alternative operator treats `false` (not just `null`) as "absent", so `false // true` evaluates to `true` and the badge stayed on. Setting `"enabled": false` in `~/.claude/profile-labels.json` had no effect; the only way to hide the badge was `STATUSLINE_PROFILE=0` or deleting the file. Replaced with `jq -r '.enabled != false'`, which yields `false` only when the flag is explicitly `false` and `true` for both `true` and absent (default-on preserved).
+
 ## [v2.3.0] - 2026-06-19
 
 ### Added

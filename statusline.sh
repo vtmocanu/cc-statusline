@@ -106,7 +106,9 @@ PROFILE_COLOR=""
 PROFILE_FILE="${HOME}/.claude/profile-labels.json"
 CLAUDE_STATE="${HOME}/.claude.json"
 if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && [ -r "$CLAUDE_STATE" ]; then
-    PROFILE_ENABLED=$(jq -r '.enabled // true' "$PROFILE_FILE" 2>/dev/null)
+    # Note: use `!= false` not `// true` — jq's `//` treats false as absent,
+    # so `.enabled // true` would return true even when enabled is false.
+    PROFILE_ENABLED=$(jq -r '.enabled != false' "$PROFILE_FILE" 2>/dev/null)
     if [ "$PROFILE_ENABLED" = "true" ]; then
         UUID=$(jq -r '.oauthAccount.accountUuid // empty' "$CLAUDE_STATE" 2>/dev/null)
         if [ -n "$UUID" ]; then
