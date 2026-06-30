@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.5.1] - 2026-06-30
+
+### Changed
+- CI: bump `actions/checkout` to v7 and `arduino/setup-task` to v3 (the latter clears the Node 20 deprecation warning on the CI runner). No change to the shipped statusline.
+
 ## [v2.5.0] - 2026-06-30
 
 ### Added
@@ -139,7 +144,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.1...HEAD
+[v2.5.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.0...v2.5.1
 [v2.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.4.0...v2.5.0
 [v2.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.1...v2.4.0
 [v2.3.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.0...v2.3.1
