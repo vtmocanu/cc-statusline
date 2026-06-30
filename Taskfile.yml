@@ -16,7 +16,7 @@ includes:
   shell:
     taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/shell.yml{{else}}{{.TASK_REPO_LOCAL}}/shell.yml{{end}}"
     vars:
-      SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh
+      SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh tests/run-fetch-tests.sh
 
 tasks:
   default:
@@ -34,9 +34,16 @@ tasks:
     cmds:
       - LC_ALL=C bash tests/run-tests.sh
 
+  test-fetch:
+    desc: Run the service-status fetcher tests (decision logic, fail-closed, injection safety)
+    cmds:
+      - bash tests/run-fetch-tests.sh
+      - LC_ALL=C bash tests/run-fetch-tests.sh
+
   ci:
-    desc: Full validation (shell syntax + lint + tests + C-locale tests)
+    desc: Full validation (shell syntax + lint + tests + C-locale tests + fetcher tests)
     cmds:
       - task: shell:check
       - task: test
       - task: test-c-locale
+      - task: test-fetch

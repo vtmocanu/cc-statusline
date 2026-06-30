@@ -46,3 +46,6 @@ jobs:
 
       - name: Run test harness (broken locale)
         run: task --yes test-c-locale
+
+      - name: Run fetcher tests
+        run: task --yes test-fetch

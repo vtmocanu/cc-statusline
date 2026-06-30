@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
 # Fetches Claude service status from status.claude.com and writes a cache file.
 # Called by the statusline in the background when the cache is >60s old.
-# Output file: /tmp/claude-service-status
-# Format: one line, either:
+# Output file: per-user state dir (see _state_dir / CC_STATUSLINE_SVC_CACHE).
+# Format: one line, one of:
 #   operational
-#   degraded_performance:<indicator>:<affected_components>
-#   partial_outage:<indicator>:<affected_components>
-#   major_outage:<indicator>:<affected_components>
+#   degraded_performance:<description>:<affected_components>
+#   partial_outage:<description>:<affected_components>
+#   major_outage:<description>:<affected_components>
 #   incident:<incident_title>
-#   unknown
+# On a network or parse failure the cache is left untouched (no line written),
+# so a transient error page never overwrites the last known-good status.
+#
+# The first token is what the statusline maps to an icon, so it must be one of
+# the component severities above (degraded_performance/partial_outage/
+# major_outage), NOT the page-level indicator (none/minor/major/critical) which
+# the statusline cannot match. Severity is derived from the worst non-ignored
+# component, independent of the page-level indicator (which a persistent
+# always-on incident, e.g. a model suspension, keeps pinned to "minor").
+#
+# Incidents (and components) whose name matches CC_STATUSLINE_IGNORE_INCIDENTS
+# (default "suspend.*(mythos|fable)", case-insensitive regex) are dropped before
+# counting, so a long-lived suspension notice does not keep the alert icon lit
+# forever. The default keys on the *suspension sentence*, not the bare model
+# name, so a real future incident ("Elevated error rates on Fable 5") is still
+# reported.
 
 set -uo pipefail  # no -e: jq failures shouldn't leave orphan tmp files
 
@@ -39,46 +54,80 @@ TMP_FILE="${CACHE_FILE}.tmp"
 # Clean up tmp file on any exit (crash, signal, normal)
 trap 'rm -f "$TMP_FILE"' EXIT
 
-data=$(curl -s --max-time 8 \
-    -H "Accept: application/json" \
-    -H "User-Agent: cc-statusline/${VERSION}" \
-    "https://status.claude.com/api/v2/summary.json" 2>/dev/null) || {
-    # On network error, leave existing cache intact
-    exit 0
-}
+# CC_STATUSLINE_SVC_DATA points at a JSON fixture to use instead of hitting the
+# network. Test-only seam (same spirit as CC_STATUSLINE_SVC_CACHE/FETCH/NOW); a
+# missing/empty/unreadable file falls through to the empty-data guard below.
+if [ -n "${CC_STATUSLINE_SVC_DATA:-}" ]; then
+    data=$(cat "$CC_STATUSLINE_SVC_DATA" 2>/dev/null) || exit 0
+else
+    data=$(curl -s --max-time 8 \
+        -H "Accept: application/json" \
+        -H "User-Agent: cc-statusline/${VERSION}" \
+        "https://status.claude.com/api/v2/summary.json" 2>/dev/null) || {
+        # On network error, leave existing cache intact
+        exit 0
+    }
+fi
 
 [ -z "$data" ] && exit 0
 
-# Extract all fields in a single jq call. Initialise first so a jq failure
-# leaves the variables defined (and so shellcheck SC2154 doesn't trip).
-indicator="unknown"
-description=""
+# Incidents and components whose name matches this regex are ignored (see the
+# header comment). Default keys on the suspension sentence, not the bare model
+# name, so real future incidents for those models are still reported.
+IGNORE_RE="${CC_STATUSLINE_IGNORE_INCIDENTS:-suspend.*(mythos|fable)}"
+
+# Extract everything in a single jq call. The decision is derived from the
+# *filtered* incidents and the worst *non-ignored* non-operational component,
+# never from the page-level indicator (which a persistent ignored incident keeps
+# pinned). Initialise first so a jq failure leaves the variables defined (and so
+# SC2154 doesn't trip).
 incident_count=0
 incident_name="Incident"
-eval "$(echo "$data" | jq -r '
-    @sh "indicator=\(.status.indicator // "unknown")",
-    @sh "description=\(.status.description // "")",
-    @sh "incident_count=\(.incidents | length)",
-    @sh "incident_name=\(.incidents[0].name // "Incident")"
-' 2>/dev/null)" || exit 0
+worst=""
+description=""
+affected=""
+# Capture jq's output (and exit status) BEFORE eval: `eval "$(...)"` reports
+# eval's status, not jq's, so a jq failure here (non-JSON error page, or an
+# invalid CC_STATUSLINE_IGNORE_INCIDENTS regex) must be detected on this line.
+# On any failure or empty output we leave the existing cache intact and exit 0,
+# exactly like the network-error path above, rather than writing a false
+# "operational". jq always emits the @sh assignments for valid JSON, so empty
+# output means a parse/regex failure.
+#
+# SECURITY: every value interpolated into an @sh string that is later eval'd
+# MUST be a string scalar. @sh quotes a string safely, but for a JSON *array*
+# it emits multiple space-separated shell tokens, so `eval` would run the tail
+# as a command (RCE) on an attacker-controlled response body. `| tostring`
+# collapses any non-string (array/number/object) to a single quoted token;
+# `affected` is already coerced by `join`, and the name fields additionally sit
+# behind `test()` (which throws on non-strings, failing the whole run closed).
+parsed=$(echo "$data" | jq -r --arg ignore "$IGNORE_RE" '
+    ( [ .incidents[]? | select((.name // "") | test($ignore; "i") | not) ] ) as $inc
+  | ( [ .components[]?
+        | select(.status != "operational")
+        | select((.name // "") | test($ignore; "i") | not) ] ) as $comp
+  | ( ["major_outage","partial_outage","degraded_performance"]
+      | map(select(. as $s | $comp | any(.status == $s)))
+      | first // "" ) as $worst
+  | @sh "incident_count=\($inc | length)",
+    @sh "incident_name=\(($inc[0].name // "Incident") | tostring)",
+    @sh "worst=\($worst)",
+    @sh "description=\((.status.description // "") | tostring)",
+    @sh "affected=\([ $comp[].name ] | join(", "))"
+' 2>/dev/null) || exit 0
+[ -z "$parsed" ] && exit 0
+eval "$parsed"
 
-if [ "${indicator:-unknown}" = "none" ] && [ "${incident_count:-0}" -eq 0 ] 2>/dev/null; then
-    echo "operational" > "$TMP_FILE"
+if [ "${incident_count:-0}" -gt 0 ] 2>/dev/null; then
+    # Named, non-ignored incident takes priority over component severity.
+    incident_name=$(printf '%s' "${incident_name:-Incident}" | cut -c1-50)
+    echo "incident:${incident_name}" > "$TMP_FILE"
+elif [ -n "${worst:-}" ]; then
+    # Degraded/outage without a (non-ignored) named incident.
+    affected=$(printf '%s' "${affected:-}" | cut -c1-60)
+    echo "${worst}:${description}:${affected}" > "$TMP_FILE"
 else
-    if [ "${incident_count:-0}" -gt 0 ] 2>/dev/null; then
-        # Truncate long names
-        incident_name=$(echo "${incident_name:-Incident}" | cut -c1-50)
-        echo "incident:${incident_name}" > "$TMP_FILE"
-    else
-        # Degraded or outage without a named incident
-        affected=$(echo "$data" | jq -r '
-            [.components[]
-             | select(.status != "operational")
-             | .name
-            ] | join(", ")' 2>/dev/null || echo "")
-        affected=$(echo "$affected" | cut -c1-60)
-        echo "${indicator}:${description}:${affected}" > "$TMP_FILE"
-    fi
+    echo "operational" > "$TMP_FILE"
 fi
 
 mv "$TMP_FILE" "$CACHE_FILE"

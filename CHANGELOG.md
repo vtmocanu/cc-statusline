@@ -6,6 +6,23 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.5.0] - 2026-06-30
+
+### Added
+- Service-status incident filter: incidents (and components) whose name matches `CC_STATUSLINE_IGNORE_INCIDENTS` (case-insensitive regex, default `suspend.*(mythos|fable)`) are ignored, so a long-lived model-suspension notice no longer keeps the status icon lit. The default keys on the suspension sentence, not the bare model name, so a real future incident for those models (e.g. "Elevated error rates on Fable 5") is still reported.
+- Fetcher test harness `tests/run-fetch-tests.sh` (13 cases, run in both locales via `task test-fetch` and CI): suspension filter, real-incident survival, severity ranking, fail-closed parsing, and injection safety.
+- `CC_STATUSLINE_SVC_DATA` test seam: the fetcher reads a JSON fixture instead of hitting the network (same spirit as `CC_STATUSLINE_SVC_CACHE` / `CC_STATUSLINE_SVC_FETCH` / `CC_STATUSLINE_NOW`).
+
+### Changed
+- Service-status severity is now derived from the worst non-ignored, non-operational component, independent of the page-level indicator (`none/minor/major/critical`), which a persistent ignored incident keeps pinned.
+
+### Fixed
+- Degraded/partial/major service-status icons (`~` / `✗`) never rendered: the fetcher wrote the page-level indicator (`minor:...`), but the statusline only matches component-severity prefixes (`degraded_performance:` / `partial_outage:` / `major_outage:`). The fetcher now emits those prefixes.
+- A non-empty non-JSON response (proxy or Cloudflare error page) or an invalid `CC_STATUSLINE_IGNORE_INCIDENTS` regex wrote a false `operational` (green check): `eval "$(jq ...)"` guarded eval's exit status, not jq's. The fetcher now leaves the existing cache untouched on any parse failure, matching the network-error path.
+
+### Security
+- Command injection (RCE) in the status fetcher: a JSON array in `.status.description` from the status endpoint reached `eval` through `@sh` (which emits multiple shell tokens for an array, not one quoted string) and executed arbitrary commands with the user's privileges, re-triggered roughly every 60s. Every field interpolated into the eval'd `@sh` output is now coerced with `tostring`; the name fields additionally sit behind jq `test()`, which fails the run closed on a non-string. Exploitation requires control of the TLS-validated `status.claude.com` response body.
+
 ## [v2.4.0] - 2026-06-21
 
 ### Added
@@ -122,7 +139,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.0...HEAD
+[v2.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.4.0...v2.5.0
 [v2.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.1...v2.4.0
 [v2.3.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.0...v2.3.1
 [v2.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.2.1...v2.3.0
