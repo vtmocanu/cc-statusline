@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.6.0] - 2026-07-05
+
+### Fixed
+- Agent-pane statuslines showed the parent session's model because Claude Code's stdin JSON misreports `.model` for agent sessions; the model name is now derived from the most recent `"type":"assistant"` transcript entry (validated, prettified) when it differs from stdin. Main-session output is unchanged except for the one turn right after a `/model` switch, where the last assistant entry still carries the previous model until the next response and then self-heals.
+
 ## [v2.5.1] - 2026-06-30
 
 ### Changed
@@ -144,7 +149,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.6.0...HEAD
+[v2.6.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.1...v2.6.0
 [v2.5.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.0...v2.5.1
 [v2.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.4.0...v2.5.0
 [v2.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.3.1...v2.4.0

@@ -50,6 +50,7 @@ DATA=$(timeout 2 cat 2>/dev/null) || DATA=""
 # empty fields become VAR='' instead of being silently swallowed.
 eval "$(echo "$DATA" | jq -r '
     @sh "MODEL=\(.model.display_name // "Claude" | gsub(" \\(.*\\)"; ""))",
+    @sh "MODEL_ID=\(.model.id // "")",
     @sh "DIR=\(.cwd // "~" | sub("/+$"; "") | split("/") | .[-2:] | join("/"))",
     @sh "PCT=\(try (
         if (.context_window.remaining_percentage // null) != null then
@@ -85,7 +86,7 @@ eval "$(echo "$DATA" | jq -r '
 MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
 PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}; DURATION_MS=${DURATION_MS:-0}
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
-CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}
+CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
 # crafted value can't inject terminal escapes (defense in depth; topic/profile
 # are handled separately). Multibyte UTF-8 (bytes >= 0x80) is preserved.
@@ -142,6 +143,86 @@ if [ -z "$EFFORT" ]; then
     EFFORT=$(jq -r '.effortLevel // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
 fi
 EFFORT=${EFFORT:-medium}
+
+# ── Agent-pane model correction (transcript-derived) ────────────────────────
+# Claude Code's stdin JSON carries the PARENT session's .model for agent /
+# subagent panes, so an agent served by a different model would otherwise show
+# the parent's name. The agent's own transcript records the true serving model
+# on every assistant entry: lines with "type":"assistant" contain
+# "message":{"model":"<id>",...}. Take the most recent such line (reverse-read,
+# grep -m1, the same cheap pattern the effort detection uses above). Other lines
+# also carry "model":"..." (e.g. Agent tool-call params), so anchor strictly to
+# "type":"assistant" lines; on such a line message.model precedes any tool-input
+# model, so the first match is the serving model.
+#
+# Prettify a validated Claude model ID for display: strip the leading "claude-",
+# drop a trailing 8-digit date (e.g. -20251001), join the trailing numeric
+# segments with dots and capitalize the leading name words. Examples:
+#   claude-sonnet-5           -> Sonnet 5
+#   claude-opus-4-8           -> Opus 4.8
+#   claude-haiku-4-5-20251001 -> Haiku 4.5
+# Falls back to the raw (already-validated) ID for anything that does not fit
+# the "<name...>-<number...>" shape.
+_prettify_model_id() {
+    local id="$1" raw="$1"
+    id="${id#claude-}"
+    local IFS='-'
+    local -a segs=() names=() nums=()
+    read -ra segs <<< "$id"
+    # Drop a trailing 8-digit date segment.
+    local last=$(( ${#segs[@]} - 1 ))
+    if [ "$last" -ge 0 ] && [[ "${segs[$last]}" =~ ^[0-9]{8}$ ]]; then
+        unset 'segs[last]'
+        segs=("${segs[@]}")
+    fi
+    local seg
+    for seg in "${segs[@]}"; do
+        if [[ "$seg" =~ ^[0-9]+$ ]]; then
+            nums+=("$seg")
+        elif [ "${#nums[@]}" -eq 0 ] && [[ "$seg" =~ ^[A-Za-z]+$ ]]; then
+            names+=("$seg")
+        else
+            printf '%s' "$raw"; return   # mixed / out-of-order -> raw ID
+        fi
+    done
+    { [ "${#names[@]}" -eq 0 ] || [ "${#nums[@]}" -eq 0 ]; } && { printf '%s' "$raw"; return; }
+    # Capitalize each name word (bash 3.2 safe: no ${x^}); one tr per word, and
+    # this path only runs for agent panes, never the main session.
+    local out="" w first rest
+    for w in "${names[@]}"; do
+        first=$(printf '%s' "${w:0:1}" | tr '[:lower:]' '[:upper:]')
+        rest="${w:1}"
+        out="${out:+$out }${first}${rest}"
+    done
+    local nums_joined="" n
+    for n in "${nums[@]}"; do
+        nums_joined="${nums_joined:+$nums_joined.}${n}"
+    done
+    printf '%s %s' "$out" "$nums_joined"
+}
+
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    TS_MODEL_ID=$(_reverse_file "$TRANSCRIPT_PATH" \
+        | grep -m1 '"type":"assistant"' \
+        | grep -oE '"model":"[^"]+"' | head -1 || true)
+    TS_MODEL_ID=${TS_MODEL_ID#'"model":"'}
+    TS_MODEL_ID=${TS_MODEL_ID%'"'}
+    # Only override when stdin actually reported an id to differ from: a missing
+    # stdin .model.id (MODEL_ID="") must NOT make the differ-gate always true and
+    # replace the display_name on every main-session render. Untrusted transcript
+    # content is length-capped (MODEL is not in the line-2 truncation priority
+    # list, so an oversized but charset-valid id would overflow the line) and
+    # accepted only on a strict model-ID charset (defense in depth, same
+    # philosophy as the control-byte strips above).
+    if [ -n "$MODEL_ID" ] && [ -n "$TS_MODEL_ID" ] \
+        && [ "${#TS_MODEL_ID}" -le 64 ] \
+        && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._-]+$ ]] \
+        && [ "$TS_MODEL_ID" != "$MODEL_ID" ]; then
+        MODEL=$(_prettify_model_id "$TS_MODEL_ID")
+        # Same control-byte strip as the other JSON-sourced fields we print.
+        MODEL="${MODEL//[$'\001'-$'\037\177']/}"
+    fi
+fi
 
 # ── Profile badge (opt-in: requires ~/.claude/profile-labels.json) ────────
 # Identifies which Claude Code account is logged in. Reads the active

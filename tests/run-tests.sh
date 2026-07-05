@@ -78,6 +78,13 @@ run_one() {
     local stdout_file="$SCRATCH/$name.out"
     local stderr_file="$SCRATCH/$name.err"
 
+    # Materialize a companion transcript into the scratch dir so a fixture can
+    # set "transcript_path" to a relative "<name>.transcript.jsonl" and have it
+    # resolve at runtime (the statusline runs with cwd=$SCRATCH). Mirrors the
+    # service-cache scratch isolation above; used by the agent-pane model test.
+    local companion="$FIXTURES/$name.transcript.jsonl"
+    [ -f "$companion" ] && cp "$companion" "$SCRATCH/$name.transcript.jsonl"
+
     (cd "$SCRATCH" && bash "$STATUSLINE" <"$fixture" >"$stdout_file" 2>"$stderr_file")
     local rc=$?
 
@@ -107,6 +114,21 @@ run_one() {
             fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
         fi
     done <"$stdout_file"
+
+    # Optional content assertion: <name>.expect-l2 holds a substring that line 2
+    # (ANSI-stripped) must contain. Used to prove the transcript-derived model
+    # name actually reaches line 2, not just that the render stays within width.
+    local expect_file="$FIXTURES/$name.expect-l2"
+    if [ -f "$expect_file" ]; then
+        local want line2 stripped
+        want=$(cat "$expect_file")
+        line2=$(sed -n '2p' "$stdout_file")
+        stripped=$(printf '%s' "$line2" | perl -pe 's/\e\[[0-9;]*m//g' 2>/dev/null)
+        case "$stripped" in
+            *"$want"*) : ;;
+            *) fail_reasons+=("line 2 missing expected substring: $want") ;;
+        esac
+    fi
 
     if [ ${#fail_reasons[@]} -eq 0 ]; then
         printf '  PASS  %s\n' "$name"

@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"hello"}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"reply"}]}}
