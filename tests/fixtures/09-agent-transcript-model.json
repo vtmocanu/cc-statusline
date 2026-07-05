@@ -1,0 +1,14 @@
+{
+  "model": {"display_name": "Fable", "id": "claude-fable-5"},
+  "cwd": "/home/test/agent-project",
+  "context_window": {"remaining_percentage": 60, "context_window_size": 1000000},
+  "cost": {"total_duration_ms": 120000},
+  "agent": {"name": ""},
+  "mode": "",
+  "session_id": "test-agent-model",
+  "transcript_path": "09-agent-transcript-model.transcript.jsonl",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 10, "resets_at": 0},
+    "seven_day": {"used_percentage": 3, "resets_at": 0}
+  }
+}

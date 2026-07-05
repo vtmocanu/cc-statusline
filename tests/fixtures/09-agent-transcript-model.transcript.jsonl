@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"hello"}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"older reply"}]}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","name":"Agent","input":{"model":"sonnet","prompt":"do work"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"decoy \"model\":\"opus\" here"}]}}
