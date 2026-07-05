@@ -207,9 +207,16 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         | grep -oE '"model":"[^"]+"' | head -1 || true)
     TS_MODEL_ID=${TS_MODEL_ID#'"model":"'}
     TS_MODEL_ID=${TS_MODEL_ID%'"'}
-    # Untrusted transcript content: accept only a strict model-ID charset before
-    # use (defense in depth, same philosophy as the control-byte strips above).
-    if [ -n "$TS_MODEL_ID" ] && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._-]+$ ]] \
+    # Only override when stdin actually reported an id to differ from: a missing
+    # stdin .model.id (MODEL_ID="") must NOT make the differ-gate always true and
+    # replace the display_name on every main-session render. Untrusted transcript
+    # content is length-capped (MODEL is not in the line-2 truncation priority
+    # list, so an oversized but charset-valid id would overflow the line) and
+    # accepted only on a strict model-ID charset (defense in depth, same
+    # philosophy as the control-byte strips above).
+    if [ -n "$MODEL_ID" ] && [ -n "$TS_MODEL_ID" ] \
+        && [ "${#TS_MODEL_ID}" -le 64 ] \
+        && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._-]+$ ]] \
         && [ "$TS_MODEL_ID" != "$MODEL_ID" ]; then
         MODEL=$(_prettify_model_id "$TS_MODEL_ID")
         # Same control-byte strip as the other JSON-sourced fields we print.

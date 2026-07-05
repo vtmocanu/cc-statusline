@@ -7,7 +7,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
-- Agent-pane statuslines showed the parent session's model because Claude Code's stdin JSON misreports `.model` for agent sessions; the model name is now derived from the most recent `"type":"assistant"` transcript entry (validated, prettified) when it differs from stdin, leaving main-session output unchanged.
+- Agent-pane statuslines showed the parent session's model because Claude Code's stdin JSON misreports `.model` for agent sessions; the model name is now derived from the most recent `"type":"assistant"` transcript entry (validated, prettified) when it differs from stdin. Main-session output is unchanged except for the one turn right after a `/model` switch, where the last assistant entry still carries the previous model until the next response and then self-heals.
 
 ## [v2.5.1] - 2026-06-30
 
