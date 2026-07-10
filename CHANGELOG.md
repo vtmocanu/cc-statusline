@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.8.0] - 2026-07-10
+
 ### Added
 - Homebrew tap distribution (issue #4): `brew install vtmocanu/tap/cc-statusline`, alongside `install.sh`. The formula (template in `Formula.rb.tmpl`) installs the three scripts plus `VERSION` into `libexec` and puts a `cc-statusline` wrapper on PATH; a bare symlink would break the script's sibling-fetcher and `VERSION` lookups. Declares `coreutils` (GNU `timeout`, not stock on macOS), `jq`, and `uses_from_macos` curl/perl. `caveats` prints the `settings.json` snippets.
 - Dev-mode toggle in the brew wrapper: write a working-tree path to `~/.config/cc-statusline/dev-dir` (or set `CC_STATUSLINE_DEV_DIR`) and `cc-statusline` runs that copy instead of the brewed one; remove the file to switch back. Takes effect on the next render, no `settings.json` edit.
@@ -173,7 +175,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.8.0...HEAD
+[v2.8.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.1...v2.8.0
 [v2.7.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.0...v2.7.1
 [v2.7.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.6.0...v2.7.0
 [v2.6.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.1...v2.6.0

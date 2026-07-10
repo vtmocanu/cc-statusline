@@ -27,6 +27,10 @@ class CcStatusline < Formula
 
     (bin/"cc-statusline").write <<~SH
       #!/bin/bash
+      # Claude Code may launch with a minimal GUI PATH; make sure the brewed
+      # deps (timeout, jq) resolve regardless.
+      PATH="#{HOMEBREW_PREFIX}/bin:$PATH"
+      export PATH
       # Dev override: run a working tree instead of the brewed copy, so
       # settings.json can point at "cc-statusline" permanently. Takes effect on
       # the next render, even in already-running Claude Code sessions. Enable:

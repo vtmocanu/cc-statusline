@@ -46,7 +46,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 | Arch | `sudo pacman -S bash jq perl curl` |
 | Alpine | `apk add bash jq perl curl coreutils` |
 
-The Homebrew install below pulls these in automatically (except the font).
+The Homebrew install below pulls these in automatically, except `bash` (your system's copy works; the scripts avoid bash-4-only features) and the font.
 
 ## Install
 
