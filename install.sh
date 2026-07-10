@@ -66,7 +66,7 @@ fi
 # Sanity-check dependencies (statusline + hook). perl handles all ANSI/control
 # stripping now, so there is no gsed/gnu-sed requirement on macOS anymore.
 missing=()
-for cmd in bash jq perl curl; do
+for cmd in bash jq perl curl timeout; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if [ ${#missing[@]} -gt 0 ]; then

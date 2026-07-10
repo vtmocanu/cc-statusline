@@ -1,0 +1,56 @@
+name: release
+
+# On each v* tag, render Formula/cc-statusline.rb from Formula.rb.tmpl and push
+# it to vtmocanu/homebrew-tap (mechanics in the reusable homebrew-tap.yml from
+# github.com/vtmocanu/task). Unlike fj-queue's release.yml, this deliberately
+# does NOT create the GitHub Release: cc-statusline releases stay manual with
+# CHANGELOG-derived notes (see CLAUDE.md), so permissions stay read-only. The
+# default GITHUB_TOKEN cannot write to a second repo; the tap push uses
+# HOMEBREW_TAP_TOKEN (fine-grained PAT, contents:write on vtmocanu/homebrew-tap
+# only). workflow_dispatch re-publishes an existing tag, e.g. after the secret
+# was missing on the first run.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish the formula for (e.g. v2.8.0)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never kill a half-done tap push
+
+jobs:
+  publish-formula:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      # Taskfile.yml includes the reusable homebrew-tap.yml from
+      # github.com/vtmocanu/task over https in CI; remote Taskfiles are an
+      # experimental Task feature behind this flag, and `task --yes`
+      # auto-confirms the one-time remote-trust prompt.
+      TASK_X_REMOTE_TASKFILES: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate formula
+        run: task --yes brew:formula VERSION="$TAG"
+
+      - name: Publish to tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: task --yes brew:publish VERSION="$TAG" HOMEBREW_TAP_TOKEN="$HOMEBREW_TAP_TOKEN"

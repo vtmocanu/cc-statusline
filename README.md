@@ -33,19 +33,51 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - `jq`
 - `perl` (for ANSI-aware width measurement)
 - `curl` (for service status and the optional session-topic hook)
+- GNU `timeout` (coreutils; not stock on macOS)
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal for the icons
 
 ### Per-OS dependency install
 
 | OS | Command |
 |---|---|
-| macOS (Homebrew) | `brew install bash jq perl curl` |
+| macOS (Homebrew) | `brew install bash jq perl curl coreutils` |
 | Debian/Ubuntu | `sudo apt install bash jq perl curl` |
 | Fedora/RHEL | `sudo dnf install bash jq perl curl` |
 | Arch | `sudo pacman -S bash jq perl curl` |
 | Alpine | `apk add bash jq perl curl coreutils` |
 
+The Homebrew install below pulls these in automatically (except the font).
+
 ## Install
+
+### Homebrew (recommended)
+
+```bash
+brew install vtmocanu/tap/cc-statusline
+```
+
+This puts `cc-statusline` on your PATH, declares the dependencies, and prints the `settings.json` snippets to paste (also shown by `brew info cc-statusline`). Point Claude Code at it:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "cc-statusline",
+    "refreshInterval": 60
+  }
+}
+```
+
+Upgrades are just `brew upgrade cc-statusline`; no settings change across versions.
+
+Hacking on a clone while keeping the brew setup? Write your working-tree path to `~/.config/cc-statusline/dev-dir` and the `cc-statusline` wrapper runs that copy instead (delete the file to switch back):
+
+```bash
+mkdir -p ~/.config/cc-statusline
+echo ~/src/cc-statusline > ~/.config/cc-statusline/dev-dir
+```
+
+### install.sh (any platform, no Homebrew)
 
 ```bash
 git clone https://github.com/vtmocanu/cc-statusline.git

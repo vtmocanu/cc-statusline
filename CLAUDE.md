@@ -8,7 +8,7 @@ The repo lives on GitHub: **github.com/vtmocanu/cc-statusline**. Use the `gh` CL
 
 A two-line ANSI statusline for [Claude Code](https://claude.com/claude-code). It's a small bash-based tool, but the codebase has accumulated real lessons about portable shell, ANSI rendering, terminal width estimation, and Claude Code's undocumented statusline renderer behaviors. **Read `KNOWN_ISSUES.md` and the comments in `statusline.sh` before changing any width-related logic.**
 
-The primary maintainer's machine has `~/.claude/settings.json` pointing `statusLine.command` directly at `~/stuff/gitrepos/gh/vtmocanu/cc-statusline/statusline.sh` (the working tree, not an installed copy). This means edits to `statusline.sh` are picked up immediately on the next render. Public users go through `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`.
+The primary maintainer's machine has `~/.claude/settings.json` pointing `statusLine.command` directly at `~/stuff/gitrepos/gh/vtmocanu/cc-statusline/statusline.sh` (the working tree, not an installed copy). This means edits to `statusline.sh` are picked up immediately on the next render. Public users go through `brew install vtmocanu/tap/cc-statusline` (formula auto-published on tag push, see release.yml) or `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`. The brew wrapper honors a dev override (`~/.config/cc-statusline/dev-dir` file or `CC_STATUSLINE_DEV_DIR` env) pointing at a working tree.
 
 Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 
@@ -21,6 +21,7 @@ cc-statusline/
 ├── hooks/
 │   └── session-topic-capture.sh      Optional UserPromptSubmit hook, calls Claude Haiku to label sessions
 ├── install.sh                        Installer for public users (--version vX.Y.Z, --uninstall, --help)
+├── Formula.rb.tmpl                   Homebrew formula template (@@URL@@/@@SHA256@@ placeholders); rendered and pushed to vtmocanu/homebrew-tap by release.yml on each v* tag
 ├── examples/
 │   └── statusline-color-overrides.json  Template for ~/.claude/statusline-color-overrides.json
 ├── tests/
@@ -28,6 +29,7 @@ cc-statusline/
 │   └── fixtures/*.json               5 mock JSON inputs (happy path, empty, no rate limits, near-full context, narrow width)
 ├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, ci); used locally and by CI
 ├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
+├── .github/workflows/release.yml     On v* tags: renders the formula and pushes it to the tap (HOMEBREW_TAP_TOKEN secret); does NOT create the GitHub Release, that stays manual
 ├── images/screenshot.png             Hero image used by README
 ├── README.md                         Public-facing docs
 ├── CHANGELOG.md                      Keep-a-Changelog format, one section per tag
@@ -97,6 +99,10 @@ git tag -a vX.Y.Z -m "vX.Y.Z - short title matching the CHANGELOG"
 
 # 5. Push
 git push origin main --tags
+#    The tag push also fires .github/workflows/release.yml, which renders
+#    Formula/cc-statusline.rb and pushes it to vtmocanu/homebrew-tap (needs the
+#    HOMEBREW_TAP_TOKEN repo secret; re-run via workflow_dispatch with the tag
+#    if it was missing). Verify it too when watching CI.
 
 # 6. Wait for CI to go green before creating the release entry.
 gh run watch "$(gh run list --workflow=ci.yml --branch=main --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status

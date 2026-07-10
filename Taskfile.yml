@@ -17,6 +17,14 @@ includes:
     taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/shell.yml{{else}}{{.TASK_REPO_LOCAL}}/shell.yml{{end}}"
     vars:
       SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh tests/run-fetch-tests.sh
+  # Homebrew formula render + tap publish (run by .github/workflows/release.yml
+  # on each v* tag; the formula body lives in Formula.rb.tmpl).
+  brew:
+    taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/homebrew-tap.yml{{else}}{{.TASK_REPO_LOCAL}}/homebrew-tap.yml{{end}}"
+    vars:
+      NAME: cc-statusline
+      GH_REPO: vtmocanu/cc-statusline
+      TAP_REPO: vtmocanu/homebrew-tap
 
 tasks:
   default:

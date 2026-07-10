@@ -1,0 +1,97 @@
+# Homebrew formula template for cc-statusline. The generic release mechanics
+# (compute the tag tarball's sha256, render this template, push the result to
+# vtmocanu/homebrew-tap) live in the reusable homebrew-tap.yml in
+# github.com/vtmocanu/task; this repo owns only the formula body. Rendered by
+# `task brew:formula VERSION=vX.Y.Z` (see Taskfile.yml) and published on each
+# v* tag by .github/workflows/release.yml.
+class CcStatusline < Formula
+  desc "Two-line ANSI statusline for Claude Code"
+  homepage "https://github.com/vtmocanu/cc-statusline"
+  url "@@URL@@"
+  sha256 "@@SHA256@@"
+  license "MIT"
+
+  # timeout (statusline.sh stdin read and kubectl guard) is GNU coreutils and
+  # is NOT stock on macOS; without it the script exits early and renders blank.
+  depends_on "coreutils"
+  depends_on "jq"
+  uses_from_macos "curl"
+  uses_from_macos "perl"
+
+  def install
+    # Keep the three scripts siblings in libexec: statusline.sh resolves the
+    # fetcher relative to its own (non-symlink-resolved) dirname, and the
+    # fetcher/hook read the VERSION file from their dir or its parent for the
+    # User-Agent. A bare bin symlink would break both, hence the wrapper.
+    libexec.install "statusline.sh", "claude-status-fetch.sh", "VERSION", "hooks"
+
+    (bin/"cc-statusline").write <<~SH
+      #!/bin/bash
+      # Dev override: run a working tree instead of the brewed copy, so
+      # settings.json can point at "cc-statusline" permanently. Takes effect on
+      # the next render, even in already-running Claude Code sessions. Enable:
+      #   mkdir -p ~/.config/cc-statusline
+      #   echo /path/to/cc-statusline > ~/.config/cc-statusline/dev-dir
+      # Disable: rm ~/.config/cc-statusline/dev-dir
+      dev_dir="${CC_STATUSLINE_DEV_DIR:-}"
+      if [ -z "$dev_dir" ]; then
+        dev_file="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/dev-dir"
+        if [ -f "$dev_file" ]; then
+          dev_dir="$(cat "$dev_file" 2>/dev/null)"
+        fi
+      fi
+      if [ -n "$dev_dir" ] && [ -x "$dev_dir/statusline.sh" ]; then
+        exec "$dev_dir/statusline.sh" "$@"
+      fi
+      exec "#{opt_libexec}/statusline.sh" "$@"
+    SH
+  end
+
+  def caveats
+    <<~EOS
+      Point Claude Code at the statusline in ~/.claude/settings.json:
+
+        "statusLine": {
+          "type": "command",
+          "command": "cc-statusline",
+          "refreshInterval": 60
+        }
+
+      Optional AI-generated session topics (UserPromptSubmit hook):
+
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "#{opt_libexec}/hooks/session-topic-capture.sh"
+                }
+              ]
+            }
+          ]
+        }
+
+      Dev mode (render a working tree instead of the brewed copy):
+
+        mkdir -p ~/.config/cc-statusline
+        echo /path/to/cc-statusline > ~/.config/cc-statusline/dev-dir
+
+      Remove that file to switch back.
+    EOS
+  end
+
+  test do
+    # Mirror tests/run-tests.sh: isolated service cache, no fetcher spawn,
+    # pinned clock, profile badge off. Expect exit 0 and exactly 2 lines.
+    fixture = <<~JSON
+      {"model":{"display_name":"Claude Opus 4.6","id":"opus"},"cwd":"#{testpath}","context_window":{"remaining_percentage":75,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"brewtest","rate_limits":{"five_hour":{"used_percentage":15,"resets_at":0},"seven_day":{"used_percentage":2,"resets_at":0}}}
+    JSON
+    env = "CC_STATUSLINE_SVC_CACHE=#{testpath}/svc-cache " \
+          "CC_STATUSLINE_SVC_FETCH=#{testpath}/no-such-fetcher.sh " \
+          "CC_STATUSLINE_NOW=1700000000 STATUSLINE_PROFILE=0 KUBECONFIG=/dev/null"
+    output = pipe_output("env #{env} #{bin}/cc-statusline", fixture, 0)
+    assert_equal 2, output.lines.length, "expected exactly 2 statusline rows"
+  end
+end
