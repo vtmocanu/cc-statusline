@@ -224,6 +224,55 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     fi
 fi
 
+# ── Teammate-model hint (in-process agents) ─────────────────────────────────
+# Claude Code sends NO focused-agent info in the statusline payload (verified
+# on v2.1.206: no .agent field and the parent transcript_path, even while a
+# teammate view is focused), so the focused teammate's true model CANNOT be
+# shown from here. Next best: when this session has recently-active in-process
+# teammates served by a DIFFERENT model, append a compact "+<family>" hint to
+# MODEL ("Fable 5 +opus") so a teammate view is not misread as running on the
+# session model. Teammate transcripts live next to the session transcript at
+# <projects>/<session_id>/subagents/agent-*.jsonl. Cost-bounded: newest 12
+# files, only those active in the last 5 min, last 100KB of each, result
+# cached 60s per session.
+TH_HINT=""
+if [ -n "$TRANSCRIPT_PATH" ] && [[ "$TRANSCRIPT_PATH" != */subagents/* ]] \
+    && [ -n "$MODEL_ID" ]; then
+    TH_DIR="${TRANSCRIPT_PATH%.jsonl}/subagents"
+    if [ -d "$TH_DIR" ]; then
+        TH_CACHE="$(_state_dir)/teammate-hint-$(printf '%s' "$TH_DIR" | cksum | cut -d' ' -f1 || echo 0)"
+        TH_AGE=9999
+        [ -f "$TH_CACHE" ] && TH_AGE=$((NOW - $(_file_mtime "$TH_CACHE")))
+        if [ "$TH_AGE" -lt 60 ]; then
+            TH_HINT=$(head -1 "$TH_CACHE" 2>/dev/null || true)
+        else
+            # "claude-opus-4-8[1m]" (stdin id) -> "claude-opus-4-8" for comparison.
+            TH_BASE="${MODEL_ID%%\[*}"
+            TH_FAMS=" "
+            while IFS= read -r _tf; do
+                [ -n "$_tf" ] || continue
+                [ $((NOW - $(_file_mtime "$_tf"))) -le 300 ] || continue
+                _tid=$(tail -c 100000 "$_tf" 2>/dev/null | grep '"type":"assistant"' | tail -1 \
+                    | grep -oE '"model":"[^"]+"' | head -1 || true)
+                _tid=${_tid#'"model":"'}; _tid=${_tid%'"'}
+                { [ -n "$_tid" ] && [ "${#_tid}" -le 64 ] && [[ "$_tid" =~ ^[a-zA-Z0-9._-]+$ ]]; } || continue
+                [ "$_tid" != "$TH_BASE" ] || continue
+                _tfam=${_tid#claude-}; _tfam=${_tfam%%-*}
+                [ -n "$_tfam" ] || continue
+                case "$TH_FAMS" in *" $_tfam "*) ;; *)
+                    TH_FAMS="${TH_FAMS}${_tfam} "
+                    TH_HINT="${TH_HINT}+${_tfam}"
+                ;; esac
+            done < <(ls -t "$TH_DIR"/agent-*.jsonl 2>/dev/null | head -12)
+            printf '%s\n' "$TH_HINT" > "$TH_CACHE" 2>/dev/null || true
+        fi
+        # Strict shape gate (also covers a tampered cache file), same philosophy
+        # as the transcript model override above.
+        [[ "$TH_HINT" =~ ^(\+[a-z0-9]+)*$ ]] || TH_HINT=""
+        [ -n "$TH_HINT" ] && MODEL="${MODEL} ${TH_HINT}"
+    fi
+fi
+
 # ── Profile badge (opt-in: requires ~/.claude/profile-labels.json) ────────
 # Identifies which Claude Code account is logged in. Reads the active
 # account UUID directly from ~/.claude.json's .oauthAccount.accountUuid
