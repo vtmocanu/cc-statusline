@@ -81,10 +81,13 @@ If you'd rather skip `install.sh`, point `statusLine.command` directly at your c
 {
   "statusLine": {
     "type": "command",
-    "command": "bash /absolute/path/to/cc-statusline/statusline.sh"
+    "command": "bash /absolute/path/to/cc-statusline/statusline.sh",
+    "refreshInterval": 60
   }
 }
 ```
+
+`refreshInterval` (seconds) re-runs the statusline on a timer in addition to activity-driven updates, so idle sessions keep fresh rate-limit reset times, service health, and usage bars. It requires a recent Claude Code version; remove the line to update only on activity.
 
 To enable the optional session-topic feature, also add the hook:
 

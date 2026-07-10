@@ -137,8 +137,13 @@ Add the following to ~/.claude/settings.json:
 
   "statusLine": {
     "type": "command",
-    "command": "bash $INSTALL_DIR/statusline.sh"
+    "command": "bash $INSTALL_DIR/statusline.sh",
+    "refreshInterval": 60
   }
+
+refreshInterval re-runs the statusline every N seconds so idle sessions keep
+fresh reset times, service health, and rate-limit bars (requires a recent
+Claude Code). Remove the line to update only on activity.
 
 To enable AI-generated session topics, also add this UserPromptSubmit hook:
 

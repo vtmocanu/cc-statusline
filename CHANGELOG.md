@@ -6,6 +6,19 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v2.7.1] - 2026-07-10
+
+### Added
+- Documented `statusLine.refreshInterval` (Claude Code setting, seconds): re-runs the statusline on a timer so idle sessions keep fresh rate-limit reset times, service health, and usage bars. Recommended snippet (installer output and README) now includes `"refreshInterval": 60`; remove the line to update only on activity. No script change: Claude Code fires the timer, the script is unchanged.
+
+### Fixed
+- Release hygiene: v2.7.0 was tagged without a CHANGELOG section, VERSION bump, or GitHub Release (installs of that tag report User-Agent `cc-statusline/2.6.0`). The section below is backfilled and VERSION is now 2.7.1.
+
+## [v2.7.0] - 2026-07-10
+
+### Added
+- Teammate-model hint: when the session has in-process agent-team teammates served by a different model, the model segment gains a compact family hint (`Fable 5 +opus`), so a focused teammate view is not misread as running on the session model. Claude Code sends no focused-agent info in the statusline payload (verified on v2.1.206), so this is derived from recent subagent transcripts: newest 12 `agent-*.jsonl` active in the last 5 minutes, last 100KB of each, cached 60s per session, with strict charset gates on ids and cache content.
+
 ## [v2.6.0] - 2026-07-05
 
 ### Fixed
@@ -149,7 +162,9 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.1...HEAD
+[v2.7.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.0...v2.7.1
+[v2.7.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.6.0...v2.7.0
 [v2.6.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.1...v2.6.0
 [v2.5.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.5.0...v2.5.1
 [v2.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.4.0...v2.5.0
