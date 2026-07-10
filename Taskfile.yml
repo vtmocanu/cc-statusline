@@ -11,6 +11,11 @@ version: "3"
 vars:
   TASK_REPO_LOCAL: ~/stuff/gitrepos/gh/vtmocanu/task
   TASK_REPO_RAW: https://raw.githubusercontent.com/vtmocanu/task/main
+  # The brew include runs in release.yml with HOMEBREW_TAP_TOKEN in scope, so
+  # unlike shell.yml (read-only CI, no secrets) it is pinned to a commit SHA:
+  # a compromised task@main must not reach a cross-repo write PAT. Bump the
+  # SHA deliberately when homebrew-tap.yml changes upstream.
+  TASK_REPO_RAW_PINNED: https://raw.githubusercontent.com/vtmocanu/task/bccb39125de3f275e9451c4963d23f6afb31b342
 
 includes:
   shell:
@@ -20,7 +25,7 @@ includes:
   # Homebrew formula render + tap publish (run by .github/workflows/release.yml
   # on each v* tag; the formula body lives in Formula.rb.tmpl).
   brew:
-    taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/homebrew-tap.yml{{else}}{{.TASK_REPO_LOCAL}}/homebrew-tap.yml{{end}}"
+    taskfile: "{{if .CI}}{{.TASK_REPO_RAW_PINNED}}/homebrew-tap.yml{{else}}{{.TASK_REPO_LOCAL}}/homebrew-tap.yml{{end}}"
     vars:
       NAME: cc-statusline
       GH_REPO: vtmocanu/cc-statusline

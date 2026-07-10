@@ -47,6 +47,17 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Git ref names allow shell metacharacters (quotes, $, ;, |), and TAG
+      # flows into Task template substitution where quoting cannot be relied
+      # on. Only strict semver tags may proceed. $TAG is expanded by the
+      # shell from env, never by GH expressions, so this check is injection-safe.
+      - name: Validate tag format
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "refusing to publish: tag '$TAG' is not vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
       - name: Generate formula
         run: task --yes brew:formula VERSION="$TAG"
 

@@ -11,6 +11,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dev-mode toggle in the brew wrapper: write a working-tree path to `~/.config/cc-statusline/dev-dir` (or set `CC_STATUSLINE_DEV_DIR`) and `cc-statusline` runs that copy instead of the brewed one; remove the file to switch back. Takes effect on the next render, no `settings.json` edit.
 - `.github/workflows/release.yml`: on each `v*` tag (or `workflow_dispatch` for an existing tag), renders the formula and pushes it to `vtmocanu/homebrew-tap` via the reusable `homebrew-tap.yml` from `github.com/vtmocanu/task`. Requires the `HOMEBREW_TAP_TOKEN` repo secret. GitHub Releases stay manual (CHANGELOG-derived notes).
 
+### Security
+- Release pipeline hardening from the pre-release audit: the brew Taskfile include is pinned to a commit SHA in CI (the publish step holds a cross-repo PAT, so it must not track `task@main`), release.yml validates the tag against strict semver before it reaches Task templating, and the reusable publish task is now `silent:` so the tap-token-bearing clone URL is never echoed into public CI logs.
+
 ### Fixed
 - `install.sh` dependency check now includes `timeout` (GNU coreutils), a real runtime dependency of `statusline.sh` on macOS that was never verified; README dependency table updated to match.
 
