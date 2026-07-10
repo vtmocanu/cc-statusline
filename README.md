@@ -53,10 +53,14 @@ The Homebrew install below pulls these in automatically, except `bash` (your sys
 ### Homebrew (recommended)
 
 ```bash
-brew install vtmocanu/tap/cc-statusline
+brew tap vtmocanu/tap
+brew trust vtmocanu/tap    # Homebrew 6.0+ requires trusting third-party taps
+brew install cc-statusline
 ```
 
-This puts `cc-statusline` on your PATH, declares the dependencies, and prints the `settings.json` snippets to paste (also shown by `brew info cc-statusline`). Point Claude Code at it:
+On Homebrew older than 6.0 the `brew trust` line doesn't exist; skip it (`brew install vtmocanu/tap/cc-statusline` also works there as a one-liner). If you'd rather not trust the whole tap, `brew trust --formula vtmocanu/tap/cc-statusline` scopes it to this formula.
+
+The install puts `cc-statusline` on your PATH, declares the dependencies, and prints the `settings.json` snippets to paste (also shown by `brew info cc-statusline`). Point Claude Code at it:
 
 ```json
 {
