@@ -6,6 +6,12 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Shared per-user rate-limits cache: every render compares its stdin `rate_limits` snapshot against a cached account-wide one (by resets_at/used% freshness, never file mtime) and displays whichever is fresher, writing the fresher snapshot back. Idle sessions on `statusLine.refreshInterval` now show fresh 5h/7d bars instead of values frozen at their last API call. `CC_STATUSLINE_RL_CACHE` overrides the cache path (test isolation); `STATUSLINE_RL_SHARE=0` disables the feature entirely.
+
+### Security
+- Rate-limits cache writes are atomic (tmp file + `mv`, mode 600, reaped on interrupted write) and every field, cached or from stdin, is length-capped, digit-validated, and re-clamped to its valid range before use, so a tampered or malformed cache line can never feed bad values into rendering.
+
 ## [v2.8.0] - 2026-07-10
 
 ### Added

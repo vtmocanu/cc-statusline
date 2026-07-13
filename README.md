@@ -19,7 +19,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Session metrics**: model name, effort level (low/medium/high/max), elapsed time
 - **Context window**: colored bar and percentage
 - **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); hidden before the first call and after `/compact`
-- **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width
+- **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width; shared across your sessions via a small per-user cache, so an idle session never shows numbers staler than your account's latest known state
 - **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
 - **Session topic**: optional hook calls Claude Haiku to label each session with `Project: Focus`
@@ -123,7 +123,7 @@ If you'd rather skip `install.sh`, point `statusLine.command` directly at your c
 }
 ```
 
-`refreshInterval` (seconds) re-runs the statusline on a timer in addition to activity-driven updates, so idle sessions keep fresh rate-limit reset times, service health, and usage bars. It requires a recent Claude Code version; remove the line to update only on activity.
+`refreshInterval` (seconds) re-runs the statusline on a timer in addition to activity-driven updates, so idle sessions keep fresh rate-limit reset times, service health, and usage bars. It requires a recent Claude Code version; remove the line to update only on activity. Rate-limit bars specifically stay fresh across *all* your sessions, not just the one being refreshed: each render shares the freshest known account-wide values with the others via a small per-user cache (`STATUSLINE_RL_SHARE=0` to disable).
 
 To enable the optional session-topic feature, also add the hook:
 
@@ -167,6 +167,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_CACHE` | `1` | Set to `0` to hide the prompt-cache hit-rate readout (`⚡ NN%`) on line 2. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
+| `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
 | `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
