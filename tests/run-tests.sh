@@ -320,6 +320,26 @@ rate_limit_cache_tests() {
     elif ! _has "$l2" "20%" || ! _has "$l2" "10%"; then
         _rl_fail "$name" "expected cached 20%/10% on line 2, got: $l2"
     else _rl_pass "$name"; fi
+
+    # 10. Core rollover rule in isolation: a NEW window (LOWER used% but LATER
+    #     resets_at) must beat an OLD-window cache (higher used%, earlier
+    #     resets_at). Locks "later resets_at wins over higher pct" so a fresh
+    #     window's low numbers are never masked by the prior window's high ones.
+    #     rl-cache-wins can't prove this: there the winner is higher on BOTH.
+    name="rl-later-reset-beats-pct"; cache="$SCRATCH/rl10.cache"
+    out="$SCRATCH/rl10.out"; err="$SCRATCH/rl10.err"
+    printf '90|1700010000|80|1700100000\n' > "$cache"
+    ( cd "$SCRATCH" && _rl_json 5 1700020000 3 1700300000 \
+        | CC_STATUSLINE_RL_CACHE="$cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "90%" || _has "$l2" "80%"; then
+        _rl_fail "$name" "old-window cache masked the new window: $l2"
+    elif ! _has "$l2" "5%" || ! _has "$l2" "3%"; then
+        _rl_fail "$name" "expected new-window 5%/3% on line 2, got: $l2"
+    elif [ "$(cat "$cache")" != "5|1700020000|3|1700300000" ]; then
+        _rl_fail "$name" "cache not rewritten with new-window snapshot: $(cat "$cache")"
+    else _rl_pass "$name"; fi
 }
 
 if [ ! -x "$STATUSLINE" ]; then
