@@ -174,10 +174,12 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     trap 'rm -f "$RL_TMP" 2>/dev/null; printf "\n"' EXIT
     RL_CACHE="${CC_STATUSLINE_RL_CACHE:-$(_state_dir)/rate-limits}"
     # Normalize stdin reset timestamps to integers (missing/non-numeric -> 0, a
-    # same-window tie that then compares on used%). Percentages are already
-    # clamped to 0-100 integers (or "" when absent).
-    case "$FIVE_RESET_TS"  in ''|*[!0-9]*) STDIN_FR=0 ;; *) STDIN_FR=$FIVE_RESET_TS  ;; esac
-    case "$SEVEN_RESET_TS" in ''|*[!0-9]*) STDIN_SR=0 ;; *) STDIN_SR=$SEVEN_RESET_TS ;; esac
+    # same-window tie that then compares on used%). The same 12-digit cap as the
+    # cache guard keeps them inside intmax, so _rl_cmp's arithmetic can never
+    # overflow and print "integer expected" to stderr on a pathological payload.
+    # Percentages are already clamped to 0-100 integers (or "" when absent).
+    if [[ "$FIVE_RESET_TS"  =~ ^[0-9]{1,12}$ ]]; then STDIN_FR=$FIVE_RESET_TS;  else STDIN_FR=0; fi
+    if [[ "$SEVEN_RESET_TS" =~ ^[0-9]{1,12}$ ]]; then STDIN_SR=$SEVEN_RESET_TS; else STDIN_SR=0; fi
     STDIN_RL=0
     [ -n "$FIVE_PCT" ] && [ -n "$SEVEN_PCT" ] && STDIN_RL=1
 

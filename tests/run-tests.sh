@@ -306,6 +306,20 @@ rate_limit_cache_tests() {
     elif [ "$(cat "$cache")" != "15|1700010000|2|1700010000" ]; then
         _rl_fail "$name" "corrupt cache not overwritten from stdin: $(cat "$cache")"
     else _rl_pass "$name"; fi
+
+    # 9. An oversized STDIN resets_at (past intmax) must not spill "integer
+    #    expected" out of the compare: it normalizes to 0, and with a seeded
+    #    (fresher) cache the render stays clean and shows the cached snapshot.
+    name="rl-huge-stdin-reset"; cache="$SCRATCH/rl9.cache"
+    out="$SCRATCH/rl9.out"; err="$SCRATCH/rl9.err"
+    printf '20|1700005000|10|1700100000\n' > "$cache"
+    ( cd "$SCRATCH" && _rl_json 40 999999999999999999999999999999 20 1700099000 \
+        | CC_STATUSLINE_RL_CACHE="$cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "20%" || ! _has "$l2" "10%"; then
+        _rl_fail "$name" "expected cached 20%/10% on line 2, got: $l2"
+    else _rl_pass "$name"; fi
 }
 
 if [ ! -x "$STATUSLINE" ]; then
