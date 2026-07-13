@@ -276,6 +276,36 @@ rate_limit_cache_tests() {
     elif [ "$(cat "$cache" 2>/dev/null)" != "33|1700007000|11|1700077000" ]; then
         _rl_fail "$name" "empty cache not seeded from stdin: $(cat "$cache" 2>/dev/null)"
     else _rl_pass "$name"; fi
+
+    # 7. Corrupted-but-numeric cache percentages are re-clamped to [0,100] on
+    #    read: a tampered fresher cache must never render "999%"/a full bar.
+    name="rl-clamp-cached-pct"; cache="$SCRATCH/rl7.cache"
+    out="$SCRATCH/rl7.out"; err="$SCRATCH/rl7.err"
+    printf '999|1700018000|888|1700200000\n' > "$cache"
+    ( cd "$SCRATCH" && _rl_json 15 1700010000 2 1700010000 \
+        | CC_STATUSLINE_RL_CACHE="$cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "999%" || _has "$l2" "888%"; then
+        _rl_fail "$name" "out-of-range cached pct not clamped: $l2"
+    elif ! _has "$l2" "100%"; then
+        _rl_fail "$name" "expected clamped 100% on line 2, got: $l2"
+    else _rl_pass "$name"; fi
+
+    # 8. An over-length field (>=4-digit pct) voids the whole line: stdin is
+    #    shown and the corrupt cache is overwritten (no stderr from arithmetic).
+    name="rl-overlong-void"; cache="$SCRATCH/rl8.cache"
+    out="$SCRATCH/rl8.out"; err="$SCRATCH/rl8.err"
+    printf '9999|1700018000|40|1700200000\n' > "$cache"
+    ( cd "$SCRATCH" && _rl_json 15 1700010000 2 1700010000 \
+        | CC_STATUSLINE_RL_CACHE="$cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "15%" || ! _has "$l2" "2%"; then
+        _rl_fail "$name" "expected stdin 15%/2% after voiding corrupt cache, got: $l2"
+    elif [ "$(cat "$cache")" != "15|1700010000|2|1700010000" ]; then
+        _rl_fail "$name" "corrupt cache not overwritten from stdin: $(cat "$cache")"
+    else _rl_pass "$name"; fi
 }
 
 if [ ! -x "$STATUSLINE" ]; then

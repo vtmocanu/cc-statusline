@@ -186,9 +186,19 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     CACHE_RL=0; C_FP=""; C_FR=""; C_SP=""; C_SR=""
     if [ -f "$RL_CACHE" ]; then
         IFS='|' read -r C_FP C_FR C_SP C_SR _ < "$RL_CACHE" 2>/dev/null || true
-        if [[ "$C_FP" =~ ^[0-9]+$ ]] && [[ "$C_FR" =~ ^[0-9]+$ ]] \
-            && [[ "$C_SP" =~ ^[0-9]+$ ]] && [[ "$C_SR" =~ ^[0-9]+$ ]]; then
+        # Length caps keep every field well inside intmax (a percentage is <=3
+        # digits, an epoch <=12), so the arithmetic compare below can never
+        # overflow and spew "integer expected" to stderr on a tampered cache;
+        # anything longer voids the whole line (absent, overwritten next write).
+        if [[ "$C_FP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_FR" =~ ^[0-9]{1,12}$ ]] \
+            && [[ "$C_SP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_SR" =~ ^[0-9]{1,12}$ ]]; then
             CACHE_RL=1
+            # Defense in depth: a numerically valid but out-of-range percentage
+            # (a tampered "999|...") must not render "999%"/a full bar, so
+            # re-clamp the cached percentages to [0,100] exactly like the stdin
+            # values above. Resets accept any epoch; format_reset already caps
+            # the displayed countdown.
+            C_FP=$(_clamp_pct "$C_FP"); C_SP=$(_clamp_pct "$C_SP")
         fi
     fi
 
