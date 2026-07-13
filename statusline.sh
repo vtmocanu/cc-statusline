@@ -150,17 +150,28 @@ _rl_cmp() {
     printf 0
 }
 # Atomic, mode-600 write of a snapshot line (FIVE_PCT|FIVE_RESET|SEVEN_PCT|
-# SEVEN_RESET). Args: dest five_pct five_reset seven_pct seven_reset.
+# SEVEN_RESET). Args: dest five_pct five_reset seven_pct seven_reset. The live
+# tmp path is published in RL_TMP so the EXIT trap below reaps it if a signal
+# lands mid-write; the name is pid-scoped so concurrent renders never race on it
+# or reap each other's tmp. Every step is guarded: a write failure must never
+# break rendering.
 _rl_write() {
-    local dest="$1" tmp="$1.tmp.$$"
-    if printf '%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" > "$tmp" 2>/dev/null; then
-        chmod 600 "$tmp" 2>/dev/null || true
-        mv -f "$tmp" "$dest" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    local dest="$1"
+    RL_TMP="$dest.tmp.$$"
+    if printf '%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" > "$RL_TMP" 2>/dev/null; then
+        chmod 600 "$RL_TMP" 2>/dev/null || true
+        mv -f "$RL_TMP" "$dest" 2>/dev/null || rm -f "$RL_TMP" 2>/dev/null || true
     else
-        rm -f "$tmp" 2>/dev/null || true
+        rm -f "$RL_TMP" 2>/dev/null || true
     fi
+    RL_TMP=""
 }
 if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
+    # Reap a tmp left by an interrupted write, while still emitting the crash
+    # newline the top-of-file EXIT trap guarantees. RL_TMP is "" outside a write,
+    # so this is a no-op on a clean crash; disarmed at the normal output path.
+    RL_TMP=""
+    trap 'rm -f "$RL_TMP" 2>/dev/null; printf "\n"' EXIT
     RL_CACHE="${CC_STATUSLINE_RL_CACHE:-$(_state_dir)/rate-limits}"
     # Normalize stdin reset timestamps to integers (missing/non-numeric -> 0, a
     # same-window tie that then compares on used%). Percentages are already
