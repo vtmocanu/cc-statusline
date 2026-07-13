@@ -4,7 +4,7 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.9.0] - 2026-07-13
 
 ### Added
 - Shared per-user rate-limits cache: every render compares its stdin `rate_limits` snapshot against a cached account-wide one (by resets_at/used% freshness, never file mtime) and displays whichever is fresher, writing the fresher snapshot back. Idle sessions on `statusLine.refreshInterval` now show fresh 5h/7d bars instead of values frozen at their last API call. `CC_STATUSLINE_RL_CACHE` overrides the cache path (test isolation); `STATUSLINE_RL_SHARE=0` disables the feature entirely.
@@ -181,7 +181,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.0...HEAD
+[v2.9.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.1...v2.8.0
 [v2.7.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.0...v2.7.1
 [v2.7.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.6.0...v2.7.0
