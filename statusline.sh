@@ -115,6 +115,116 @@ PCT=$(_clamp_pct "$PCT"); PCT=${PCT:-0}   # context % is mandatory; default 0
 FIVE_PCT=$(_clamp_pct "$FIVE_PCT")
 SEVEN_PCT=$(_clamp_pct "$SEVEN_PCT")
 CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
+
+# ── Shared per-user rate-limits cache ─────────────────────────────────────
+# Rate limits are account-wide, but Claude Code freezes the stdin rate_limits
+# object at each session's LAST API response. An idle session, re-rendered on
+# the refresh timer, therefore shows stale 5h/7d bars even when another active
+# session on the same account has already seen fresher numbers. This shares the
+# freshest snapshot across all of a user's sessions through one small cache
+# file, so every render can display (and write back) the freshest values.
+#
+# Freshness comes from the DATA, never file mtime (an idle session has a fresh
+# mtime but stale numbers). Usage within a window is monotonic, so the newer
+# snapshot is the one whose tuple (5h resets_at, 5h used%, 7d resets_at, 7d
+# used%) is larger, compared in that priority order. On a strict win the stdin
+# snapshot is written back; on a tie stdin is kept and nothing is written. The
+# four chosen values are used together, so bars/percent/reset/pace never mix
+# two snapshots. Any cache failure is swallowed: it must never break rendering.
+#
+# Env knobs (mirror the service-cache seam near SVC_CACHE below):
+#   CC_STATUSLINE_RL_CACHE  override the cache path (test isolation)
+#   STATUSLINE_RL_SHARE=0   disable the feature entirely (no read, no write)
+# Compare two snapshots; prints 1 (A fresher), 2 (B fresher), 0 (identical).
+# All eight args must be integers (callers normalize before calling).
+_rl_cmp() {
+    local afr=$1 afp=$2 asr=$3 asp=$4 bfr=$5 bfp=$6 bsr=$7 bsp=$8
+    if [ "$afr" -gt "$bfr" ]; then printf 1; return; fi
+    if [ "$afr" -lt "$bfr" ]; then printf 2; return; fi
+    if [ "$afp" -gt "$bfp" ]; then printf 1; return; fi
+    if [ "$afp" -lt "$bfp" ]; then printf 2; return; fi
+    if [ "$asr" -gt "$bsr" ]; then printf 1; return; fi
+    if [ "$asr" -lt "$bsr" ]; then printf 2; return; fi
+    if [ "$asp" -gt "$bsp" ]; then printf 1; return; fi
+    if [ "$asp" -lt "$bsp" ]; then printf 2; return; fi
+    printf 0
+}
+# Atomic, mode-600 write of a snapshot line (FIVE_PCT|FIVE_RESET|SEVEN_PCT|
+# SEVEN_RESET). Args: dest five_pct five_reset seven_pct seven_reset. The live
+# tmp path is published in RL_TMP so the EXIT trap below reaps it if a signal
+# lands mid-write; the name is pid-scoped so concurrent renders never race on it
+# or reap each other's tmp. Every step is guarded: a write failure must never
+# break rendering.
+_rl_write() {
+    local dest="$1"
+    RL_TMP="$dest.tmp.$$"
+    if printf '%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" > "$RL_TMP" 2>/dev/null; then
+        chmod 600 "$RL_TMP" 2>/dev/null || true
+        mv -f "$RL_TMP" "$dest" 2>/dev/null || rm -f "$RL_TMP" 2>/dev/null || true
+    else
+        rm -f "$RL_TMP" 2>/dev/null || true
+    fi
+    RL_TMP=""
+}
+if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
+    # Reap a tmp left by an interrupted write, while still emitting the crash
+    # newline the top-of-file EXIT trap guarantees. RL_TMP is "" outside a write,
+    # so this is a no-op on a clean crash; disarmed at the normal output path.
+    RL_TMP=""
+    trap 'rm -f "$RL_TMP" 2>/dev/null; printf "\n"' EXIT
+    RL_CACHE="${CC_STATUSLINE_RL_CACHE:-$(_state_dir)/rate-limits}"
+    # Normalize stdin reset timestamps to integers (missing/non-numeric -> 0, a
+    # same-window tie that then compares on used%). The same 12-digit cap as the
+    # cache guard keeps them inside intmax, so _rl_cmp's arithmetic can never
+    # overflow and print "integer expected" to stderr on a pathological payload.
+    # Percentages are already clamped to 0-100 integers (or "" when absent).
+    if [[ "$FIVE_RESET_TS"  =~ ^[0-9]{1,12}$ ]]; then STDIN_FR=$FIVE_RESET_TS;  else STDIN_FR=0; fi
+    if [[ "$SEVEN_RESET_TS" =~ ^[0-9]{1,12}$ ]]; then STDIN_SR=$SEVEN_RESET_TS; else STDIN_SR=0; fi
+    STDIN_RL=0
+    [ -n "$FIVE_PCT" ] && [ -n "$SEVEN_PCT" ] && STDIN_RL=1
+
+    # Read + validate the cache line; any non-numeric field voids the whole line
+    # (treated as absent, overwritten on the next write).
+    CACHE_RL=0; C_FP=""; C_FR=""; C_SP=""; C_SR=""
+    if [ -f "$RL_CACHE" ]; then
+        IFS='|' read -r C_FP C_FR C_SP C_SR _ < "$RL_CACHE" 2>/dev/null || true
+        # Length caps keep every field well inside intmax (a percentage is <=3
+        # digits, an epoch <=12), so the arithmetic compare below can never
+        # overflow and spew "integer expected" to stderr on a tampered cache;
+        # anything longer voids the whole line (absent, overwritten next write).
+        if [[ "$C_FP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_FR" =~ ^[0-9]{1,12}$ ]] \
+            && [[ "$C_SP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_SR" =~ ^[0-9]{1,12}$ ]]; then
+            CACHE_RL=1
+            # Defense in depth: a numerically valid but out-of-range percentage
+            # (a tampered "999|...") must not render "999%"/a full bar, so
+            # re-clamp the cached percentages to [0,100] exactly like the stdin
+            # values above. Resets accept any epoch; format_reset already caps
+            # the displayed countdown.
+            C_FP=$(_clamp_pct "$C_FP"); C_SP=$(_clamp_pct "$C_SP")
+        fi
+    fi
+
+    if [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ]; then
+        case "$(_rl_cmp "$STDIN_FR" "$FIVE_PCT" "$STDIN_SR" "$SEVEN_PCT" \
+                        "$C_FR" "$C_FP" "$C_SR" "$C_SP")" in
+            2)  # cache is fresher: display it (all four values together)
+                FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
+                SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR" ;;
+            1)  # stdin is fresher: keep it and refresh the cache
+                _rl_write "$RL_CACHE" "$FIVE_PCT" "$STDIN_FR" "$SEVEN_PCT" "$STDIN_SR" ;;
+            *)  : ;;  # identical: keep stdin, no write
+        esac
+    elif [ "$CACHE_RL" = "1" ]; then
+        # Stdin carries no rate limits but the cache does: fill the gap so idle
+        # or limit-less renders still show the account-wide bars.
+        FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
+        SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
+    elif [ "$STDIN_RL" = "1" ]; then
+        # No usable cache yet: seed it from stdin.
+        _rl_write "$RL_CACHE" "$FIVE_PCT" "$STDIN_FR" "$SEVEN_PCT" "$STDIN_SR"
+    fi
+fi
+
 CTX_SIZE_K=$((CTX_SIZE / 1000))
 # Max line width before Claude Code's cli-truncate drops line 2
 SAFE_WIDTH=${STATUSLINE_WIDTH:-110}
