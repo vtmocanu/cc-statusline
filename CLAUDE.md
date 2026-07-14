@@ -18,6 +18,7 @@ Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 cc-statusline/
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
 ├── claude-status-fetch.sh            Background helper, polls status.claude.com every 60s, writes the per-user service-status cache
+├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
 ├── hooks/
 │   └── session-topic-capture.sh      Optional UserPromptSubmit hook, calls Claude Haiku to label sessions
 ├── install.sh                        Installer for public users (--version vX.Y.Z, --uninstall, --help)

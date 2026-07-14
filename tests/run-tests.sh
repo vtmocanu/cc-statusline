@@ -46,6 +46,9 @@ unset CLAUDE_CODE_OAUTH_TOKEN
 # spawning a real curl in the background during tests.
 export CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-cache"
 export CC_STATUSLINE_SVC_FETCH="$SCRATCH/no-such-fetcher.sh"
+# Same isolation for the per-account usage fetcher: a non-executable path so a
+# render can never hit /api/oauth/usage with real credentials during tests.
+export CC_STATUSLINE_RL_FETCH="$SCRATCH/no-such-usage-fetcher.sh"
 
 # Pin the clock so rate-limit reset countdowns and pace arrows are
 # deterministic across runs and locales. Fixtures with future resets_at are
@@ -404,6 +407,40 @@ rate_limit_cache_tests() {
         _rl_fail "$name" "ancestor-scanned keyed cache missing/wrong: $(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)"
     elif ! _has "$l2" "90%" || ! _has "$l2" "70%"; then
         _rl_fail "$name" "expected stdin 90%/70% on line 2, got: $l2"
+    else _rl_pass "$name"; fi
+
+    # 13. Fresh AUTHORITATIVE cache (5th field = fetch stamp within TTL) beats
+    #     stdin even when stdin would win the freshness compare (later resets,
+    #     higher pct): the fetched snapshot is the account's own API view while
+    #     stdin can carry another account's numbers. Cache must not be
+    #     overwritten either. Stamp 1699999990 is 10s before the pinned clock.
+    name="rl-auth-overrides-stdin"; cache="$SCRATCH/rl13.cache"
+    out="$SCRATCH/rl13.out"; err="$SCRATCH/rl13.err"
+    printf '10|1700005000|5|1700100000|1699999990\n' > "$cache"
+    ( cd "$SCRATCH" && _rl_json 60 1700020000 30 1700300000 \
+        | CC_STATUSLINE_RL_CACHE="$cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "10%" || ! _has "$l2" "5%"; then
+        _rl_fail "$name" "expected authoritative 10%/5% on line 2, got: $l2"
+    elif [ "$(cat "$cache")" != "10|1700005000|5|1700100000|1699999990" ]; then
+        _rl_fail "$name" "authoritative line clobbered by stdin: $(cat "$cache")"
+    else _rl_pass "$name"; fi
+
+    # 14. STALE authoritative stamp (older than the TTL) demotes the line to a
+    #     plain snapshot: normal freshness compare resumes, the fresher stdin is
+    #     displayed and rewrites the cache (4-field, stamp dropped).
+    name="rl-auth-stale-falls-back"; cache="$SCRATCH/rl14.cache"
+    out="$SCRATCH/rl14.out"; err="$SCRATCH/rl14.err"
+    printf '10|1700005000|5|1700100000|1699000000\n' > "$cache"
+    ( cd "$SCRATCH" && _rl_json 60 1700020000 30 1700300000 \
+        | CC_STATUSLINE_RL_CACHE="$cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "60%" || ! _has "$l2" "30%"; then
+        _rl_fail "$name" "expected stdin 60%/30% after stale auth, got: $l2"
+    elif [ "$(cat "$cache")" != "60|1700020000|30|1700300000" ]; then
+        _rl_fail "$name" "stale auth line not replaced by stdin: $(cat "$cache")"
     else _rl_pass "$name"; fi
 }
 

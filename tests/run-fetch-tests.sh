@@ -122,6 +122,76 @@ else
     printf '  PASS  array description did not execute a command\n'; PASS=$((PASS + 1))
 fi
 
+# ═══ Per-account usage fetcher (claude-usage-fetch.sh) ═════════════════════
+# Drives the /api/oauth/usage fetcher through the CC_STATUSLINE_USAGE_DATA seam
+# and asserts the 5-field authoritative cache line it writes. A dummy token is
+# always piped on stdin so the fetcher never consults the real keychain, and
+# CC_STATUSLINE_NOW pins the fetch stamp.
+UFETCH="$REPO_DIR/claude-usage-fetch.sh"
+UNOW=1700000000
+
+# run_ucase NAME JSON EXPECTED
+run_ucase() {
+    local name="$1" json="$2" expected="$3"
+    local data="$SCRATCH/udata.json" cache="$SCRATCH/ucache"
+    printf '%s' "$json" > "$data"
+    rm -f "$cache"
+    printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$data" \
+        CC_STATUSLINE_RL_CACHE="$cache" CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+    local got=""
+    [ -f "$cache" ] && got=$(head -1 "$cache" 2>/dev/null)
+    if [ "$got" = "$expected" ]; then
+        printf '  PASS  %s\n' "$name"; PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s\n        want: [%s]\n        got:  [%s]\n' "$name" "$expected" "$got"
+        FAIL=$((FAIL + 1))
+    fi
+}
+# run_uuntouched NAME JSON -- pre-seeded cache must survive a bad payload
+run_uuntouched() {
+    local name="$1" json="$2"
+    local data="$SCRATCH/udata.json" cache="$SCRATCH/ucache"
+    local sentinel="1|1700000001|2|1700000002|1699999999"
+    printf '%s' "$json" > "$data"
+    printf '%s\n' "$sentinel" > "$cache"
+    printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$data" \
+        CC_STATUSLINE_RL_CACHE="$cache" CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+    local got; got=$(head -1 "$cache" 2>/dev/null)
+    if [ "$got" = "$sentinel" ]; then
+        printf '  PASS  %s\n' "$name"; PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s (cache was clobbered)\n        want: [%s]\n        got:  [%s]\n' "$name" "$sentinel" "$got"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Live response shape as cached by Claude Code in ~/.claude.json
+# .cachedUsageUtilization.utilization (fractional seconds + +00:00 offset).
+# 2026-07-14T19:50:00Z = 1784058600, 2026-07-18T20:00:00Z = 1784404800.
+run_ucase "live shape -> 5-field authoritative line" \
+    '{"five_hour":{"utilization":18,"resets_at":"2026-07-14T19:50:00.280042+00:00"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00.280065+00:00"}}' \
+    "18|1784058600|83|1784404800|$UNOW"
+
+run_ucase "Z-suffixed resets and float utilization (floored)" \
+    '{"five_hour":{"utilization":18.9,"resets_at":"2026-07-14T19:50:00Z"},"seven_day":{"utilization":0,"resets_at":"2026-07-18T20:00:00Z"}}' \
+    "18|1784058600|0|1784404800|$UNOW"
+
+run_ucase "out-of-range utilization clamped to 100" \
+    '{"five_hour":{"utilization":999,"resets_at":"2026-07-14T19:50:00Z"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}' \
+    "100|1784058600|83|1784404800|$UNOW"
+
+run_uuntouched "usage: non-JSON error page leaves cache intact" \
+    '<html>502</html>'
+
+run_uuntouched "usage: HTTP error body (fields absent) leaves cache intact" \
+    '{"error":{"type":"authentication_error","message":"invalid bearer token"}}'
+
+run_uuntouched "usage: string utilization fails closed" \
+    '{"five_hour":{"utilization":"18","resets_at":"2026-07-14T19:50:00Z"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}'
+
+run_uuntouched "usage: non-UTC reset offset fails closed" \
+    '{"five_hour":{"utilization":18,"resets_at":"2026-07-14T21:50:00+02:00"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}'
+
 echo "------------------------------------------------------------"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

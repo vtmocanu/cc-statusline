@@ -4,6 +4,14 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.11.0] - 2026-07-14
+
+### Added
+- Per-account authoritative usage fetcher (`claude-usage-fetch.sh`): the statusline now asks `/api/oauth/usage` directly with the SESSION'S OWN credential (the scanned `CLAUDE_CODE_OAUTH_TOKEN` for token sessions, the stored login otherwise) in the background, writing a stamped 5-field line into the per-account rate-limits cache. While the stamp is fresh (default 300s, `STATUSLINE_RL_AUTH_TTL`) the fetched snapshot is displayed unconditionally instead of the stdin `rate_limits`, which Claude Code serves from the account-agnostic shared `~/.claude.json` `.cachedUsageUtilization` cache (whichever account fetched last), so on multi-account machines every session's bars showed one account's numbers. Fetches are throttled (60s staleness + a 30s `.fetching` marker across sessions); `STATUSLINE_RL_FETCH=0` disables the fetcher.
+
+### Security
+- The fetcher receives the token via stdin (never argv or env) and sends the Authorization header through `curl --config -` on stdin, so the credential is never visible in the process list; it is only ever sent to `api.anthropic.com` over HTTPS with a `cc-statusline/x.y.z` User-Agent, and only its short cksum hash appears in cache filenames. Fetched payloads are validated field-by-field (typed, clamped, epoch-capped) and any failure leaves the cache untouched.
+
 ## [v2.10.0] - 2026-07-14
 
 ### Added
@@ -191,7 +199,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.0...HEAD
+[v2.11.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.10.0...v2.11.0
 [v2.10.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.1...v2.10.0
 [v2.9.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.0...v2.9.1
 [v2.9.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.8.0...v2.9.0

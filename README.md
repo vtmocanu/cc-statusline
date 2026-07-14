@@ -168,6 +168,8 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_CACHE` | `1` | Set to `0` to hide the prompt-cache hit-rate readout (`⚡ NN%`) on line 2. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
+| `STATUSLINE_RL_FETCH` | `1` | Set to `0` to disable the background per-account usage fetcher (`claude-usage-fetch.sh`), which asks `api.anthropic.com/api/oauth/usage` with the session's own credential so multi-account machines show each account's true bars instead of Claude Code's shared (account-agnostic) numbers. |
+| `STATUSLINE_RL_AUTH_TTL` | `300` | Seconds a fetched usage snapshot stays authoritative (displayed over the stdin `rate_limits`). |
 | `CC_STATUSLINE_RL_KEY` | auto | Override the rate-limits cache account key (a label like `work`). Normally auto-detected from the session's `CLAUDE_CODE_OAUTH_TOKEN` (hashed, read from the parent `claude` process's exec-time environment since Claude Code consumes the variable). Set empty to force the shared unsuffixed cache. |
 | `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
 | `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |
@@ -193,6 +195,10 @@ Opt-in: create `~/.claude/profile-labels.json` with a `profiles` map and the bad
 The hook (`hooks/session-topic-capture.sh`) calls the Anthropic API with your locally stored Claude Code OAuth credentials (read from the macOS Keychain entry `Claude Code-credentials`, or `~/.claude/.credentials.json` on Linux) to generate a `Project: Focus` label for each session. It runs at most once per 10 prompts and writes to `~/.claude/session-topics/{session_id}.txt`.
 
 > **Security note**: this hook reads your OAuth token and sends excerpts of your Claude Code transcript to the Anthropic API. If you'd rather not, simply don't register the hook in `settings.json`; the statusline will skip the topic block entirely.
+
+### Per-account usage fetcher
+
+`claude-usage-fetch.sh` runs in the background (spawned by the statusline, throttled to once a minute across all your sessions per account) and asks `api.anthropic.com/api/oauth/usage` for the account's true 5h/7d usage, authenticated as the session itself: the session's `CLAUDE_CODE_OAUTH_TOKEN` when it was launched with one, your stored login otherwise. This exists because Claude Code feeds every session the same cached rate-limit numbers regardless of which account the session bills (shared `~/.claude.json` state), so on multi-account machines the bars were whichever account fetched last. The credential is never logged, never put in argv/env, and is only sent to `api.anthropic.com` over HTTPS. Set `STATUSLINE_RL_FETCH=0` to disable (the statusline then falls back to whatever Claude Code reports).
 
 ## Versioning
 

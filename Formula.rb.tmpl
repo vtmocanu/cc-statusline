@@ -23,7 +23,7 @@ class CcStatusline < Formula
     # fetcher relative to its own (non-symlink-resolved) dirname, and the
     # fetcher/hook read the VERSION file from their dir or its parent for the
     # User-Agent. A bare bin symlink would break both, hence the wrapper.
-    libexec.install "statusline.sh", "claude-status-fetch.sh", "VERSION", "hooks"
+    libexec.install "statusline.sh", "claude-status-fetch.sh", "claude-usage-fetch.sh", "VERSION", "hooks"
 
     (bin/"cc-statusline").write <<~SH
       #!/bin/bash

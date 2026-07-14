@@ -135,10 +135,14 @@ CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
 # two snapshots. Any cache failure is swallowed: it must never break rendering.
 #
 # Env knobs (mirror the service-cache seam near SVC_CACHE below):
-#   CC_STATUSLINE_RL_CACHE  override the cache path (test isolation)
-#   CC_STATUSLINE_RL_KEY    override the account key suffix (test seam /
-#                           manual account label; empty = unsuffixed cache)
-#   STATUSLINE_RL_SHARE=0   disable the feature entirely (no read, no write)
+#   CC_STATUSLINE_RL_CACHE   override the cache path (test isolation)
+#   CC_STATUSLINE_RL_KEY     override the account key suffix (test seam /
+#                            manual account label; empty = unsuffixed cache)
+#   CC_STATUSLINE_RL_FETCH   override the usage-fetcher path (test isolation)
+#   STATUSLINE_RL_SHARE=0    disable the feature entirely (no read, no write)
+#   STATUSLINE_RL_FETCH=0    disable the background per-account usage fetcher
+#   STATUSLINE_RL_AUTH_TTL   seconds a fetched snapshot stays authoritative
+#                            (default 300)
 # Compare two snapshots; prints 1 (A fresher), 2 (B fresher), 0 (identical).
 # All eight args must be integers (callers normalize before calling).
 _rl_cmp() {
@@ -193,11 +197,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     # CC_STATUSLINE_RL_KEY (set, possibly empty) short-circuits everything and
     # is used verbatim after filename sanitizing: the test seam, and a manual
     # per-account label for setups the scan can't see through.
-    _rl_key() {
-        if [ -n "${CC_STATUSLINE_RL_KEY+x}" ]; then
-            printf '%s' "${CC_STATUSLINE_RL_KEY//[^A-Za-z0-9._-]/}"
-            return
-        fi
+    _rl_token() {
         local tok="${CLAUDE_CODE_OAUTH_TOKEN:-}" pid=$$ i
         if [ -z "$tok" ]; then
             for i in 1 2 3 4 5 6; do
@@ -216,14 +216,23 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
                 [ -n "$tok" ] && break
             done
         fi
-        # Only a short one-way hash ever reaches the filename.
-        [ -n "$tok" ] && printf '%s' "$(printf '%s' "$tok" | cksum | cut -d' ' -f1 || echo 0)"
+        printf '%s' "$tok"
     }
+    RL_TOK=""
     if [ -n "${CC_STATUSLINE_RL_CACHE:-}" ]; then
         # Explicit path override wins outright; skip the (ps-spawning) key scan.
         RL_CACHE="$CC_STATUSLINE_RL_CACHE"
+    elif [ -n "${CC_STATUSLINE_RL_KEY+x}" ]; then
+        # Manual account label / test seam, used verbatim after filename
+        # sanitizing (empty = the shared unsuffixed cache). Skips the scan.
+        RL_KEY="${CC_STATUSLINE_RL_KEY//[^A-Za-z0-9._-]/}"
+        RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
     else
-        RL_KEY="$(_rl_key)"
+        # RL_TOK stays in this process only; the one thing that ever reaches a
+        # filename is its short one-way cksum hash.
+        RL_TOK="$(_rl_token)"
+        RL_KEY=""
+        [ -n "$RL_TOK" ] && RL_KEY="$(printf '%s' "$RL_TOK" | cksum | cut -d' ' -f1 || echo 0)"
         RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
     fi
     # Normalize stdin reset timestamps to integers (missing/non-numeric -> 0, a
@@ -237,10 +246,16 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     [ -n "$FIVE_PCT" ] && [ -n "$SEVEN_PCT" ] && STDIN_RL=1
 
     # Read + validate the cache line; any non-numeric field voids the whole line
-    # (treated as absent, overwritten on the next write).
-    CACHE_RL=0; C_FP=""; C_FR=""; C_SP=""; C_SR=""
+    # (treated as absent, overwritten on the next write). A 5th field is the
+    # FETCHED_EPOCH stamp written by claude-usage-fetch.sh: while fresh it makes
+    # the line AUTHORITATIVE (fetched from the account's own API view), so it is
+    # displayed unconditionally instead of freshness-compared against stdin,
+    # whose rate_limits can carry ANOTHER account's numbers (Claude Code serves
+    # every session the shared ~/.claude.json .cachedUsageUtilization cache,
+    # whichever account last refreshed it).
+    CACHE_RL=0; C_FP=""; C_FR=""; C_SP=""; C_SR=""; C_AT=""
     if [ -f "$RL_CACHE" ]; then
-        IFS='|' read -r C_FP C_FR C_SP C_SR _ < "$RL_CACHE" 2>/dev/null || true
+        IFS='|' read -r C_FP C_FR C_SP C_SR C_AT _ < "$RL_CACHE" 2>/dev/null || true
         # Length caps keep every field well inside intmax (a percentage is <=3
         # digits, an epoch <=12), so the arithmetic compare below can never
         # overflow and spew "integer expected" to stderr on a tampered cache;
@@ -256,8 +271,44 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
             C_FP=$(_clamp_pct "$C_FP"); C_SP=$(_clamp_pct "$C_SP")
         fi
     fi
+    # Authoritative while the fetch stamp is fresh (default 300s; negative ages
+    # from a tampered future stamp fail the window, so it cannot pin forever).
+    RL_NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
+    [[ "$RL_NOW" =~ ^[0-9]{1,12}$ ]] || RL_NOW=0
+    RL_AUTH=0; RL_AGE=9999
+    if [ "$CACHE_RL" = "1" ] && [[ "$C_AT" =~ ^[0-9]{1,12}$ ]]; then
+        RL_AGE=$((RL_NOW - C_AT))
+        [ "$RL_AGE" -ge 0 ] && [ "$RL_AGE" -lt "${STATUSLINE_RL_AUTH_TTL:-300}" ] && RL_AUTH=1
+    fi
 
-    if [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ]; then
+    # Spawn the background usage fetcher when the authoritative snapshot is
+    # missing or aging (>=60s). It asks /api/oauth/usage with THIS session's
+    # credential: the scanned token (piped via stdin, never argv/env) for token
+    # sessions, or the stored login the fetcher reads itself for keychain
+    # sessions. A .fetching marker (30s) keeps a burst of renders across many
+    # sessions from stampeding the endpoint. STATUSLINE_RL_FETCH=0 disables;
+    # CC_STATUSLINE_RL_FETCH points the spawner elsewhere (test isolation).
+    RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    RL_FETCH="${CC_STATUSLINE_RL_FETCH:-${RL_SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-usage-fetch.sh}"
+    if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] && [ "$RL_AGE" -ge 60 ]; then
+        RL_MARK="$RL_CACHE.fetching"
+        RL_MARK_AGE=9999
+        [ -f "$RL_MARK" ] && RL_MARK_AGE=$((RL_NOW - $(_file_mtime "$RL_MARK")))
+        if [ "$RL_MARK_AGE" -ge 30 ] || [ "$RL_MARK_AGE" -lt 0 ]; then
+            touch "$RL_MARK" 2>/dev/null || true
+            ( { printf '%s' "$RL_TOK" \
+                  | CC_STATUSLINE_RL_CACHE="$RL_CACHE" "$RL_FETCH"
+                rm -f "$RL_MARK"; } >/dev/null 2>&1 & )
+        fi
+    fi
+
+    if [ "$RL_AUTH" = "1" ]; then
+        # Fresh authoritative snapshot: this account's own numbers, straight
+        # from the API. Display them and never let stdin (possibly another
+        # account's data) overwrite the line while it is fresh.
+        FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
+        SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
+    elif [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ]; then
         case "$(_rl_cmp "$STDIN_FR" "$FIVE_PCT" "$STDIN_SR" "$SEVEN_PCT" \
                         "$C_FR" "$C_FP" "$C_SR" "$C_SP")" in
             2)  # cache is fresher: display it (all four values together)

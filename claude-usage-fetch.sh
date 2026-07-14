@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Fetches the ACCOUNT's true rate-limit usage from the Anthropic OAuth usage
+# endpoint and writes it into the per-account rate-limits cache the statusline
+# reads. Called by the statusline in the background when the cache holds no
+# fresh authoritative snapshot (see the RL block in statusline.sh).
+#
+# Why this exists: Claude Code caches account usage in the SHARED ~/.claude.json
+# (.cachedUsageUtilization) without honoring which account a session actually
+# bills, so on multi-account machines (keychain login + CLAUDE_CODE_OAUTH_TOKEN
+# sessions) every session's stdin rate_limits shows whichever account fetched
+# last. Asking the API directly with the SESSION'S OWN credential makes the
+# bars authoritative per account.
+#
+# Credential: read from STDIN (never argv or env, so it cannot leak through
+# ps/procargs). Empty stdin falls back to the stored login, exactly like
+# hooks/session-topic-capture.sh: macOS Keychain first, then
+# ~/.claude/.credentials.json. The credential is only ever sent to
+# api.anthropic.com over HTTPS (via a curl config on stdin, keeping it out of
+# curl's argv) and is never logged or written to disk.
+#
+# Cache line format (a superset of the statusline's 4-field format):
+#   FIVE_PCT|FIVE_RESET|SEVEN_PCT|SEVEN_RESET|FETCHED_EPOCH
+# The 5th field marks the line AUTHORITATIVE: while it is fresh the statusline
+# displays it unconditionally instead of comparing against the stdin snapshot.
+# On any failure (no credential, network, HTTP error, parse) the cache is left
+# untouched, so a transient error never erases the last known-good data.
+#
+# Env seams (mirror claude-status-fetch.sh):
+#   CC_STATUSLINE_RL_CACHE    destination cache file (passed by the spawner)
+#   CC_STATUSLINE_USAGE_DATA  JSON fixture instead of the network (tests)
+#   CC_STATUSLINE_NOW         pinned clock for the FETCHED_EPOCH stamp (tests)
+
+set -uo pipefail
+
+_state_dir() {
+    local base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local uid d
+    uid=$(id -u 2>/dev/null || echo 0)
+    d="${base%/}/cc-statusline-${uid}"
+    mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null
+    printf '%s' "$d"
+}
+# Single-sourced version for the User-Agent. Reads the tracked VERSION file
+# shipped next to the install; "dev" if absent.
+_cc_version() {
+    local d
+    d="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    { cat "$d/VERSION" "$d/../VERSION"; } 2>/dev/null | head -1
+}
+VERSION="$(_cc_version)"; VERSION="${VERSION:-dev}"
+
+CACHE_FILE="${CC_STATUSLINE_RL_CACHE:-$(_state_dir)/rate-limits}"
+TMP_FILE="${CACHE_FILE}.fetch.$$"
+trap 'rm -f "$TMP_FILE"' EXIT
+
+# Token from stdin (the spawner pipes it; token sessions). Size-capped and
+# whitespace-stripped; `timeout` so a ttyless manual invocation cannot hang.
+TOKEN=$(timeout 2 head -c 4096 2>/dev/null | tr -d '[:space:]') || TOKEN=""
+if [ -z "$TOKEN" ]; then
+    # Stored-login fallback (keychain sessions), matching the topic hook.
+    creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) \
+        && TOKEN=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+    if [ -z "$TOKEN" ]; then
+        TOKEN=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null)
+    fi
+fi
+[ -z "$TOKEN" ] && exit 0
+
+if [ -n "${CC_STATUSLINE_USAGE_DATA:-}" ]; then
+    data=$(cat "$CC_STATUSLINE_USAGE_DATA" 2>/dev/null) || exit 0
+else
+    # The Authorization header travels via `--config -` on stdin, NOT argv, so
+    # the token is never visible in the process list even transiently.
+    data=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" \
+        | curl -s --max-time 8 --config - \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "Accept: application/json" \
+            -H "User-Agent: cc-statusline/${VERSION}" \
+            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || exit 0
+fi
+[ -z "$data" ] && exit 0
+
+# Parse + validate in one jq pass. Percentages are floored to ints and clamped
+# to [0,100]; ISO resets_at convert to epoch (UTC forms only: fractional
+# seconds stripped, +00:00 normalized to Z). Any missing/mistyped field or a
+# non-UTC offset makes jq fail or emit nothing, and the cache stays untouched
+# (fail closed, like the network path). An HTTP error body ({"error": ...})
+# fails the same way since the fields are absent.
+parsed=$(echo "$data" | jq -r '
+    def iso2epoch: tostring | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601;
+    def pct: numbers | floor | [., 0] | max | [., 100] | min;
+    (.five_hour.utilization | pct) as $fp
+  | (.seven_day.utilization | pct) as $sp
+  | (.five_hour.resets_at | iso2epoch) as $fr
+  | (.seven_day.resets_at | iso2epoch) as $sr
+  | "\($fp)|\($fr)|\($sp)|\($sr)"
+' 2>/dev/null) || exit 0
+# Belt-and-braces shape check: exactly the 4-field format the statusline
+# validates on read (3-digit pct cap, 12-digit epoch cap).
+[[ "$parsed" =~ ^[0-9]{1,3}\|[0-9]{1,12}\|[0-9]{1,3}\|[0-9]{1,12}$ ]] || exit 0
+
+NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
+[[ "$NOW" =~ ^[0-9]{1,12}$ ]] || exit 0
+
+if printf '%s|%s\n' "$parsed" "$NOW" > "$TMP_FILE" 2>/dev/null; then
+    chmod 600 "$TMP_FILE" 2>/dev/null || true
+    mv -f "$TMP_FILE" "$CACHE_FILE" 2>/dev/null || rm -f "$TMP_FILE" 2>/dev/null || true
+fi
+trap - EXIT
