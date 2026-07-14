@@ -170,6 +170,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
 | `STATUSLINE_RL_FETCH` | `1` | Set to `0` to disable the background per-account usage fetcher (`claude-usage-fetch.sh`), which asks `api.anthropic.com/api/oauth/usage` with the session's own credential so multi-account machines show each account's true bars instead of Claude Code's shared (account-agnostic) numbers. |
 | `STATUSLINE_RL_AUTH_TTL` | `300` | Seconds a fetched usage snapshot stays authoritative (displayed over the stdin `rate_limits`). |
+| `STATUSLINE_RL_BACKOFF` | `900` | Seconds to stop fetching for an account after the usage endpoint returns an HTTP error (e.g. 429). |
 | `CC_STATUSLINE_RL_KEY` | auto | Override the rate-limits cache account key (a label like `work`). Normally auto-detected from the session's `CLAUDE_CODE_OAUTH_TOKEN` (hashed, read from the parent `claude` process's exec-time environment since Claude Code consumes the variable). Set empty to force the shared unsuffixed cache. |
 | `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
 | `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |

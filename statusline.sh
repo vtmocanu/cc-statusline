@@ -293,7 +293,16 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     # spawner elsewhere (test isolation).
     RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
     RL_FETCH="${CC_STATUSLINE_RL_FETCH:-${RL_SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-usage-fetch.sh}"
-    if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] && [ "$RL_AGE" -ge 60 ]; then
+    # A fresh .backoff marker means the last fetch got an HTTP error (e.g. the
+    # usage endpoint 429ing this credential): stay off it entirely for a while
+    # rather than retrying every minute.
+    RL_BACK=0
+    if [ -f "$RL_CACHE.backoff" ]; then
+        RL_BACK_AGE=$((RL_NOW - $(_file_mtime "$RL_CACHE.backoff")))
+        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "${STATUSLINE_RL_BACKOFF:-900}" ] && RL_BACK=1
+    fi
+    if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] \
+        && [ "$RL_AGE" -ge 60 ] && [ "$RL_BACK" = "0" ]; then
         RL_MARK="$RL_CACHE.fetching"
         RL_MARK_AGE=9999
         [ -f "$RL_MARK" ] && RL_MARK_AGE=$((RL_NOW - $(_file_mtime "$RL_MARK")))

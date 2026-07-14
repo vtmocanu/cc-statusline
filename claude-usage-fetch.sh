@@ -51,7 +51,13 @@ VERSION="$(_cc_version)"; VERSION="${VERSION:-dev}"
 
 CACHE_FILE="${CC_STATUSLINE_RL_CACHE:-$(_state_dir)/rate-limits}"
 TMP_FILE="${CACHE_FILE}.fetch.$$"
-trap 'rm -f "$TMP_FILE"' EXIT
+BODY_FILE="${CACHE_FILE}.body.$$"
+# An HTTP error (notably 429: the endpoint rate-limits usage lookups
+# independently of the account's own quota) drops this marker; the statusline
+# stops spawning fetches while it is fresh, so a rejected credential or a
+# throttled endpoint is never hammered. Cleared on the next success.
+BACKOFF_FILE="${CACHE_FILE}.backoff"
+trap 'rm -f "$TMP_FILE" "$BODY_FILE"' EXIT
 
 # Token from stdin (the spawner pipes it; token sessions). Size-capped and
 # whitespace-stripped; `timeout` so a ttyless manual invocation cannot hang.
@@ -67,17 +73,29 @@ fi
 [ -z "$TOKEN" ] && exit 0
 
 if [ -n "${CC_STATUSLINE_USAGE_DATA:-}" ]; then
+    # Test seam: fixture body, with the HTTP status the transport "returned".
     data=$(cat "$CC_STATUSLINE_USAGE_DATA" 2>/dev/null) || exit 0
+    http="${CC_STATUSLINE_USAGE_HTTP:-200}"
 else
     # The Authorization header travels via `--config -` on stdin, NOT argv, so
     # the token is never visible in the process list even transiently.
-    data=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" \
+    http=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" \
         | curl -s --max-time 8 --config - \
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "Accept: application/json" \
             -H "User-Agent: cc-statusline/${VERSION}" \
-            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || exit 0
+            -o "$BODY_FILE" -w '%{http_code}' \
+            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || http=""
+    data=$(cat "$BODY_FILE" 2>/dev/null)
 fi
+# An HTTP error means the credential or the endpoint is refusing us: back off
+# (the statusline then stops spawning fetches for a while) and leave the cache.
+# A transport failure (empty status) is transient: no backoff, the spawner's
+# own 60s gate is enough.
+case "${http:-}" in
+    200|"") : ;;
+    *) touch "$BACKOFF_FILE" 2>/dev/null || true; exit 0 ;;
+esac
 [ -z "$data" ] && exit 0
 
 # Parse + validate in one jq pass. Percentages are floored to ints and clamped
@@ -104,6 +122,11 @@ NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
 
 if printf '%s|%s\n' "$parsed" "$NOW" > "$TMP_FILE" 2>/dev/null; then
     chmod 600 "$TMP_FILE" 2>/dev/null || true
-    mv -f "$TMP_FILE" "$CACHE_FILE" 2>/dev/null || rm -f "$TMP_FILE" 2>/dev/null || true
+    if mv -f "$TMP_FILE" "$CACHE_FILE" 2>/dev/null; then
+        rm -f "$BACKOFF_FILE" 2>/dev/null || true  # recovered
+    else
+        rm -f "$TMP_FILE" 2>/dev/null || true
+    fi
 fi
+rm -f "$BODY_FILE" 2>/dev/null || true
 trap - EXIT

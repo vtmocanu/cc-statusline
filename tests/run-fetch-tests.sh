@@ -192,6 +192,37 @@ run_uuntouched "usage: string utilization fails closed" \
 run_uuntouched "usage: non-UTC reset offset fails closed" \
     '{"five_hour":{"utilization":18,"resets_at":"2026-07-14T21:50:00+02:00"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}'
 
+# ── HTTP-error backoff (the endpoint 429s a credential) ────────────────────
+# A non-200 status must leave the cache alone AND drop a .backoff marker, which
+# the statusline honors by not spawning fetches for a while. A later success
+# must clear the marker.
+ucache="$SCRATCH/ucache"; udata="$SCRATCH/udata.json"
+seed="1|1700000001|2|1700000002|1699999999"
+good='{"five_hour":{"utilization":18,"resets_at":"2026-07-14T19:50:00Z"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}'
+
+printf '%s' '{"error":{"type":"rate_limit_error","message":"Rate limited."}}' > "$udata"
+printf '%s\n' "$seed" > "$ucache"; rm -f "$ucache.backoff"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" CC_STATUSLINE_USAGE_HTTP=429 \
+    CC_STATUSLINE_RL_CACHE="$ucache" CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" != "$seed" ]; then
+    printf '  FAIL  usage: 429 clobbered the cache\n'; FAIL=$((FAIL + 1))
+elif [ ! -f "$ucache.backoff" ]; then
+    printf '  FAIL  usage: 429 did not drop a .backoff marker\n'; FAIL=$((FAIL + 1))
+else
+    printf '  PASS  usage: 429 leaves cache intact and backs off\n'; PASS=$((PASS + 1))
+fi
+
+printf '%s' "$good" > "$udata"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" \
+    CC_STATUSLINE_RL_CACHE="$ucache" CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" != "18|1784058600|83|1784404800|$UNOW" ]; then
+    printf '  FAIL  usage: recovery fetch did not write the snapshot\n'; FAIL=$((FAIL + 1))
+elif [ -f "$ucache.backoff" ]; then
+    printf '  FAIL  usage: .backoff marker survived a successful fetch\n'; FAIL=$((FAIL + 1))
+else
+    printf '  PASS  usage: success clears the .backoff marker\n'; PASS=$((PASS + 1))
+fi
+
 echo "------------------------------------------------------------"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

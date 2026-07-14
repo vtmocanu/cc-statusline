@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.11.2] - 2026-07-14
+
+### Fixed
+- The usage fetcher now backs off on HTTP errors instead of retrying every minute: a non-200 response (observed: the usage endpoint returns 429 to a `CLAUDE_CODE_OAUTH_TOKEN` credential while accepting the same account's requests on the Messages API) drops a `.backoff` marker, and the statusline stops spawning fetches for that account while it is fresh (`STATUSLINE_RL_BACKOFF`, default 900s). A later success clears the marker. Transport failures (no HTTP status) stay on the plain 60s gate.
+
 ## [v2.11.1] - 2026-07-14
 
 ### Fixed
@@ -204,7 +209,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...HEAD
+[v2.11.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.1...v2.11.2
 [v2.11.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.0...v2.11.1
 [v2.11.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.10.0...v2.11.0
 [v2.10.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.1...v2.10.0
