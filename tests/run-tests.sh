@@ -35,6 +35,10 @@ SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 export KUBECONFIG=/dev/null
 unset GIT_DIR GIT_WORK_TREE
+# An ambient token (harness run from inside a CLAUDE_CODE_OAUTH_TOKEN session)
+# would silently switch the account-keyed rate-limits cache path; drop it so
+# the rl-account-keyed test controls the token explicitly.
+unset CLAUDE_CODE_OAUTH_TOKEN
 
 # Isolate the service-status cache and fetcher from the host. The
 # statusline reads CC_STATUSLINE_SVC_CACHE / CC_STATUSLINE_SVC_FETCH env
@@ -339,6 +343,67 @@ rate_limit_cache_tests() {
         _rl_fail "$name" "expected new-window 5%/3% on line 2, got: $l2"
     elif [ "$(cat "$cache")" != "5|1700020000|3|1700300000" ]; then
         _rl_fail "$name" "cache not rewritten with new-window snapshot: $(cat "$cache")"
+    else _rl_pass "$name"; fi
+
+    # 11. Account keying: a session launched with CLAUDE_CODE_OAUTH_TOKEN uses
+    #     its own cache file (rate-limits-<cksum>), so two accounts never
+    #     cross-pollute each other's bars. Exercises the DEFAULT path (blank
+    #     CC_STATUSLINE_RL_CACHE) via a scratch XDG_RUNTIME_DIR. Token-less
+    #     renders pin CC_STATUSLINE_RL_KEY="" so an ancestor claude process of
+    #     THIS harness run (a token session) can't leak in via the env scan.
+    name="rl-account-keyed"
+    local state="$SCRATCH/rl11-state" statedir tok tokhash
+    out="$SCRATCH/rl11.out"; err="$SCRATCH/rl11.err"
+    mkdir -p "$state"
+    statedir="$state/cc-statusline-$(id -u)"
+    tok="sk-ant-oat01-test-token"
+    tokhash=$(printf '%s' "$tok" | cksum | cut -d' ' -f1)
+    # Default (token-less) account seeds the unsuffixed cache.
+    ( cd "$SCRATCH" && _rl_json 15 1700010000 2 1700010000 \
+        | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY="" \
+          bash "$STATUSLINE" ) >/dev/null 2>"$err"
+    # Token account writes much "fresher" numbers into ITS OWN keyed cache.
+    ( cd "$SCRATCH" && _rl_json 90 1700018000 70 1700200000 \
+        | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" \
+          CLAUDE_CODE_OAUTH_TOKEN="$tok" bash "$STATUSLINE" ) >/dev/null 2>>"$err"
+    # Idle re-render of the default account (no stdin rate limits): must fill
+    # from its own cache (15%/2%), never the token account's 90%/70%.
+    ( cd "$SCRATCH" && _rl_json_norl \
+        | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY="" \
+          bash "$STATUSLINE" ) >"$out" 2>>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$(cat "$statedir/rate-limits" 2>/dev/null)" != "15|1700010000|2|1700010000" ]; then
+        _rl_fail "$name" "unsuffixed cache polluted or missing: $(cat "$statedir/rate-limits" 2>/dev/null)"
+    elif [ "$(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)" != "90|1700018000|70|1700200000" ]; then
+        _rl_fail "$name" "token-keyed cache missing/wrong: $(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)"
+    elif _has "$l2" "90%" || _has "$l2" "70%"; then
+        _rl_fail "$name" "token account leaked into token-less render: $l2"
+    elif ! _has "$l2" "15%" || ! _has "$l2" "2%"; then
+        _rl_fail "$name" "expected own cached 15%/2% on line 2, got: $l2"
+    else _rl_pass "$name"; fi
+
+    # 12. Ancestor env scan: Claude Code consumes CLAUDE_CODE_OAUTH_TOKEN, so
+    #     the statusline's OWN env lacks it; the key must come from an
+    #     ancestor's exec-time environment (/proc/PID/environ or ps eww). The
+    #     intermediate `bash -c` holds the token at exec, then strips it from
+    #     the statusline's env with `env -u`, mirroring the real process tree.
+    #     The trailing `exit $?` stops bash -c from tail-exec'ing into env
+    #     (which would collapse the chain and leave no token-bearing ancestor).
+    name="rl-ancestor-env-scan"
+    out="$SCRATCH/rl12.out"; err="$SCRATCH/rl12.err"
+    rm -f "$statedir/rate-limits-$tokhash"
+    ( cd "$SCRATCH" && _rl_json 90 1700018000 70 1700200000 \
+        | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" \
+          CLAUDE_CODE_OAUTH_TOKEN="$tok" \
+          bash -c 'env -u CLAUDE_CODE_OAUTH_TOKEN bash "$1"; exit $?' _ "$STATUSLINE" ) \
+        >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)" != "90|1700018000|70|1700200000" ]; then
+        _rl_fail "$name" "ancestor-scanned keyed cache missing/wrong: $(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)"
+    elif ! _has "$l2" "90%" || ! _has "$l2" "70%"; then
+        _rl_fail "$name" "expected stdin 90%/70% on line 2, got: $l2"
     else _rl_pass "$name"; fi
 }
 

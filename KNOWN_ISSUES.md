@@ -34,7 +34,24 @@ installer checks for it. (KNOWN_ISSUES previously floated migrating to `python3`
 we kept `perl` deliberately, since it was already the hard dependency and is ~2x
 faster to start than `python3` for these tiny one-shot invocations.)
 
-## Tab-title write requires `/dev/tty`
+## Account detection for the rate-limits cache scans ancestor process envs
+
+The shared rate-limits cache is keyed per account so `CLAUDE_CODE_OAUTH_TOKEN=...
+claude` sessions don't cross-pollute the default keychain account's bars. Claude
+Code consumes that variable before spawning subprocesses and the statusline stdin
+JSON carries no account identifier, so the only available signal is the exec-time
+environment of the ancestor `claude` process: `/proc/PID/environ` on Linux,
+`ps eww` on macOS/BSD (both owner-readable only). Caveats:
+
+- If a launcher breaks the ancestor chain (more than 6 hops between the
+  statusline and `claude`, or a daemonized intermediary reparented to PID 1) or
+  the platform hides process args, token sessions silently fall back to the
+  shared unsuffixed cache: the pre-keying behavior, not a crash.
+- The token itself never reaches disk or the cache filename; only a 32-bit
+  `cksum` hash does. Different tokens for the *same* account get separate caches
+  (less sharing than possible, never wrong values).
+- `CC_STATUSLINE_RL_KEY=<label>` overrides detection entirely for setups the
+  scan can't see through; empty forces the shared cache.
 
 Setting the terminal tab title via `printf '\033]1;%s\007' > /dev/tty` only works
 when the script has a controlling terminal. Under tmux, screen, and most CI

@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.9.1] - 2026-07-14
+
+### Fixed
+- Shared rate-limits cache is now keyed per account: sessions launched with `CLAUDE_CODE_OAUTH_TOKEN=... claude` use their own cache file (`rate-limits-<cksum-of-token>`, the token itself is never stored), so a token session's bars no longer pollute the default keychain account's sessions (and vice versa). Token-less sessions keep the unsuffixed path. Claude Code consumes the token variable before spawning subprocesses and the statusline stdin JSON carries no account identifier, so the key is recovered from the exec-time environment of the ancestor `claude` process (`/proc/PID/environ` on Linux, `ps eww` on macOS/BSD, max 6 hops, owner-readable only). `CC_STATUSLINE_RL_KEY` overrides the detected key (manual account label / test seam; empty forces the shared unsuffixed cache). Covered by two new harness tests (cross-account isolation, ancestor env scan).
+
 ## [v2.9.0] - 2026-07-13
 
 ### Added
@@ -181,7 +186,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.1...HEAD
+[v2.9.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.0...v2.9.1
 [v2.9.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.1...v2.8.0
 [v2.7.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.0...v2.7.1

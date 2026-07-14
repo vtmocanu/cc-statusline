@@ -121,8 +121,10 @@ CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
 # object at each session's LAST API response. An idle session, re-rendered on
 # the refresh timer, therefore shows stale 5h/7d bars even when another active
 # session on the same account has already seen fresher numbers. This shares the
-# freshest snapshot across all of a user's sessions through one small cache
-# file, so every render can display (and write back) the freshest values.
+# freshest snapshot across all of a user's sessions ON THE SAME ACCOUNT through
+# one small cache file per account (keyed by CLAUDE_CODE_OAUTH_TOKEN when set,
+# see RL_KEY below), so every render can display (and write back) the freshest
+# values without cross-account pollution.
 #
 # Freshness comes from the DATA, never file mtime (an idle session has a fresh
 # mtime but stale numbers). Usage within a window is monotonic, so the newer
@@ -134,6 +136,8 @@ CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
 #
 # Env knobs (mirror the service-cache seam near SVC_CACHE below):
 #   CC_STATUSLINE_RL_CACHE  override the cache path (test isolation)
+#   CC_STATUSLINE_RL_KEY    override the account key suffix (test seam /
+#                           manual account label; empty = unsuffixed cache)
 #   STATUSLINE_RL_SHARE=0   disable the feature entirely (no read, no write)
 # Compare two snapshots; prints 1 (A fresher), 2 (B fresher), 0 (identical).
 # All eight args must be integers (callers normalize before calling).
@@ -172,7 +176,56 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     # so this is a no-op on a clean crash; disarmed at the normal output path.
     RL_TMP=""
     trap 'rm -f "$RL_TMP" 2>/dev/null; printf "\n"' EXIT
-    RL_CACHE="${CC_STATUSLINE_RL_CACHE:-$(_state_dir)/rate-limits}"
+    # Rate limits are per ACCOUNT, and a session launched with
+    # CLAUDE_CODE_OAUTH_TOKEN=... claude talks to a different account than the
+    # default keychain login. Key the cache file by a short hash of that token
+    # (never the token itself) so each account only shares snapshots with its
+    # own sessions; token-less sessions keep the unsuffixed path.
+    #
+    # Claude Code CONSUMES the var (its child processes, this script included,
+    # never see it), but the kernel keeps every process's EXEC-TIME environment
+    # readable by its owner (/proc/PID/environ on Linux, ps eww on macOS/BSD),
+    # so _rl_key walks the ancestor chain (statusline -> sh -> claude -> user
+    # shell) and reads the token from the first ancestor that has it. A session
+    # launched without a token scans a few levels, finds nothing, and keeps the
+    # unsuffixed shared cache exactly as before.
+    #
+    # CC_STATUSLINE_RL_KEY (set, possibly empty) short-circuits everything and
+    # is used verbatim after filename sanitizing: the test seam, and a manual
+    # per-account label for setups the scan can't see through.
+    _rl_key() {
+        if [ -n "${CC_STATUSLINE_RL_KEY+x}" ]; then
+            printf '%s' "${CC_STATUSLINE_RL_KEY//[^A-Za-z0-9._-]/}"
+            return
+        fi
+        local tok="${CLAUDE_CODE_OAUTH_TOKEN:-}" pid=$$ i
+        if [ -z "$tok" ]; then
+            for i in 1 2 3 4 5 6; do
+                pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || break
+                [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || break
+                if [ -r "/proc/$pid/environ" ]; then
+                    tok=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+                          | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' 2>/dev/null | head -n 1)
+                else
+                    # A token never contains spaces, so word-splitting the env
+                    # dump cannot corrupt it (other vars' values may split;
+                    # they are not what sed matches).
+                    tok=$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
+                          | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' 2>/dev/null | head -n 1)
+                fi
+                [ -n "$tok" ] && break
+            done
+        fi
+        # Only a short one-way hash ever reaches the filename.
+        [ -n "$tok" ] && printf '%s' "$(printf '%s' "$tok" | cksum | cut -d' ' -f1 || echo 0)"
+    }
+    if [ -n "${CC_STATUSLINE_RL_CACHE:-}" ]; then
+        # Explicit path override wins outright; skip the (ps-spawning) key scan.
+        RL_CACHE="$CC_STATUSLINE_RL_CACHE"
+    else
+        RL_KEY="$(_rl_key)"
+        RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
+    fi
     # Normalize stdin reset timestamps to integers (missing/non-numeric -> 0, a
     # same-window tie that then compares on used%). The same 12-digit cap as the
     # cache guard keeps them inside intmax, so _rl_cmp's arithmetic can never
