@@ -285,20 +285,22 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     # missing or aging (>=60s). It asks /api/oauth/usage with THIS session's
     # credential: the scanned token (piped via stdin, never argv/env) for token
     # sessions, or the stored login the fetcher reads itself for keychain
-    # sessions. A .fetching marker (30s) keeps a burst of renders across many
-    # sessions from stampeding the endpoint. STATUSLINE_RL_FETCH=0 disables;
-    # CC_STATUSLINE_RL_FETCH points the spawner elsewhere (test isolation).
+    # sessions. The persistent .fetching marker gates ATTEMPTS to one per
+    # minute per account across all sessions, success or failure alike: a
+    # failed fetch writes no stamp, so without this gate every render would
+    # retry and a 429 from the endpoint would never get room to clear.
+    # STATUSLINE_RL_FETCH=0 disables; CC_STATUSLINE_RL_FETCH points the
+    # spawner elsewhere (test isolation).
     RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
     RL_FETCH="${CC_STATUSLINE_RL_FETCH:-${RL_SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-usage-fetch.sh}"
     if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] && [ "$RL_AGE" -ge 60 ]; then
         RL_MARK="$RL_CACHE.fetching"
         RL_MARK_AGE=9999
         [ -f "$RL_MARK" ] && RL_MARK_AGE=$((RL_NOW - $(_file_mtime "$RL_MARK")))
-        if [ "$RL_MARK_AGE" -ge 30 ] || [ "$RL_MARK_AGE" -lt 0 ]; then
+        if [ "$RL_MARK_AGE" -ge 60 ] || [ "$RL_MARK_AGE" -lt 0 ]; then
             touch "$RL_MARK" 2>/dev/null || true
-            ( { printf '%s' "$RL_TOK" \
-                  | CC_STATUSLINE_RL_CACHE="$RL_CACHE" "$RL_FETCH"
-                rm -f "$RL_MARK"; } >/dev/null 2>&1 & )
+            ( printf '%s' "$RL_TOK" \
+                | CC_STATUSLINE_RL_CACHE="$RL_CACHE" "$RL_FETCH" >/dev/null 2>&1 & )
         fi
     fi
 
