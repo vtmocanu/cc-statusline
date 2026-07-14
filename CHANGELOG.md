@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.10.0] - 2026-07-14
+
+### Added
+- Profile badge now labels token-launched sessions: when the rate-limits account scan detects a `CLAUDE_CODE_OAUTH_TOKEN` session, the badge is looked up in `~/.claude/profile-labels.json` by the token's cksum hash (same key as the per-account rate-limits cache) instead of the keychain account UUID from `~/.claude.json`, which token sessions never update. Unlabeled accounts show a `NNNNNN?` hint. Badge documented in the README (it previously wasn't).
+
 ## [v2.9.1] - 2026-07-14
 
 ### Fixed
@@ -186,7 +191,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.10.0...HEAD
+[v2.10.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.1...v2.10.0
 [v2.9.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.9.0...v2.9.1
 [v2.9.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.7.1...v2.8.0

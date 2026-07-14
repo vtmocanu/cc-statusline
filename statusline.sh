@@ -443,6 +443,12 @@ fi
 # claude-account-switcher). No network call, no Keychain access, fully
 # portable across macOS/Linux.
 #
+# Sessions launched with CLAUDE_CODE_OAUTH_TOKEN don't update ~/.claude.json,
+# so the UUID there would mislabel them. When the rate-limits account scan
+# detected a token (RL_KEY, the cksum hash above), the badge is looked up by
+# that hash instead: add a profiles entry keyed by the hash to label a token
+# account. Requires STATUSLINE_RL_SHARE enabled (the scan runs there).
+#
 # Disabled if STATUSLINE_PROFILE=0, the mapping file is absent, or
 # `enabled: false` is set in the JSON.
 PROFILE_LABEL=""
@@ -455,12 +461,14 @@ if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && [ -r "$CLA
     PROFILE_ENABLED=$(jq -r '.enabled != false' "$PROFILE_FILE" 2>/dev/null)
     if [ "$PROFILE_ENABLED" = "true" ]; then
         UUID=$(jq -r '.oauthAccount.accountUuid // empty' "$CLAUDE_STATE" 2>/dev/null)
-        if [ -n "$UUID" ]; then
-            PROFILE_LABEL=$(jq -r --arg u "$UUID" '.profiles[$u].label // ""' "$PROFILE_FILE" 2>/dev/null)
-            PROFILE_COLOR=$(jq -r --arg u "$UUID" '.profiles[$u].color // "gray"' "$PROFILE_FILE" 2>/dev/null)
+        BADGE_ID="${RL_KEY:-$UUID}"
+        if [ -n "$BADGE_ID" ]; then
+            PROFILE_LABEL=$(jq -r --arg u "$BADGE_ID" '.profiles[$u].label // ""' "$PROFILE_FILE" 2>/dev/null)
+            PROFILE_COLOR=$(jq -r --arg u "$BADGE_ID" '.profiles[$u].color // "gray"' "$PROFILE_FILE" 2>/dev/null)
             if [ -z "$PROFILE_LABEL" ]; then
-                # Unknown UUID — show short hint so user knows to label it
-                PROFILE_LABEL="${UUID:0:6}?"
+                # Unknown id (account UUID or token hash) — short hint so the
+                # user knows to add a profiles entry for it
+                PROFILE_LABEL="${BADGE_ID:0:6}?"
                 PROFILE_COLOR="gray"
             fi
         fi

@@ -170,8 +170,23 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
 | `CC_STATUSLINE_RL_KEY` | auto | Override the rate-limits cache account key (a label like `work`). Normally auto-detected from the session's `CLAUDE_CODE_OAUTH_TOKEN` (hashed, read from the parent `claude` process's exec-time environment since Claude Code consumes the variable). Set empty to force the shared unsuffixed cache. |
 | `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
+| `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
+
+### Account/profile badge (multi-account setups)
+
+Opt-in: create `~/.claude/profile-labels.json` with a `profiles` map and the badge shows which account a session is on (`· MM`), colored per profile. Entries are keyed by the account UUID from `~/.claude.json` (`.oauthAccount.accountUuid`, keychain logins), or, for sessions launched with `CLAUDE_CODE_OAUTH_TOKEN=... claude`, by the `cksum` hash of that token (the same key the per-account rate-limits cache uses; an unlabeled account shows `NNNNNN?` so you know what to add):
+
+```json
+{
+  "enabled": true,
+  "profiles": {
+    "ed3f1226-c7fe-45ef-af44-6d7fb62175d0": { "label": "home", "color": "orange" },
+    "4258859386":                            { "label": "work", "color": "red" }
+  }
+}
+```
 
 ### Session-topic hook
 
