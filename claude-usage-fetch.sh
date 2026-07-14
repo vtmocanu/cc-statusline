@@ -88,10 +88,65 @@ else
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null) || http=""
     data=$(cat "$BODY_FILE" 2>/dev/null)
 fi
-# An HTTP error means the credential or the endpoint is refusing us: back off
-# (the statusline then stops spawning fetches for a while) and leave the cache.
-# A transport failure (empty status) is transient: no backoff, the spawner's
-# own 60s gate is enough.
+# The usage endpoint refuses some credentials (observed: HTTP 429 for a
+# CLAUDE_CODE_OAUTH_TOKEN that the Messages API happily accepts). The same
+# numbers ride on every Messages API response as anthropic-ratelimit-unified-*
+# headers, so fall back to a minimal request (haiku, max_tokens 1) and read the
+# limits off its headers. Utilization there is a 0-1 fraction (verified against
+# the usage endpoint: 0.55 <-> 55%); resets are already epoch seconds.
+#
+# The probe costs a token or two of the account's quota, so it only runs when
+# the usage endpoint failed, and STATUSLINE_RL_PROBE=0 turns it off entirely
+# (the account then just backs off and keeps Claude Code's numbers).
+if [ "${http:-}" != "200" ] && [ -n "${http:-}" ] && [ "${STATUSLINE_RL_PROBE:-1}" != "0" ] \
+    && { [ -z "${CC_STATUSLINE_USAGE_DATA:-}" ] || [ -n "${CC_STATUSLINE_USAGE_HDRS:-}" ]; }; then
+    HDR_FILE="${CACHE_FILE}.hdr.$$"
+    trap 'rm -f "$TMP_FILE" "$BODY_FILE" "$HDR_FILE"' EXIT
+    if [ -n "${CC_STATUSLINE_USAGE_HDRS:-}" ]; then
+        # Test seam: a header dump fixture stands in for the probe response.
+        cp "$CC_STATUSLINE_USAGE_HDRS" "$HDR_FILE" 2>/dev/null && phttp=200 || phttp=""
+    else
+    phttp=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" \
+        | curl -s --max-time 8 --config - \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -H "User-Agent: cc-statusline/${VERSION}" \
+            -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+            -D "$HDR_FILE" -o /dev/null -w '%{http_code}' \
+            "https://api.anthropic.com/v1/messages" 2>/dev/null) || phttp=""
+    fi
+    if [ "$phttp" = "200" ]; then
+        _hdr() { sed -n "s/^[Aa]nthropic-ratelimit-unified-$1: *//p" "$HDR_FILE" 2>/dev/null \
+                 | tr -d '\r' | head -1; }
+        # Fraction -> clamped integer percent; awk fails (exit 1) on anything
+        # non-numeric, which drops us into the backoff path below.
+        _pct() { awk -v v="$1" 'BEGIN { if (v == "" || v + 0 != v) exit 1
+                                        p = int(v * 100); if (p < 0) p = 0; if (p > 100) p = 100
+                                        printf "%d", p }'; }
+        h_fp=$(_pct "$(_hdr 5h-utilization)") && h_sp=$(_pct "$(_hdr 7d-utilization)") \
+            && h_fr=$(_hdr 5h-reset) && h_sr=$(_hdr 7d-reset) || true
+        cand="${h_fp:-}|${h_fr:-}|${h_sp:-}|${h_sr:-}"
+        if [[ "$cand" =~ ^[0-9]{1,3}\|[0-9]{1,12}\|[0-9]{1,3}\|[0-9]{1,12}$ ]]; then
+            NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
+            [[ "$NOW" =~ ^[0-9]{1,12}$ ]] || exit 0
+            if printf '%s|%s\n' "$cand" "$NOW" > "$TMP_FILE" 2>/dev/null; then
+                chmod 600 "$TMP_FILE" 2>/dev/null || true
+                if mv -f "$TMP_FILE" "$CACHE_FILE" 2>/dev/null; then
+                    rm -f "$BACKOFF_FILE" 2>/dev/null || true
+                fi
+            fi
+            rm -f "$BODY_FILE" "$HDR_FILE" 2>/dev/null || true
+            trap - EXIT
+            exit 0
+        fi
+    fi
+    rm -f "$HDR_FILE" 2>/dev/null || true
+fi
+# An HTTP error with no usable fallback means the credential or the endpoint is
+# refusing us: back off (the statusline then stops spawning fetches for a
+# while) and leave the cache. A transport failure (empty status) is transient:
+# no backoff, the spawner's own 60s gate is enough.
 case "${http:-}" in
     200|"") : ;;
     *) touch "$BACKOFF_FILE" 2>/dev/null || true; exit 0 ;;

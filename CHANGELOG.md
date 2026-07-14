@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.12.0] - 2026-07-14
+
+### Added
+- Header-probe fallback for accounts the usage endpoint refuses. `/api/oauth/usage` returns 429 to a `CLAUDE_CODE_OAUTH_TOKEN` credential that the Messages API accepts (HTTP 200), which left token sessions with no way to learn their own limits. The same numbers ride on every Messages API response as `anthropic-ratelimit-unified-*` headers, so on a non-200 from the usage endpoint the fetcher now issues a minimal request (haiku, `max_tokens: 1`) and reads 5h/7d utilization (a 0-1 fraction, verified against the usage endpoint: `0.55` == 55%) and reset epochs off the headers. The probe only runs after the usage endpoint fails and costs a token or two of the account's quota; `STATUSLINE_RL_PROBE=0` disables it (the account then backs off and keeps Claude Code's numbers).
+
 ## [v2.11.2] - 2026-07-14
 
 ### Fixed
@@ -209,7 +214,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...HEAD
+[v2.12.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...v2.12.0
 [v2.11.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.1...v2.11.2
 [v2.11.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.0...v2.11.1
 [v2.11.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.10.0...v2.11.0

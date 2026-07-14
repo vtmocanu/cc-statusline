@@ -223,6 +223,59 @@ else
     printf '  PASS  usage: success clears the .backoff marker\n'; PASS=$((PASS + 1))
 fi
 
+# ── Header-probe fallback (usage endpoint refuses the credential) ──────────
+# When /api/oauth/usage returns non-200, the fetcher probes the Messages API
+# and reads anthropic-ratelimit-unified-* off the response headers, where
+# utilization is a 0-1 FRACTION (0.55 == 55%) and resets are epoch seconds.
+uhdr="$SCRATCH/uhdr.txt"
+{ printf 'HTTP/2 200 \r\n'
+  printf 'anthropic-ratelimit-unified-5h-status: allowed\r\n'
+  printf 'anthropic-ratelimit-unified-5h-reset: 1784068200\r\n'
+  printf 'anthropic-ratelimit-unified-5h-utilization: 0.0\r\n'
+  printf 'anthropic-ratelimit-unified-7d-reset: 1784109600\r\n'
+  printf 'anthropic-ratelimit-unified-7d-utilization: 0.43\r\n'; } > "$uhdr"
+printf '%s' '{"error":{"type":"rate_limit_error","message":"Rate limited."}}' > "$udata"
+printf '%s\n' "$seed" > "$ucache"; rm -f "$ucache.backoff"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" CC_STATUSLINE_USAGE_HTTP=429 \
+    CC_STATUSLINE_USAGE_HDRS="$uhdr" CC_STATUSLINE_RL_CACHE="$ucache" \
+    CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" != "0|1784068200|43|1784109600|$UNOW" ]; then
+    printf '  FAIL  usage: header probe did not write the snapshot\n        got:  [%s]\n' \
+        "$(head -1 "$ucache")"; FAIL=$((FAIL + 1))
+elif [ -f "$ucache.backoff" ]; then
+    printf '  FAIL  usage: header probe wrote a snapshot but still backed off\n'; FAIL=$((FAIL + 1))
+else
+    printf '  PASS  usage: 429 falls back to the Messages header probe\n'; PASS=$((PASS + 1))
+fi
+
+# STATUSLINE_RL_PROBE=0 opts out of the probe entirely: cache untouched, backoff set.
+printf '%s\n' "$seed" > "$ucache"; rm -f "$ucache.backoff"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" CC_STATUSLINE_USAGE_HTTP=429 \
+    CC_STATUSLINE_USAGE_HDRS="$uhdr" STATUSLINE_RL_PROBE=0 CC_STATUSLINE_RL_CACHE="$ucache" \
+    CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" != "$seed" ]; then
+    printf '  FAIL  usage: STATUSLINE_RL_PROBE=0 still probed\n'; FAIL=$((FAIL + 1))
+elif [ ! -f "$ucache.backoff" ]; then
+    printf '  FAIL  usage: STATUSLINE_RL_PROBE=0 did not back off\n'; FAIL=$((FAIL + 1))
+else
+    printf '  PASS  usage: STATUSLINE_RL_PROBE=0 skips the probe and backs off\n'; PASS=$((PASS + 1))
+fi
+
+# A malformed header dump (missing utilization) must not write: back off instead.
+{ printf 'HTTP/2 200 \r\n'
+  printf 'anthropic-ratelimit-unified-5h-reset: 1784068200\r\n'; } > "$uhdr"
+printf '%s\n' "$seed" > "$ucache"; rm -f "$ucache.backoff"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" CC_STATUSLINE_USAGE_HTTP=429 \
+    CC_STATUSLINE_USAGE_HDRS="$uhdr" CC_STATUSLINE_RL_CACHE="$ucache" \
+    CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" != "$seed" ]; then
+    printf '  FAIL  usage: malformed probe headers clobbered the cache\n'; FAIL=$((FAIL + 1))
+elif [ ! -f "$ucache.backoff" ]; then
+    printf '  FAIL  usage: malformed probe headers did not back off\n'; FAIL=$((FAIL + 1))
+else
+    printf '  PASS  usage: malformed probe headers fail closed\n'; PASS=$((PASS + 1))
+fi
+
 echo "------------------------------------------------------------"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
