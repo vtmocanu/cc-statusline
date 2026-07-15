@@ -348,12 +348,12 @@ rate_limit_cache_tests() {
         _rl_fail "$name" "cache not rewritten with new-window snapshot: $(cat "$cache")"
     else _rl_pass "$name"; fi
 
-    # 11. Account keying: a session launched with CLAUDE_CODE_OAUTH_TOKEN uses
-    #     its own cache file (rate-limits-<cksum>), so two accounts never
-    #     cross-pollute each other's bars. Exercises the DEFAULT path (blank
-    #     CC_STATUSLINE_RL_CACHE) via a scratch XDG_RUNTIME_DIR. Token-less
-    #     renders pin CC_STATUSLINE_RL_KEY="" so an ancestor claude process of
-    #     THIS harness run (a token session) can't leak in via the env scan.
+    # 11. Account keying + isolation: a session launched with
+    #     CLAUDE_CODE_OAUTH_TOKEN uses its own cache file (rate-limits-<cksum>)
+    #     and displays ONLY that file's fetched numbers, never the stdin
+    #     rate_limits (which Claude Code serves from the account-agnostic shared
+    #     cache and can belong to another account). Exercises the DEFAULT path
+    #     (blank CC_STATUSLINE_RL_CACHE) via a scratch XDG_RUNTIME_DIR.
     name="rl-account-keyed"
     local state="$SCRATCH/rl11-state" statedir tok tokhash
     out="$SCRATCH/rl11.out"; err="$SCRATCH/rl11.err"
@@ -361,52 +361,57 @@ rate_limit_cache_tests() {
     statedir="$state/cc-statusline-$(id -u)"
     tok="sk-ant-oat01-test-token"
     tokhash=$(printf '%s' "$tok" | cksum | cut -d' ' -f1)
-    # Default (token-less) account seeds the unsuffixed cache.
+    # Default (token-less) account seeds the unsuffixed cache from stdin.
     ( cd "$SCRATCH" && _rl_json 15 1700010000 2 1700010000 \
         | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY="" \
           bash "$STATUSLINE" ) >/dev/null 2>"$err"
-    # Token account writes much "fresher" numbers into ITS OWN keyed cache.
-    ( cd "$SCRATCH" && _rl_json 90 1700018000 70 1700200000 \
+    # The token account's own fetched line (5-field, stamp within TTL), written
+    # as if by claude-usage-fetch.sh into ITS OWN keyed cache.
+    mkdir -p "$statedir"
+    printf '90|1700018000|70|1700200000|1699999990\n' > "$statedir/rate-limits-$tokhash"
+    # Token render: stdin carries a DIFFERENT (polluting) account's 33%/11%.
+    # Must display its own 90%/70%, never let stdin in, never rewrite the cache,
+    # and never touch the unsuffixed (keychain) cache.
+    ( cd "$SCRATCH" && _rl_json 33 1700007000 11 1700077000 \
         | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" \
-          CLAUDE_CODE_OAUTH_TOKEN="$tok" bash "$STATUSLINE" ) >/dev/null 2>>"$err"
-    # Idle re-render of the default account (no stdin rate limits): must fill
-    # from its own cache (15%/2%), never the token account's 90%/70%.
-    ( cd "$SCRATCH" && _rl_json_norl \
-        | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY="" \
-          bash "$STATUSLINE" ) >"$out" 2>>"$err"
+          CLAUDE_CODE_OAUTH_TOKEN="$tok" bash "$STATUSLINE" ) >"$out" 2>>"$err"
     l2=$(_rl_l2 "$out")
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "33%" || _has "$l2" "11%"; then
+        _rl_fail "$name" "polluting stdin leaked into token session: $l2"
+    elif ! _has "$l2" "90%" || ! _has "$l2" "70%"; then
+        _rl_fail "$name" "expected own fetched 90%/70% on line 2, got: $l2"
+    elif [ "$(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)" != "90|1700018000|70|1700200000|1699999990" ]; then
+        _rl_fail "$name" "token keyed cache clobbered: $(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)"
     elif [ "$(cat "$statedir/rate-limits" 2>/dev/null)" != "15|1700010000|2|1700010000" ]; then
         _rl_fail "$name" "unsuffixed cache polluted or missing: $(cat "$statedir/rate-limits" 2>/dev/null)"
-    elif [ "$(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)" != "90|1700018000|70|1700200000" ]; then
-        _rl_fail "$name" "token-keyed cache missing/wrong: $(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)"
-    elif _has "$l2" "90%" || _has "$l2" "70%"; then
-        _rl_fail "$name" "token account leaked into token-less render: $l2"
-    elif ! _has "$l2" "15%" || ! _has "$l2" "2%"; then
-        _rl_fail "$name" "expected own cached 15%/2% on line 2, got: $l2"
     else _rl_pass "$name"; fi
 
     # 12. Ancestor env scan: Claude Code consumes CLAUDE_CODE_OAUTH_TOKEN, so
     #     the statusline's OWN env lacks it; the key must come from an
-    #     ancestor's exec-time environment (/proc/PID/environ or ps eww). The
-    #     intermediate `bash -c` holds the token at exec, then strips it from
-    #     the statusline's env with `env -u`, mirroring the real process tree.
-    #     The trailing `exit $?` stops bash -c from tail-exec'ing into env
-    #     (which would collapse the chain and leave no token-bearing ancestor).
+    #     ancestor's exec-time environment (/proc/PID/environ or ps eww). With
+    #     the token's own fetched line pre-seeded in the keyed cache, a render
+    #     whose token lives only in an ancestor must resolve that keyed cache
+    #     (show 90%/70%) and still ignore the polluting stdin. The intermediate
+    #     `bash -c` holds the token at exec, then strips it from the statusline's
+    #     env with `env -u`, mirroring the real process tree. The trailing
+    #     `exit $?` stops bash -c from tail-exec'ing into env (which would
+    #     collapse the chain and leave no token-bearing ancestor).
     name="rl-ancestor-env-scan"
     out="$SCRATCH/rl12.out"; err="$SCRATCH/rl12.err"
-    rm -f "$statedir/rate-limits-$tokhash"
-    ( cd "$SCRATCH" && _rl_json 90 1700018000 70 1700200000 \
+    mkdir -p "$statedir"
+    printf '90|1700018000|70|1700200000|1699999990\n' > "$statedir/rate-limits-$tokhash"
+    ( cd "$SCRATCH" && _rl_json 33 1700007000 11 1700077000 \
         | XDG_RUNTIME_DIR="$state" CC_STATUSLINE_RL_CACHE="" \
           CLAUDE_CODE_OAUTH_TOKEN="$tok" \
           bash -c 'env -u CLAUDE_CODE_OAUTH_TOKEN bash "$1"; exit $?' _ "$STATUSLINE" ) \
         >"$out" 2>"$err"
     l2=$(_rl_l2 "$out")
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif [ "$(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)" != "90|1700018000|70|1700200000" ]; then
-        _rl_fail "$name" "ancestor-scanned keyed cache missing/wrong: $(cat "$statedir/rate-limits-$tokhash" 2>/dev/null)"
+    elif _has "$l2" "33%" || _has "$l2" "11%"; then
+        _rl_fail "$name" "polluting stdin leaked despite ancestor-scanned key: $l2"
     elif ! _has "$l2" "90%" || ! _has "$l2" "70%"; then
-        _rl_fail "$name" "expected stdin 90%/70% on line 2, got: $l2"
+        _rl_fail "$name" "expected ancestor-keyed 90%/70% on line 2, got: $l2"
     else _rl_pass "$name"; fi
 
     # 13. Fresh AUTHORITATIVE cache (5th field = fetch stamp within TTL) beats
@@ -441,6 +446,50 @@ rate_limit_cache_tests() {
         _rl_fail "$name" "expected stdin 60%/30% after stale auth, got: $l2"
     elif [ "$(cat "$cache")" != "60|1700020000|30|1700300000" ]; then
         _rl_fail "$name" "stale auth line not replaced by stdin: $(cat "$cache")"
+    else _rl_pass "$name"; fi
+
+    # 15. Account-specific session (RL_KEY set) with a STALE fetched line (5th-
+    #     field stamp older than the TTL) keeps showing ITS OWN numbers, unlike a
+    #     keychain session (case 14) which falls back to the fresher stdin. For a
+    #     keyed session the stdin belongs to the account-agnostic shared cache
+    #     (possibly another account), so a stale reading of the RIGHT account
+    #     still beats it, and the cache is not overwritten.
+    name="rl-keyed-stale-keeps-own"
+    local st15="$SCRATCH/rl15-state" sd15
+    out="$SCRATCH/rl15.out"; err="$SCRATCH/rl15.err"
+    sd15="$st15/cc-statusline-$(id -u)"; mkdir -p "$sd15"
+    printf '12|1700005000|8|1700100000|1699000000\n' > "$sd15/rate-limits-acct15"
+    ( cd "$SCRATCH" && _rl_json 60 1700020000 30 1700300000 \
+        | XDG_RUNTIME_DIR="$st15" CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY="acct15" \
+          bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "60%" || _has "$l2" "30%"; then
+        _rl_fail "$name" "stdin leaked into keyed session with stale line: $l2"
+    elif ! _has "$l2" "12%" || ! _has "$l2" "8%"; then
+        _rl_fail "$name" "expected own stale 12%/8% on line 2, got: $l2"
+    elif [ "$(cat "$sd15/rate-limits-acct15" 2>/dev/null)" != "12|1700005000|8|1700100000|1699000000" ]; then
+        _rl_fail "$name" "stale keyed line overwritten: $(cat "$sd15/rate-limits-acct15" 2>/dev/null)"
+    else _rl_pass "$name"; fi
+
+    # 16. Account-specific session with NO fetched line yet must show NO rate
+    #     bars rather than the wrong account's stdin numbers, and must NOT seed
+    #     its keyed cache from stdin (the old seed-from-stdin behavior is exactly
+    #     how the keychain numbers first polluted a token cache).
+    name="rl-keyed-no-fetch-blank"
+    local st16="$SCRATCH/rl16-state" sd16
+    out="$SCRATCH/rl16.out"; err="$SCRATCH/rl16.err"
+    sd16="$st16/cc-statusline-$(id -u)"; mkdir -p "$sd16"
+    rm -f "$sd16/rate-limits-acct16"
+    ( cd "$SCRATCH" && _rl_json 33 1700007000 11 1700077000 \
+        | XDG_RUNTIME_DIR="$st16" CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY="acct16" \
+          bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "33%" || _has "$l2" "11%"; then
+        _rl_fail "$name" "stdin shown for keyed session with no fetched line: $l2"
+    elif [ -e "$sd16/rate-limits-acct16" ]; then
+        _rl_fail "$name" "keyed cache seeded from stdin: $(cat "$sd16/rate-limits-acct16" 2>/dev/null)"
     else _rl_pass "$name"; fi
 }
 

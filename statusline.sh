@@ -126,6 +126,13 @@ CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
 # see RL_KEY below), so every render can display (and write back) the freshest
 # values without cross-account pollution.
 #
+# For an account-specific session (RL_KEY set: a scanned token or a manual
+# CC_STATUSLINE_RL_KEY label) the stdin rate_limits are NOT trusted at all: they
+# come from the account-agnostic shared cache and can be another account's
+# numbers. Such a session shows ONLY its per-account fetched line (written by
+# claude-usage-fetch.sh), and nothing until that fetch lands. See the display
+# chain below.
+#
 # Freshness comes from the DATA, never file mtime (an idle session has a fresh
 # mtime but stale numbers). Usage within a window is monotonic, so the newer
 # snapshot is the one whose tuple (5h resets_at, 5h used%, 7d resets_at, 7d
@@ -299,7 +306,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     RL_BACK=0
     if [ -f "$RL_CACHE.backoff" ]; then
         RL_BACK_AGE=$((RL_NOW - $(_file_mtime "$RL_CACHE.backoff")))
-        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "${STATUSLINE_RL_BACKOFF:-900}" ] && RL_BACK=1
+        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "${STATUSLINE_RL_BACKOFF:-300}" ] && RL_BACK=1
     fi
     if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] \
         && [ "$RL_AGE" -ge 60 ] && [ "$RL_BACK" = "0" ]; then
@@ -319,6 +326,29 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
         # account's data) overwrite the line while it is fresh.
         FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
         SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
+    elif [ -n "${RL_KEY:-}" ]; then
+        # Account-specific session (a scanned CLAUDE_CODE_OAUTH_TOKEN, or a
+        # manual CC_STATUSLINE_RL_KEY label): the stdin rate_limits are NOT
+        # reliably THIS account's. Claude Code serves every session the shared
+        # ~/.claude.json .cachedUsageUtilization (whichever account refreshed
+        # last), so on a multi-account machine stdin can carry the DEFAULT
+        # keychain account's numbers. Trust ONLY the per-account fetch: show the
+        # fetched line (5-field, C_AT stamped) even once it has aged past the
+        # authoritative TTL, since a stale reading of the RIGHT account beats a
+        # fresh reading of the wrong one and the background fetcher keeps it
+        # current. Never compare against or seed from stdin here: that cross-
+        # account compare (different reset windows) is what used to overwrite the
+        # token cache with the keychain numbers. With no fetched line yet, show
+        # no bars rather than the wrong account's; the fetcher fills them within
+        # a cycle. A bare 4-field line (no stamp) is stale pollution from before
+        # this rule and is ignored the same way.
+        if [ "$CACHE_RL" = "1" ] && [[ "$C_AT" =~ ^[0-9]{1,12}$ ]]; then
+            FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
+            SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
+        else
+            FIVE_PCT=""; FIVE_RESET_TS=""
+            SEVEN_PCT=""; SEVEN_RESET_TS=""
+        fi
     elif [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ]; then
         case "$(_rl_cmp "$STDIN_FR" "$FIVE_PCT" "$STDIN_SR" "$SEVEN_PCT" \
                         "$C_FR" "$C_FP" "$C_SR" "$C_SP")" in

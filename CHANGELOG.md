@@ -4,6 +4,14 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.12.1] - 2026-07-15
+
+### Fixed
+- Token sessions (`CLAUDE_CODE_OAUTH_TOKEN`) no longer show the default keychain account's rate-limit bars. The stdin `rate_limits` come from Claude Code's account-agnostic shared `~/.claude.json` `.cachedUsageUtilization` cache, so on a multi-account machine they can carry a different account's numbers. Previously, once a fetched (authoritative) line aged past its TTL, the display fell back to comparing the per-account cache against stdin; because two accounts have different reset windows, that compare could pick the wrong account and even overwrite the token's own cache with the keychain numbers. An account-specific session (any session whose cache is keyed, i.e. `RL_KEY` set) now trusts ONLY its own per-account fetched line, shown even when stale, and never compares against or seeds from stdin. With no fetched line yet it shows no rate bars rather than the wrong account's; a bare 4-field line left by the old behavior is ignored and self-heals on the next successful fetch.
+
+### Changed
+- `STATUSLINE_RL_BACKOFF` default lowered from 900s to 300s, so a transient double failure (usage endpoint plus the Messages header-probe fallback) does not blank an account's bars for a quarter hour. The probe is cheap and already gated to one attempt per minute per account.
+
 ## [v2.12.0] - 2026-07-14
 
 ### Added
@@ -214,7 +222,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...HEAD
+[v2.12.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...v2.12.1
 [v2.12.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...v2.12.0
 [v2.11.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.1...v2.11.2
 [v2.11.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.0...v2.11.1
