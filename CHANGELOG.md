@@ -4,6 +4,14 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.13.0] - 2026-07-18
+
+### Added
+- Native per-session cost on line 2, next to the clock (`⏱ 5m · $0.42`), read straight from Claude Code's stdin `cost.total_cost_usd` (no ccusage, no transcript parsing, no network). Shown in USD with 2 decimals (a real-but-tiny cost shows `$<0.01` rather than a misleading `$0.00`); fresh sessions with no cost yet show nothing. Hide it with `STATUSLINE_COST=0`.
+
+### Changed
+- The prompt-cache hit-rate segment (`⚡ NN%`) on line 2 is now off by default; enable it with `STATUSLINE_CACHE=1` (previously shown by default, hidden with `STATUSLINE_CACHE=0`).
+
 ## [v2.12.1] - 2026-07-15
 
 ### Fixed
@@ -222,6 +230,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v2.13.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.1...v2.13.0
 [v2.12.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...v2.12.1
 [v2.12.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...v2.12.0
 [v2.11.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.1...v2.11.2

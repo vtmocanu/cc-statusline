@@ -2,7 +2,7 @@
   "model": {"display_name": "Claude Opus 4.6", "id": "opus"},
   "cwd": "/home/test/example-project",
   "context_window": {"remaining_percentage": 75, "context_window_size": 1000000},
-  "cost": {"total_duration_ms": 300000},
+  "cost": {"total_duration_ms": 300000, "total_cost_usd": 1.23},
   "agent": {"name": ""},
   "mode": "",
   "session_id": "test-happy",

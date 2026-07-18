@@ -8,7 +8,16 @@ The repo lives on GitHub: **github.com/vtmocanu/cc-statusline**. Use the `gh` CL
 
 A two-line ANSI statusline for [Claude Code](https://claude.com/claude-code). It's a small bash-based tool, but the codebase has accumulated real lessons about portable shell, ANSI rendering, terminal width estimation, and Claude Code's undocumented statusline renderer behaviors. **Read `KNOWN_ISSUES.md` and the comments in `statusline.sh` before changing any width-related logic.**
 
-The primary maintainer's machine runs the brew-installed copy day-to-day (`statusLine.command` is `STATUSLINE_WIDTH=130 cc-statusline`). For development, the brew wrapper's dev override points at the working tree: `echo ~/stuff/gitrepos/gh/vtmocanu/cc-statusline > ~/.config/cc-statusline/dev-dir` makes the next render use the working tree (edits picked up immediately); `rm` that file to return to the brewed copy. **Remove dev-dir when a dev session ends**, otherwise the statusline silently tracks unreleased code. Public users go through `brew install vtmocanu/tap/cc-statusline` (formula auto-published on tag push, see release.yml) or `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`. The brew wrapper honors a dev override (`~/.config/cc-statusline/dev-dir` file or `CC_STATUSLINE_DEV_DIR` env) pointing at a working tree.
+The primary maintainer's machine runs the brew-installed copy day-to-day (`statusLine.command` is `STATUSLINE_WIDTH=130 cc-statusline`). For development, the brew wrapper's dev override points at the working tree. **The dev-dir file lives under `$XDG_CONFIG_HOME`, not a hardcoded `~/.config`** — the wrapper resolves it as `"${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/dev-dir"`. Always check where `XDG_CONFIG_HOME` actually points before writing it (on the maintainer's machine it is remapped to `~/stuff/gitrepos/wxs/mackup/.config`, so writing to a literal `~/.config/cc-statusline/dev-dir` is a silent no-op — the wrapper never reads it):
+
+```bash
+D="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline"
+mkdir -p "$D"
+echo ~/stuff/gitrepos/gh/vtmocanu/cc-statusline > "$D/dev-dir"   # next render uses the working tree
+rm "$D/dev-dir"                                                   # return to the brewed copy
+```
+
+Edits are picked up on the next render (no restart). **Remove dev-dir when a dev session ends**, otherwise the statusline silently tracks unreleased code (and, when `XDG_CONFIG_HOME` points into a synced repo like mackup, leaves a stray untracked file there). Public users go through `brew install vtmocanu/tap/cc-statusline` (formula auto-published on tag push, see release.yml) or `install.sh`, which extracts a tag via `git archive` into `~/.local/share/cc-statusline/`. The brew wrapper honors a dev override (the `$XDG_CONFIG_HOME/cc-statusline/dev-dir` file, or the `CC_STATUSLINE_DEV_DIR` env var which takes precedence) pointing at a working tree.
 
 Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 

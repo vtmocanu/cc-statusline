@@ -16,9 +16,9 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Per-project background color** (12-color palette, hashed from session/cwd, manually overridable)
 - **Git info**: branch, staged/modified/untracked counts
 - **Kubernetes context**: current `kubectl` context (with timeout to avoid exec-auth hangs)
-- **Session metrics**: model name, effort level (low/medium/high/max), elapsed time
+- **Session metrics**: model name, effort level (low/medium/high/max), elapsed time, session cost in USD (from Claude Code's `cost.total_cost_usd`; hide with `STATUSLINE_COST=0`)
 - **Context window**: colored bar and percentage
-- **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); hidden before the first call and after `/compact`
+- **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); off by default, enable with `STATUSLINE_CACHE=1` (hidden anyway before the first call and after `/compact`)
 - **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width; shared across your sessions via a small per-user cache, so an idle session never shows numbers staler than your account's latest known state
 - **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
@@ -165,8 +165,9 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line. Lower this if you see line 2 disappearing. |
-| `STATUSLINE_CACHE` | `1` | Set to `0` to hide the prompt-cache hit-rate readout (`⚡ NN%`) on line 2. |
+| `STATUSLINE_CACHE` | `0` | Set to `1` to show the prompt-cache hit-rate readout (`⚡ NN%`) on line 2 (off by default). |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
+| `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
 | `STATUSLINE_RL_FETCH` | `1` | Set to `0` to disable the background per-account usage fetcher (`claude-usage-fetch.sh`), which asks `api.anthropic.com/api/oauth/usage` with the session's own credential so multi-account machines show each account's true bars instead of Claude Code's shared (account-agnostic) numbers. |
 | `STATUSLINE_RL_AUTH_TTL` | `300` | Seconds a fetched usage snapshot stays authoritative (displayed over the stdin `rate_limits`). |

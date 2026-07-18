@@ -71,6 +71,7 @@ eval "$(echo "$DATA" | jq -r '
           end
     ) catch "")",
     @sh "DURATION_MS=\(.cost.total_duration_ms // 0)",
+    @sh "COST_USD=\(.cost.total_cost_usd // 0)",
     @sh "AGENT=\(.agent.name // "")",
     @sh "MODE=\(.mode // "")",
     @sh "TRANSCRIPT_PATH=\(.transcript_path // "")",
@@ -84,7 +85,7 @@ eval "$(echo "$DATA" | jq -r '
 
 # Guard: if jq failed completely, use safe defaults
 MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
-PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}; DURATION_MS=${DURATION_MS:-0}
+PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}; DURATION_MS=${DURATION_MS:-0}; COST_USD=${COST_USD:-0}
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
@@ -97,6 +98,10 @@ MODE="${MODE//[$'\001'-$'\037\177']/}"
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
 FIVE_RESET_TS=${FIVE_RESET_TS:-}; SEVEN_RESET_TS=${SEVEN_RESET_TS:-}
 CACHE_PCT=${CACHE_PCT:-}
+# COST_USD is numeric (jq guarantees a number or 0), so no control-byte strip
+# is needed; but reset any non-numeric value to 0 defensively (allow digits and
+# a dot) before awk formats it, mirroring the format_reset / pace_arrow guards.
+case "$COST_USD" in ''|*[!0-9.]*) COST_USD=0 ;; esac
 
 # Truncate jq float rounding (e.g. 14.000000000000002 -> 14) and clamp the
 # displayed value to [0,100] so a malformed field can't print "105%"/"-30%".
@@ -817,9 +822,23 @@ case $EFFORT in
     *)              EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray: medium/unknown
 esac
 
+# ── Session cost segment (native, from cost.total_cost_usd) ────────────────
+# Sits next to the clock as "⏱ 5m · $0.01". Empty when disabled
+# (STATUSLINE_COST=0) or when there is no cost yet, so fresh sessions and the
+# no-cost fixtures show nothing, exactly like CACHE_SEG before the first API
+# call. Formatted as USD with 2 decimals; a sub-cent floor renders "<0.01" for
+# a real-but-tiny cost instead of a misleading "$0.00". Neutral color; built
+# here so it is inlined into the base line below and measure_cols captures its
+# width during tier selection.
+COST_SEG=""
+if [ "${STATUSLINE_COST:-1}" != "0" ] && [ "$(awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
+    COST_FMT=$(awk -v c="$COST_USD" 'BEGIN{ if (c>0 && c<0.005) printf "<0.01"; else printf "%.2f", c }' 2>/dev/null)
+    COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}\$${COST_FMT}${B2}"
+fi
+
 L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2}"
 [ -n "$PROFILE_LABEL" ] && L2C+=" ${L2_DIM}·${B2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
-L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
+L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2}${COST_SEG} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
 
 # ── Rate-limit detail candidates (full / compact / minimal) ────────────────
 # Build all three tiers up front so the widest one that actually FITS can be
@@ -859,10 +878,10 @@ fi
 # ── Cache hit-rate candidate (lowest-priority line-2 element) ──────────────
 # Tucked right after the context size ("of 1000k ⚡ 92%"); only the percentage
 # carries the inverted color (green = mostly cached/good, coral = cold). Empty
-# before the first API call and after /compact (current_usage null). Opt out
-# with STATUSLINE_CACHE=0.
+# before the first API call and after /compact (current_usage null). Off by
+# default; opt IN with STATUSLINE_CACHE=1.
 CACHE_SEG=""
-if [ "${STATUSLINE_CACHE:-1}" != "0" ] && [ -n "${CACHE_PCT:-}" ]; then
+if [ "${STATUSLINE_CACHE:-0}" = "1" ] && [ -n "${CACHE_PCT:-}" ]; then
     CACHE_CLR=$(pct_color "$CACHE_PCT" invert)
     CACHE_SEG=" ${L2_TXT}${NF_CACHE} ${CACHE_CLR}${CACHE_PCT}%${B2}"
 fi
