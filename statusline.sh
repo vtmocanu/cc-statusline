@@ -1049,7 +1049,12 @@ TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC DIR"
 # anything gets character-mangled: on a phone a whole leaf name reads better
 # than two half-words, and it usually buys back more columns than trimming the
 # branch would.
-[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="DIRLEAF BRANCH GITST DIR"
+# The phone ladder must CONVERGE: every step either sheds columns or defers to
+# the next, and the last two steps can always shed. Without them the ladder
+# bottomed out with line 1 still over budget, and a NARROWER viewport rendered a
+# WIDER line (COLUMNS=30 produced 51 columns against a 29-column budget), which
+# is precisely the overflow that makes cli-truncate drop line 2.
+[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="DIRLEAF BRANCH GITST DIR BRANCHDROP DIRHARD"
 for _t in $TRUNC_ORDER; do
     [ "$L1_COLS" -le "$TARGET" ] 2>/dev/null && break
     OVER=$((L1_COLS - TARGET))
@@ -1065,8 +1070,16 @@ for _t in $TRUNC_ORDER; do
                 # Phone keeps the TAIL: worktree branches share a long prefix
                 # ("feat/", "devmetaminds/"), so the leaf is what identifies
                 # them. The wide render keeps the head, unchanged.
+                # A negative offset larger than the string yields the EMPTY
+                # string in bash, so a blind "..${BRANCH: -8}" deleted every
+                # branch of 7 characters or fewer (main, develop -> "..") and
+                # GREW an 8-character one (release1 -> "..release1"). Trim only
+                # while there is something to trim; a branch already at or below
+                # the floor is left for BRANCHDROP to remove wholesale.
                 if [ "$LAYOUT" = "phone" ]; then
-                    if [ "$MAX" -gt 5 ]; then BRANCH="..${BRANCH: -$MAX}"; else BRANCH="..${BRANCH: -8}"; fi
+                    if   [ "$MAX" -gt 5 ];        then BRANCH="..${BRANCH: -$MAX}"
+                    elif [ "${#BRANCH}" -gt 8 ];  then BRANCH="..${BRANCH: -6}"
+                    else continue; fi
                 elif [ "$MAX" -gt 5 ]; then BRANCH="${BRANCH:0:$MAX}.."; else BRANCH="${BRANCH:0:8}.."; fi ;;
         AGENT)  [ -n "$AGENT" ] || continue
                 MAX=$((${#AGENT} - OVER - 2))
@@ -1080,11 +1093,21 @@ for _t in $TRUNC_ORDER; do
         DIR)    [ -n "$DIR" ] || continue
                 MAX=$((${#DIR} - OVER - 2))                 # keep the tail (leaf dir)
                 if [ "$MAX" -gt 5 ]; then DIR="..${DIR: -$MAX}"
-                # Phone has already collapsed DIR to the leaf; mangling it
-                # further (or emptying it, which `${DIR: -6}` does when the leaf
-                # is shorter than 6) would leave line 1 without a session id.
+                # Phone has already collapsed DIR to the leaf; defer to DIRHARD
+                # rather than mangling it here, and never take the wide path's
+                # `${DIR: -6}`, which EMPTIES a leaf shorter than 6 characters.
                 elif [ "$LAYOUT" = "phone" ]; then continue
                 else DIR="${DIR: -6}"; fi ;;
+        # ── Phone-only last resorts. Reached only when everything above has
+        # bottomed out and line 1 is still over budget; between them they can
+        # always shed, which is what makes the ladder terminate.
+        BRANCHDROP) [ -n "$BRANCH" ] || continue
+                    BRANCH=""; GIT_STATUS="" ;;   # identity beats provenance
+        DIRHARD)    [ -n "$DIR" ] || continue
+                    # No ".." here: at this width the two dots cost more than
+                    # they explain. Keep the tail, never fewer than 1 char.
+                    MAX=$((${#DIR} - OVER))
+                    if [ "$MAX" -ge 1 ]; then DIR="${DIR: -$MAX}"; else DIR="${DIR: -1}"; fi ;;
     esac
     assemble_l1
     L1_COLS=$(measure_cols "$L1C"); L1_COLS=${L1_COLS:-0}

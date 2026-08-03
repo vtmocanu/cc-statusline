@@ -571,9 +571,10 @@ phone_layout_tests() {
         _phone_fail "$name" "STATUSLINE_LAYOUT=wide dropped the model segment: $l2"
     else _phone_pass "$name"; fi
 
-    # 6b. The layout FILE flips a wide viewport to phone (the path that works
-    #     when the session is being viewed from a phone, since COLUMNS reports
-    #     the host terminal). Env var still wins over the file.
+    # 6. The layout FILE flips a wide viewport to phone. This is the escape
+    #     hatch for clients that report NO viewport; auto-detection covers the
+    #     normal case, since COLUMNS reports the viewing client's width (see
+    #     KNOWN_ISSUES). Env var still wins over the file.
     name="phone-layout-file"; out="$SCRATCH/ph7.out"; err="$SCRATCH/ph7.err"
     mkdir -p "$SCRATCH/xdg/cc-statusline"
     printf 'phone\n' > "$SCRATCH/xdg/cc-statusline/layout"
@@ -585,6 +586,7 @@ phone_layout_tests() {
         _phone_fail "$name" "layout file ignored, wide line 2 rendered: $l2"
     else _phone_pass "$name"; fi
 
+    # 7. The env var still beats the file.
     name="phone-layout-file-env-wins"; out="$SCRATCH/ph8.out"; err="$SCRATCH/ph8.err"
     _phone_run "$out" "$err" COLUMNS=200 XDG_CONFIG_HOME="$SCRATCH/xdg" \
         STATUSLINE_LAYOUT=wide CC_STATUSLINE_RL_CACHE="$SCRATCH/ph8.cache"
@@ -594,7 +596,7 @@ phone_layout_tests() {
         _phone_fail "$name" "env var did not override the layout file: $l2"
     else _phone_pass "$name"; fi
 
-    # 6. Phone layout with no rate limits at all -> context fallback, not an
+    # 8. Phone layout with no rate limits at all -> context fallback, not an
     #    empty band.
     name="phone-no-rate-limits"; out="$SCRATCH/ph6.out"; err="$SCRATCH/ph6.err"
     ( cd "$SCRATCH" && _rl_json_norl \
@@ -607,6 +609,120 @@ phone_layout_tests() {
 }
 _phone_pass() { _rl_pass "$1"; }
 _phone_fail() { _rl_fail "$1" "$2"; }
+
+# ── Phone truncation-ladder tests ──────────────────────────────────────────
+# The ladder (DIRLEAF -> BRANCH -> GITST -> DIR -> BRANCHDROP -> DIRHARD) had NO
+# coverage when it shipped: every other phone test runs from $SCRATCH, which is
+# not a git repo, so BRANCH and GIT_STATUS are empty and line 1 is ~16 columns.
+# Two blocking bugs lived in exactly that blind spot: a short branch collapsed to
+# a bare ".." (bash returns the empty string for an over-long negative offset),
+# and the ladder could bottom out over budget so a NARROWER viewport rendered a
+# WIDER line. These tests need a real git repo with a real branch to reach it.
+phone_truncation_tests() {
+    printf '\n'
+    printf 'phone truncation-ladder tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local repo="$SCRATCH/ladder-repo"
+    local leaf="a-very-long-worktree-leaf-name"
+    local wd="$repo/$leaf"
+    mkdir -p "$wd"
+    ( cd "$repo" && git init -q -b main . && git -c user.email=t@t -c user.name=t \
+        commit -q --allow-empty -m init ) >/dev/null 2>&1
+
+    local name out err cols cap widest line stripped
+    local json='{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"WD",'
+    json+='"context_window":{"remaining_percentage":50,"context_window_size":1000000},'
+    json+='"cost":{"total_duration_ms":300000},"session_id":"ladder"}'
+
+    _ladder_render() {  # _ladder_render <cols> <outfile> <errfile>
+        printf '%s' "${json/WD/$wd}" \
+            | ( cd "$wd" && env COLUMNS="$1" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/ladder.cache" bash "$STATUSLINE" ) \
+              >"$2" 2>"$3"
+    }
+    _widest() {  # _widest <outfile> -> max visible columns across both lines
+        local w=0 c
+        while IFS= read -r line; do
+            c=$(printf '%s' "$line" | vis_cols)
+            [ "$c" -gt "$w" ] && w=$c
+        done <"$1"
+        printf '%s' "$w"
+    }
+
+    # 1. A short branch must SURVIVE the ladder, not collapse to "..". The dir is
+    #    long enough that line 1 genuinely overflows, so the BRANCH step runs.
+    #    An 8-char branch is the regression case that used to GROW to 10 chars.
+    local br
+    for br in main develop release1; do
+        name="ladder-short-branch-$br"
+        out="$SCRATCH/lad-$br.out"; err="$SCRATCH/lad-$br.err"
+        ( cd "$repo" && git checkout -q -B "$br" ) >/dev/null 2>&1
+        _ladder_render 44 "$out" "$err"
+        stripped=$(sed -n '1p' "$out" | _strip_ansi)
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif ! _has "$stripped" "$br"; then
+            _rl_fail "$name" "branch '$br' did not survive truncation: $stripped"
+        elif _has "$stripped" "..$br"; then
+            # Containing the name is not enough: "..release1" contains
+            # "release1" while being two columns WIDER than the untrimmed name,
+            # so a substring check alone cannot see the growth regression.
+            _rl_fail "$name" "branch '$br' was widened to '..$br' by the trim step: $stripped"
+        elif [ "$(_widest "$out")" -gt 43 ]; then
+            _rl_fail "$name" "line exceeds COLUMNS-1: $(_widest "$out") > 43"
+        else _rl_pass "$name"; fi
+    done
+
+    # 2. Convergence across the whole accepted COLUMNS range, with a branch and
+    #    leaf both long enough to force every rung. The ladder must never leave
+    #    a line wider than the viewport, at ANY width the code accepts.
+    ( cd "$repo" && git checkout -q -B devmetaminds/feature/really-long-branch-name-here ) >/dev/null 2>&1
+    name="ladder-converges"
+    local failed_at=""
+    for cols in 20 22 26 30 32 36 40 44 50 60 80; do
+        out="$SCRATCH/lad-c$cols.out"; err="$SCRATCH/lad-c$cols.err"
+        _ladder_render "$cols" "$out" "$err"
+        cap=$((cols - 1))
+        widest=$(_widest "$out")
+        if [ -s "$err" ]; then failed_at="COLUMNS=$cols stderr: $(head -1 "$err")"; break; fi
+        if [ "$(wc -l <"$out" | tr -d ' ')" -ne 2 ]; then
+            failed_at="COLUMNS=$cols produced $(wc -l <"$out" | tr -d ' ') lines"; break
+        fi
+        if [ "$widest" -gt "$cap" ]; then
+            failed_at="COLUMNS=$cols rendered $widest cols (cap $cap)"; break
+        fi
+    done
+    if [ -n "$failed_at" ]; then _rl_fail "$name" "$failed_at"; else _rl_pass "$name"; fi
+
+    # 3. Monotonicity: a narrower viewport must never render a WIDER line. This
+    #    is the property the non-convergent ladder violated (30 cols -> 51 wide,
+    #    while 40 cols -> 38 wide), and a width-cap assertion alone misses it
+    #    whenever both widths happen to sit under their own caps.
+    name="ladder-monotonic"
+    local prev=0 cur bad=""
+    for cols in 20 26 30 36 44 60 80; do
+        out="$SCRATCH/lad-m$cols.out"; err="$SCRATCH/lad-m$cols.err"
+        _ladder_render "$cols" "$out" "$err"
+        cur=$(_widest "$out")
+        if [ "$cur" -lt "$prev" ]; then
+            bad="COLUMNS=$cols rendered $cur cols, narrower than the previous step's $prev"
+        fi
+        prev=$cur
+    done
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # 4. The leaf directory is the last thing standing: at a width where nothing
+    #    else fits, line 1 must still carry part of it (identity beats
+    #    provenance), and must not be blank or a bare "..".
+    name="ladder-keeps-the-leaf"
+    out="$SCRATCH/lad-leaf.out"; err="$SCRATCH/lad-leaf.err"
+    _ladder_render 22 "$out" "$err"
+    stripped=$(sed -n '1p' "$out" | _strip_ansi)
+    case "$stripped" in
+        *[a-z]*) _rl_pass "$name" ;;
+        *) _rl_fail "$name" "line 1 lost the directory entirely at COLUMNS=22: '$stripped'" ;;
+    esac
+}
 
 # ── Env-input hardening tests ──────────────────────────────────────────────
 # Bash evaluates a variable's VALUE as an arithmetic expression and performs
@@ -736,6 +852,7 @@ done
 
 rate_limit_cache_tests
 phone_layout_tests
+phone_truncation_tests
 env_hardening_tests
 
 printf '%s\n' "------------------------------------------------------------"
