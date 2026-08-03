@@ -4,6 +4,15 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.14.0] - 2026-08-03
+
+### Added
+- Phone layout for narrow viewports. Claude Code exports `COLUMNS`/`LINES` to the statusline process (v2.1.153+) and they carry the viewport of the client doing the viewing, so a session opened in the Claude mobile app renders at `COLUMNS=52` while the same session at the desk renders at `COLUMNS=324`, each with its own layout. Below `STATUSLINE_PHONE_COLS` (60) line 1 keeps the folder, branch and dirty markers, and line 2 keeps the account badge plus both rate-limit windows with their pace arrows and reset countdowns (`↻`); topic, model, effort, elapsed, cost, context and cache are dropped. Force a tier with `STATUSLINE_LAYOUT=phone|wide`, or with a one-line `$XDG_CONFIG_HOME/cc-statusline/layout` file for clients that report no viewport.
+- Phone-layout truncation ladder: the folder collapses to its leaf before anything is character-truncated, the branch keeps its tail (worktree branches share long prefixes), then dirty markers drop, then the branch and folder are trimmed.
+
+### Changed
+- `STATUSLINE_WIDTH` is now a hard cap rather than a fixed width: a reported viewport narrower than it wins, a wider one never raises it. Terminals that report nothing behave exactly as before.
+
 ## [v2.13.0] - 2026-07-18
 
 ### Added
@@ -230,6 +239,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v2.14.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.1...v2.13.0
 [v2.12.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...v2.12.1
 [v2.12.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...v2.12.0

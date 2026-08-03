@@ -384,6 +384,46 @@ SAFE_WIDTH=${STATUSLINE_WIDTH:-110}
 # folder/git/k8s/model glyphs double-width. Power users on a known mono-width
 # font can reclaim them with STATUSLINE_GLYPH_MARGIN=0.
 WIDE_GLYPH_MARGIN=${STATUSLINE_GLYPH_MARGIN:-3}
+
+# ── Viewport detection + layout tier ───────────────────────────────────────
+# Claude Code exports COLUMNS/LINES to the statusline process (v2.1.153+), so
+# the render can follow the real viewport instead of a fixed safe width. tput
+# cols still cannot help (stdout is captured, see KNOWN_ISSUES). STATUSLINE_WIDTH
+# stays a hard CAP: the detected width only ever lowers it, never raises it, so
+# an explicit narrow setting is still honored. One column is held back because
+# the container's own truncation is what drops line 2.
+case "${COLUMNS:-}" in
+    ''|*[!0-9]*) : ;;
+    *) if [ "$COLUMNS" -ge 20 ] && [ "$COLUMNS" -le 500 ] 2>/dev/null; then
+           [ "$((COLUMNS - 1))" -lt "$SAFE_WIDTH" ] 2>/dev/null && SAFE_WIDTH=$((COLUMNS - 1))
+       fi ;;
+esac
+# Below PHONE_COLS the wide render cannot say anything useful, so line 1 keeps
+# folder + branch and line 2 keeps account + 5h/7d. STATUSLINE_LAYOUT forces a
+# tier (phone|wide); anything else (or unset) auto-selects from the width.
+PHONE_COLS=${STATUSLINE_PHONE_COLS:-60}
+case "$PHONE_COLS" in ''|*[!0-9]*) PHONE_COLS=60 ;; esac
+LAYOUT="${STATUSLINE_LAYOUT:-}"
+# A one-line file flips a RUNNING session on the next render, with no
+# settings.json edit and no restart. Auto-detection covers the normal case
+# (verified: a session viewed from the Claude mobile app renders with
+# COLUMNS=52 while the same session on the desk renders at COLUMNS=324, each
+# attached client getting its own render), so this is an escape hatch for
+# clients that do not report a viewport. Env var wins over the file; the file
+# wins over auto-detection.
+if [ -z "$LAYOUT" ]; then
+    _LAYOUT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/layout"
+    if [ -f "$_LAYOUT_FILE" ]; then
+        case "$(head -1 "$_LAYOUT_FILE" 2>/dev/null | tr -d '[:space:]')" in
+            phone) LAYOUT=phone ;;
+            wide)  LAYOUT=wide ;;
+        esac
+    fi
+fi
+case "$LAYOUT" in
+    phone|wide) ;;
+    *) if [ "$SAFE_WIDTH" -lt "$PHONE_COLS" ] 2>/dev/null; then LAYOUT=phone; else LAYOUT=wide; fi ;;
+esac
 # Current epoch, overridable so tests can pin time and get deterministic
 # rate-limit reset countdowns and pace arrows (see CC_STATUSLINE_NOW in the
 # test harness). Used by format_reset and pace_arrow.
@@ -800,6 +840,18 @@ measure_cols() {
 L1_PREFIX="${RST}${PROJ_FG}${NF_CORNER_TL}${BG1}"
 assemble_l1() {
     L1C="${L1_PREFIX}"
+    # Phone: folder + branch only. Topic, agent, mode and k8s are the first
+    # things a narrow viewport cannot afford, and the folder answers "which
+    # session am I looking at" more reliably than any of them.
+    if [ "$LAYOUT" = "phone" ]; then
+        L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
+        if [ -n "$BRANCH" ]; then
+            L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
+            [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
+        fi
+        L1C+=" "
+        return
+    fi
     [ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
     L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
     if [ -n "$BRANCH" ]; then
@@ -914,6 +966,43 @@ if [ -f "$SVC_CACHE" ]; then
     esac
 fi
 
+# ── Phone layout: line 2 override ──────────────────────────────────────────
+# Same palette, corners, bands and tier machinery as the wide render, fewer
+# segments: "<account> │ 5h <pct><arrow> ↻<reset> │ 7d <pct><arrow> ↻<reset>".
+# The tiers below feed the SAME widest-that-fits selection used for the wide
+# render, so the countdowns drop before the percentages and the pace arrows
+# survive longest (they are the alert). Model, effort, elapsed, cost, context
+# and cache are dropped: on a phone they cost more columns than they earn.
+# ↻ costs one column and stops the countdown reading as a second percentage.
+if [ "$LAYOUT" = "phone" ]; then
+    L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2}"
+    PH_SEP=""
+    if [ -n "$PROFILE_LABEL" ]; then
+        L2C+=" ${PROFILE_FG}${PROFILE_LABEL}${B2}"
+        PH_SEP=" ${L2_DIM}│${B2}"
+    fi
+    CACHE_SEG=""
+    if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
+        # Full: both reset countdowns.
+        RATE_FULL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+        RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
+        # Compact: 5h countdown only (the one you act on).
+        RATE_COMPACT="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        [ -n "${FIVE_TIME:-}" ] && RATE_COMPACT+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+        RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        # Minimal: percentages and arrows.
+        RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+    else
+        # No rate limits at all (fresh session, limit-less account, or the
+        # no-rate-limits fixture): fall back to the context percentage so line 2
+        # is not an empty band.
+        RATE_FULL=""; RATE_COMPACT=""; RATE_MINIMAL=""
+        L2C+="${PH_SEP} ${L2_TXT}ctx ${CTX_CLR}${PCT}%${B2}"
+    fi
+fi
+
 # ── One batch measurement: full L1 + L2 base + every L2 candidate ──────────
 # measure_cols takes N strings and emits N codepoint counts in a single perl
 # call, so the common (no-overflow) render costs just this measurement plus
@@ -932,16 +1021,32 @@ CACHE_W=${CACHE_W:-0}; SVC_W=${SVC_W:-0}
 # Each round trims one component by the measured overage (plus 2 for "..") and
 # re-measures. The common case takes zero rounds; only an overflowing line
 # re-measures, keeping the perl-call budget at ~2 per render.
-for _t in K8S BRANCH AGENT MODE TOPIC DIR; do
+# Phone renders only DIR + BRANCH, so trimming the others would burn a
+# re-measure without shrinking the line: walk just the components in play.
+TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC DIR"
+# DIRLEAF drops the parent component ("cc-statusline/phone" -> "phone") before
+# anything gets character-mangled: on a phone a whole leaf name reads better
+# than two half-words, and it usually buys back more columns than trimming the
+# branch would.
+[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="DIRLEAF BRANCH GITST DIR"
+for _t in $TRUNC_ORDER; do
     [ "$L1_COLS" -le "$TARGET" ] 2>/dev/null && break
     OVER=$((L1_COLS - TARGET))
     case $_t in
+        DIRLEAF) case "$DIR" in */*) DIR="${DIR##*/}" ;; *) continue ;; esac ;;
+        GITST)  [ -n "$GIT_STATUS" ] || continue
+                GIT_STATUS="" ;;   # dirty markers go before the leaf dir does
         K8S)    [ -n "$K8S_CTX" ] || continue
                 MAX=$((${#K8S_CTX} - OVER - 2))
                 if [ "$MAX" -gt 5 ]; then K8S_CTX="${K8S_CTX:0:$MAX}.."; else K8S_CTX=""; fi ;;
         BRANCH) [ -n "$BRANCH" ] || continue
                 MAX=$((${#BRANCH} - OVER - 2))
-                if [ "$MAX" -gt 5 ]; then BRANCH="${BRANCH:0:$MAX}.."; else BRANCH="${BRANCH:0:8}.."; fi ;;
+                # Phone keeps the TAIL: worktree branches share a long prefix
+                # ("feat/", "devmetaminds/"), so the leaf is what identifies
+                # them. The wide render keeps the head, unchanged.
+                if [ "$LAYOUT" = "phone" ]; then
+                    if [ "$MAX" -gt 5 ]; then BRANCH="..${BRANCH: -$MAX}"; else BRANCH="..${BRANCH: -8}"; fi
+                elif [ "$MAX" -gt 5 ]; then BRANCH="${BRANCH:0:$MAX}.."; else BRANCH="${BRANCH:0:8}.."; fi ;;
         AGENT)  [ -n "$AGENT" ] || continue
                 MAX=$((${#AGENT} - OVER - 2))
                 if [ "$MAX" -gt 3 ]; then AGENT="${AGENT:0:$MAX}.."; else AGENT="${AGENT:0:3}.."; fi ;;
@@ -953,7 +1058,12 @@ for _t in K8S BRANCH AGENT MODE TOPIC DIR; do
                 if [ "$MAX" -gt 5 ]; then TOPIC="${TOPIC:0:$MAX}.."; else TOPIC=""; fi ;;
         DIR)    [ -n "$DIR" ] || continue
                 MAX=$((${#DIR} - OVER - 2))                 # keep the tail (leaf dir)
-                if [ "$MAX" -gt 5 ]; then DIR="..${DIR: -$MAX}"; else DIR="${DIR: -6}"; fi ;;
+                if [ "$MAX" -gt 5 ]; then DIR="..${DIR: -$MAX}"
+                # Phone has already collapsed DIR to the leaf; mangling it
+                # further (or emptying it, which `${DIR: -6}` does when the leaf
+                # is shorter than 6) would leave line 1 without a session id.
+                elif [ "$LAYOUT" = "phone" ]; then continue
+                else DIR="${DIR: -6}"; fi ;;
     esac
     assemble_l1
     L1_COLS=$(measure_cols "$L1C"); L1_COLS=${L1_COLS:-0}

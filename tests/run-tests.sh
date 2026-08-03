@@ -35,6 +35,14 @@ SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 export KUBECONFIG=/dev/null
 unset GIT_DIR GIT_WORK_TREE
+# The statusline now narrows SAFE_WIDTH to the viewport when Claude Code exports
+# COLUMNS (v2.1.153+). A runner that happens to export it would silently shrink
+# every fixture's budget (and flip the phone layout on), so drop it here; the
+# phone-layout tests below set it explicitly per run.
+unset COLUMNS LINES
+# Isolate the layout override file ($XDG_CONFIG_HOME/cc-statusline/layout): the
+# maintainer's own file must not decide which layout the fixtures render.
+export XDG_CONFIG_HOME="$SCRATCH/xdg-empty"
 # An ambient token (harness run from inside a CLAUDE_CODE_OAUTH_TOKEN session)
 # would silently switch the account-keyed rate-limits cache path; drop it so
 # the rl-account-keyed test controls the token explicitly.
@@ -493,6 +501,113 @@ rate_limit_cache_tests() {
     else _rl_pass "$name"; fi
 }
 
+# ── Phone-layout tests ─────────────────────────────────────────────────────
+# Cover the viewport-driven layout switch: COLUMNS narrows SAFE_WIDTH, a width
+# under STATUSLINE_PHONE_COLS selects the phone render (folder + branch on line
+# 1, account + 5h/7d on line 2), and STATUSLINE_LAYOUT forces a tier either way.
+phone_layout_tests() {
+    printf '\n'
+    printf 'phone-layout tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local out err l2 name w1 w2 lines
+
+    _phone_run() {  # _phone_run <out> <err> <cols-env...> -- runs one render
+        local o="$1" e="$2"; shift 2
+        ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+            | env "$@" bash "$STATUSLINE" ) >"$o" 2>"$e"
+    }
+    _w() { sed -n "$2p" "$1" | vis_cols; }
+
+    # 1. COLUMNS=46 -> phone layout, both lines inside the viewport, line 2
+    #    carries the account-window percentages and the 5h reset countdown.
+    name="phone-cols-46"; out="$SCRATCH/ph1.out"; err="$SCRATCH/ph1.err"
+    _phone_run "$out" "$err" COLUMNS=46 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph1.cache"
+    lines=$(wc -l <"$out" | tr -d ' '); w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$lines" -ne 2 ]; then _phone_fail "$name" "expected 2 lines, got $lines"
+    elif [ "$w1" -gt 45 ] || [ "$w2" -gt 45 ]; then
+        _phone_fail "$name" "line widths $w1/$w2 exceed COLUMNS-1 (45)"
+    elif ! _has "$l2" "5h " || ! _has "$l2" "7d "; then
+        _phone_fail "$name" "line 2 missing 5h/7d: $l2"
+    elif _has "$l2" "Opus" || _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "line 2 still carries wide-layout segments: $l2"
+    else _phone_pass "$name"; fi
+
+    # 2. Wide viewport -> untouched wide render (model + context still present).
+    name="phone-cols-wide"; out="$SCRATCH/ph2.out"; err="$SCRATCH/ph2.err"
+    _phone_run "$out" "$err" COLUMNS=200 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph2.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "wide viewport lost the context segment: $l2"
+    else _phone_pass "$name"; fi
+
+    # 3. STATUSLINE_WIDTH stays a cap: a wide COLUMNS must not raise it.
+    name="phone-width-is-a-cap"; out="$SCRATCH/ph3.out"; err="$SCRATCH/ph3.err"
+    _phone_run "$out" "$err" COLUMNS=300 STATUSLINE_WIDTH=70 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph3.cache"
+    w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w1" -gt 70 ] || [ "$w2" -gt 70 ]; then
+        _phone_fail "$name" "COLUMNS raised the cap: $w1/$w2 > 70"
+    else _phone_pass "$name"; fi
+
+    # 4. Forced phone layout on a wide viewport.
+    name="phone-forced"; out="$SCRATCH/ph4.out"; err="$SCRATCH/ph4.err"
+    _phone_run "$out" "$err" COLUMNS=200 STATUSLINE_LAYOUT=phone CC_STATUSLINE_RL_CACHE="$SCRATCH/ph4.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "STATUSLINE_LAYOUT=phone still rendered the wide line 2: $l2"
+    else _phone_pass "$name"; fi
+
+    # 5. Forced wide layout on a narrow viewport (escape hatch).
+    name="phone-forced-wide"; out="$SCRATCH/ph5.out"; err="$SCRATCH/ph5.err"
+    _phone_run "$out" "$err" COLUMNS=46 STATUSLINE_LAYOUT=wide CC_STATUSLINE_RL_CACHE="$SCRATCH/ph5.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "Opus"; then
+        _phone_fail "$name" "STATUSLINE_LAYOUT=wide dropped the model segment: $l2"
+    else _phone_pass "$name"; fi
+
+    # 6b. The layout FILE flips a wide viewport to phone (the path that works
+    #     when the session is being viewed from a phone, since COLUMNS reports
+    #     the host terminal). Env var still wins over the file.
+    name="phone-layout-file"; out="$SCRATCH/ph7.out"; err="$SCRATCH/ph7.err"
+    mkdir -p "$SCRATCH/xdg/cc-statusline"
+    printf 'phone\n' > "$SCRATCH/xdg/cc-statusline/layout"
+    _phone_run "$out" "$err" COLUMNS=200 XDG_CONFIG_HOME="$SCRATCH/xdg" \
+        CC_STATUSLINE_RL_CACHE="$SCRATCH/ph7.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "layout file ignored, wide line 2 rendered: $l2"
+    else _phone_pass "$name"; fi
+
+    name="phone-layout-file-env-wins"; out="$SCRATCH/ph8.out"; err="$SCRATCH/ph8.err"
+    _phone_run "$out" "$err" COLUMNS=200 XDG_CONFIG_HOME="$SCRATCH/xdg" \
+        STATUSLINE_LAYOUT=wide CC_STATUSLINE_RL_CACHE="$SCRATCH/ph8.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "env var did not override the layout file: $l2"
+    else _phone_pass "$name"; fi
+
+    # 6. Phone layout with no rate limits at all -> context fallback, not an
+    #    empty band.
+    name="phone-no-rate-limits"; out="$SCRATCH/ph6.out"; err="$SCRATCH/ph6.err"
+    ( cd "$SCRATCH" && _rl_json_norl \
+        | env COLUMNS=46 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph6.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "ctx "; then
+        _phone_fail "$name" "expected the ctx fallback on line 2, got: $l2"
+    else _phone_pass "$name"; fi
+}
+_phone_pass() { _rl_pass "$1"; }
+_phone_fail() { _rl_fail "$1" "$2"; }
+
 if [ ! -x "$STATUSLINE" ]; then
     printf 'error: %s is not executable\n' "$STATUSLINE" >&2
     exit 2
@@ -512,6 +627,7 @@ for f in "$FIXTURES"/*.json; do
 done
 
 rate_limit_cache_tests
+phone_layout_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"
