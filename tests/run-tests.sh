@@ -741,11 +741,14 @@ env_hardening_tests() {
     local payload_dir="$SCRATCH/exec-probe"
     mkdir -p "$payload_dir"
 
-    # Every env var that reaches arithmetic in statusline.sh. Adding one to the
-    # script without adding it here is the regression this list exists to catch.
+    # Every env var that reaches arithmetic OR a numeric [ in statusline.sh.
+    # Adding one to the script without adding it here is the regression this
+    # list exists to catch. The last two reach a numeric [ rather than $(( )),
+    # which cannot execute but does break the empty-stderr contract.
     local v
     for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN STATUSLINE_PHONE_COLS \
-             CC_STATUSLINE_NOW COLUMNS; do
+             CC_STATUSLINE_NOW COLUMNS \
+             STATUSLINE_RL_AUTH_TTL STATUSLINE_RL_BACKOFF; do
         name="env-exec-$v"
         marker="$payload_dir/$v"
         out="$SCRATCH/env-$v.out"; err="$SCRATCH/env-$v.err"
@@ -777,9 +780,21 @@ env_hardening_tests() {
     # A non-numeric value must fall back to the default, not blank the render.
     # `STATUSLINE_WIDTH=abc` used to abort at TARGET=$(( )) under set -u and
     # emit a single empty line, i.e. no statusline at all.
-    for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN CC_STATUSLINE_NOW; do
+    for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN CC_STATUSLINE_NOW \
+             STATUSLINE_RL_AUTH_TTL STATUSLINE_RL_BACKOFF; do
         name="env-junk-$v"
         out="$SCRATCH/junk-$v.out"; err="$SCRATCH/junk-$v.err"
+        # The two RL vars are only COMPARED when an authoritative (5-field,
+        # fetch-stamped) cache exists and, for the backoff, a .backoff marker.
+        # Without both, the branch never runs and the assertion cannot fail:
+        # verified against the pre-fix script, where an unseeded run passes and
+        # a seeded one reports "[: abc: integer expected".
+        printf '90|1700018000|70|1700200000|1699999990\n' > "$SCRATCH/junk-$v.cache"
+        : > "$SCRATCH/junk-$v.cache.backoff"
+        # The marker's age is computed against the PINNED clock (2023-11-14), so
+        # a marker created now yields a negative age and the `-ge 0` test
+        # short-circuits before the junk value is ever compared. Backdate it.
+        touch -t 202311010000 "$SCRATCH/junk-$v.cache.backoff" 2>/dev/null
         ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
             | env "$v=abc" CC_STATUSLINE_RL_CACHE="$SCRATCH/junk-$v.cache" \
                   bash "$STATUSLINE" ) >"$out" 2>"$err"
@@ -813,6 +828,39 @@ env_hardening_tests() {
     elif ! _has "$(_rl_l2 "$out")" "of 1000k"; then
         _rl_fail "$name" "COLUMNS=070 was read as octal (56): layout flipped to phone"
     else _rl_pass "$name"; fi
+
+    # The stdin JSON reaches the same arithmetic sinks as the environment does.
+    # Narrower threat model (it needs control of what Claude Code sends, not
+    # just the process env), identical mechanism: context_window_size lands in
+    # CTX_SIZE_K=$((CTX_SIZE / 1000)) and total_duration_ms in
+    # TOTAL_SEC=$((DURATION_MS / 1000)).
+    local field
+    for field in ctx dur; do
+        name="json-exec-$field"
+        marker="$payload_dir/json-$field"
+        out="$SCRATCH/json-$field.out"; err="$SCRATCH/json-$field.err"
+        rm -f "$marker"
+        if [ "$field" = ctx ]; then
+            printf '{"model":{"display_name":"O","id":"opus"},"cwd":"/home/test/rl",'  >"$SCRATCH/json-$field.json"
+            printf '"context_window":{"remaining_percentage":50,'                     >>"$SCRATCH/json-$field.json"
+            printf '"context_window_size":"PCT[$(touch %s)]"},'          "$marker"    >>"$SCRATCH/json-$field.json"
+            printf '"cost":{"total_duration_ms":300000},"session_id":"j"}'            >>"$SCRATCH/json-$field.json"
+        else
+            printf '{"model":{"display_name":"O","id":"opus"},"cwd":"/home/test/rl",'  >"$SCRATCH/json-$field.json"
+            printf '"context_window":{"remaining_percentage":50,'                     >>"$SCRATCH/json-$field.json"
+            printf '"context_window_size":1000000},'                                  >>"$SCRATCH/json-$field.json"
+            printf '"cost":{"total_duration_ms":"PCT[$(touch %s)]"},'     "$marker"    >>"$SCRATCH/json-$field.json"
+            printf '"session_id":"j"}'                                                >>"$SCRATCH/json-$field.json"
+        fi
+        ( cd "$SCRATCH" && env CC_STATUSLINE_RL_CACHE="$SCRATCH/json-$field.cache" \
+            bash "$STATUSLINE" <"$SCRATCH/json-$field.json" ) >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -e "$marker" ]; then
+            _rl_fail "$name" "COMMAND EXECUTION: hostile stdin JSON ($field) ran"
+        elif [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then _rl_fail "$name" "expected 2 lines, got $lines"
+        else _rl_pass "$name"; fi
+    done
 
     # A hostile layout-override file must not survive the case match.
     name="env-layout-file-hostile"

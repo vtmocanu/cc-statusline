@@ -42,6 +42,19 @@ _state_dir() {
     printf '%s' "$d"
 }
 
+# Charset gate for every value that reaches bash arithmetic, wherever it comes
+# from. Bash evaluates a variable's VALUE as an arithmetic expression and
+# performs command substitution inside array subscripts while doing so, so an
+# unvalidated value in $(( )) is arbitrary command execution:
+#   STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]'  -> touch runs, render looks normal
+# A non-numeric value is just as bad the other way: it aborts the arithmetic
+# under `set -u` and the statusline vanishes entirely. This lives up here with
+# the other helpers because both the stdin JSON (parsed below) and the env
+# inputs (read further down) need it.
+_gate_int() {   # _gate_int <value> <default> -> a decimal integer, always
+    case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$((10#$1))" ;; esac
+}
+
 DATA=$(timeout 2 cat 2>/dev/null) || DATA=""
 [ -z "$DATA" ] && exit 0
 
@@ -85,7 +98,13 @@ eval "$(echo "$DATA" | jq -r '
 
 # Guard: if jq failed completely, use safe defaults
 MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
-PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}; DURATION_MS=${DURATION_MS:-0}; COST_USD=${COST_USD:-0}
+# CTX_SIZE and DURATION_MS reach $(( )) further down, so they get the same gate
+# the env inputs get. The stdin JSON is a narrower threat model than the process
+# environment (it needs control of what Claude Code sends), but the sink is
+# identical and the fix costs one call each.
+PCT=${PCT:-0}; COST_USD=${COST_USD:-0}
+CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
+DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
@@ -290,7 +309,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     RL_AUTH=0; RL_AGE=9999
     if [ "$CACHE_RL" = "1" ] && [[ "$C_AT" =~ ^[0-9]{1,12}$ ]]; then
         RL_AGE=$((RL_NOW - C_AT))
-        [ "$RL_AGE" -ge 0 ] && [ "$RL_AGE" -lt "${STATUSLINE_RL_AUTH_TTL:-300}" ] && RL_AUTH=1
+        [ "$RL_AGE" -ge 0 ] && [ "$RL_AGE" -lt "$(_gate_int "${STATUSLINE_RL_AUTH_TTL:-300}" 300)" ] && RL_AUTH=1
     fi
 
     # Spawn the background usage fetcher when the authoritative snapshot is
@@ -311,7 +330,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     RL_BACK=0
     if [ -f "$RL_CACHE.backoff" ]; then
         RL_BACK_AGE=$((RL_NOW - $(_file_mtime "$RL_CACHE.backoff")))
-        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "${STATUSLINE_RL_BACKOFF:-300}" ] && RL_BACK=1
+        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "$(_gate_int "${STATUSLINE_RL_BACKOFF:-300}" 300)" ] && RL_BACK=1
     fi
     if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] \
         && [ "$RL_AGE" -ge 60 ] && [ "$RL_BACK" = "0" ]; then
@@ -376,18 +395,6 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
 fi
 
 CTX_SIZE_K=$((CTX_SIZE / 1000))
-# ── Numeric env inputs are charset-gated before they reach arithmetic ───────
-# Bash evaluates a variable's VALUE as an arithmetic expression, and performs
-# command substitution inside array subscripts while doing so, so an unvalidated
-# env var in $(( )) is arbitrary command execution:
-#   STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]' -> touch runs, render looks normal
-# A non-numeric value is just as bad the other way: `STATUSLINE_WIDTH=abc` made
-# $(( )) fail under `set -u` and the statusline vanished entirely. Every env
-# value that reaches $(( )) is gated here; a bad one falls back to the default
-# rather than crashing the render. _gate_int keeps the three call sites honest.
-_gate_int() {   # _gate_int <value> <default> -> a decimal integer, always
-    case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$((10#$1))" ;; esac
-}
 # Max line width before Claude Code's cli-truncate drops line 2
 SAFE_WIDTH=$(_gate_int "${STATUSLINE_WIDTH:-110}" 110)
 # Width is measured in Unicode codepoints (see measure_cols), but Nerd Font
@@ -448,7 +455,8 @@ esac
 # Current epoch, overridable so tests can pin time and get deterministic
 # rate-limit reset countdowns and pace arrows (see CC_STATUSLINE_NOW in the
 # test harness). Used by format_reset and pace_arrow.
-NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$(date +%s)}" "$(date +%s)")
+_NOW_REAL=$(date +%s)
+NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$_NOW_REAL}" "$_NOW_REAL")
 
 TOPIC=""  # populated after SESSION_ID is extracted below
 
