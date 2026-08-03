@@ -12,3 +12,17 @@
 
 # Agent-team runtime task briefs (the team definition is committed; per-task briefs are not)
 .claude/agent-team-tasks/
+# IDEs
+.cursor
+.vscode
+# Python
+__pycache__/
+*.py[cod]
+# Env files
+.env
+# Devbox
+.devbox/
+# Claude
+.claude/scheduled_tasks.lock
+.claude/skill-stats.json
+.claude/worktrees/
