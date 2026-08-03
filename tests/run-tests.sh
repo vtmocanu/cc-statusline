@@ -183,6 +183,18 @@ _rl_json() {
     printf '{"five_hour":{"used_percentage":%s,"resets_at":%s},' "$1" "$2"
     printf '"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$3" "$4"
 }
+# A REALISTIC payload: rate limits plus a cost readout, so line 2's wide base is
+# as wide as a real session's. The viewport-band defect is invisible to a bare
+# payload, whose base fits in widths where a real one does not.
+_rl_json_rich() {
+    printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},'
+    printf '"cwd":"/home/test/rl","context_window":{"remaining_percentage":50,'
+    printf '"context_window_size":1000000},'
+    printf '"cost":{"total_duration_ms":300000,"total_cost_usd":12.34},'
+    printf '"session_id":"rl-rich","rate_limits":'
+    printf '{"five_hour":{"used_percentage":15,"resets_at":1700009660},'
+    printf '"seven_day":{"used_percentage":2,"resets_at":1700361000}}}'
+}
 # Same payload but with NO rate_limits object at all.
 _rl_json_norl() {
     printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},'
@@ -710,6 +722,63 @@ phone_truncation_tests() {
         prev=$cur
     done
     if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # 3b. The viewport BAND. The tier is picked from the width, but only a
+    #     measurement knows whether the wide render fits it: line 2's wide base
+    #     (model, effort, clock, cost, context) has no truncation step, so just
+    #     above the phone threshold every rate tier could be dropped and the
+    #     line still overflowed, and the padding pass widened line 1 to match.
+    #     Measured before the fallback: COLUMNS=61 rendered 74 columns. The band
+    #     MOVES with the base, so a realistic payload (rate limits AND cost) is
+    #     required; a bare payload has a base narrow enough to fit and the band
+    #     does not exist for it. That is why this sweeps with _rl_json_rich.
+    name="viewport-band"
+    local band_fail=""
+    for cols in $(seq 56 1 92); do
+        out="$SCRATCH/band-$cols.out"; err="$SCRATCH/band-$cols.err"
+        ( cd "$SCRATCH" && _rl_json_rich \
+            | env COLUMNS="$cols" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/band-$cols.cache" bash "$STATUSLINE" ) \
+            >"$out" 2>"$err"
+        widest=$(_widest "$out")
+        if [ -s "$err" ]; then band_fail="COLUMNS=$cols stderr: $(head -1 "$err")"; break; fi
+        if [ "$widest" -gt "$((cols - 1))" ]; then
+            band_fail="COLUMNS=$cols rendered $widest cols (cap $((cols - 1)))"; break
+        fi
+    done
+    if [ -n "$band_fail" ]; then _rl_fail "$name" "$band_fail"; else _rl_pass "$name"; fi
+
+    # 3c. Multibyte names, in whatever locale the suite is running. Bash counts
+    #     BYTES for ${#s} and ${s: -n} when the locale is not UTF-8, while the
+    #     width measurement counts codepoints, so under LC_ALL=C a 3-byte-per-
+    #     character name used to shed a third of what the ladder thought and the
+    #     render overflowed (COLUMNS=20 -> 23 cols) with a half-cut character in
+    #     it. This test only discriminates under LC_ALL=C, which is exactly what
+    #     the second suite run provides.
+    name="phone-multibyte-leaf"
+    local mb_leaf="日本語のディレクトリ名前テスト-très-long"
+    local mb_dir="$repo/$mb_leaf"
+    mkdir -p "$mb_dir"
+    local mb_fail=""
+    for cols in 20 24 28 32 40 52; do
+        out="$SCRATCH/mb-$cols.out"; err="$SCRATCH/mb-$cols.err"
+        printf '%s' "${json/WD/$mb_dir}" \
+            | ( cd "$mb_dir" && env COLUMNS="$cols" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/mb-$cols.cache" bash "$STATUSLINE" ) \
+              >"$out" 2>"$err"
+        widest=$(_widest "$out")
+        if [ -s "$err" ]; then mb_fail="COLUMNS=$cols stderr: $(head -1 "$err")"; break; fi
+        if [ "$widest" -gt "$((cols - 1))" ]; then
+            mb_fail="COLUMNS=$cols rendered $widest cols (cap $((cols - 1)))"; break
+        fi
+        # Byte slicing cuts a multibyte character in half; assert the output is
+        # still decodable rather than merely narrow.
+        if ! perl -e 'use Encode; my $s = do { local $/; <STDIN> };
+                      eval { Encode::decode("UTF-8", $s, Encode::FB_CROAK) }; exit($@ ? 1 : 0);' <"$out"; then
+            mb_fail="COLUMNS=$cols emitted invalid UTF-8 (a character was cut mid-sequence)"; break
+        fi
+    done
+    if [ -n "$mb_fail" ]; then _rl_fail "$name" "$mb_fail"; else _rl_pass "$name"; fi
 
     # 4. The leaf directory is the last thing standing: at a width where nothing
     #    else fits, line 1 must still carry part of it (identity beats
