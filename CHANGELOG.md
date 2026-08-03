@@ -13,6 +13,10 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - `STATUSLINE_WIDTH` is now a hard cap rather than a fixed width: a reported viewport narrower than it wins, a wider one never raises it. Terminals that report nothing behave exactly as before.
 
+### Security
+- Validate every environment value that reaches bash arithmetic (`STATUSLINE_WIDTH`, `STATUSLINE_GLYPH_MARGIN`, `CC_STATUSLINE_NOW`, plus the new `COLUMNS` and `STATUSLINE_PHONE_COLS`). Bash evaluates a variable's value as an arithmetic expression and performs command substitution inside array subscripts while doing so, so an unvalidated value in `$(( ))` was arbitrary command execution: `STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]'` ran the command on every render, exit 0, normal-looking output, empty stderr. Present since the initial public release; it needs an attacker who can already set the statusline process's environment (a hostile repo's direnv, another process on the box). A non-numeric value now falls back to the default instead of aborting the render under `set -u`, which previously blanked the statusline entirely (`STATUSLINE_WIDTH=abc`).
+- Silence two stderr paths that broke the empty-stderr contract without affecting output: a `COLUMNS` value too large for the shell's integer conversion, and a layout-override file holding invalid UTF-8 (BSD `tr` only, under a UTF-8 locale).
+
 ## [v2.13.0] - 2026-07-18
 
 ### Added

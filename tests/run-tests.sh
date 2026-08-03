@@ -608,6 +608,114 @@ phone_layout_tests() {
 _phone_pass() { _rl_pass "$1"; }
 _phone_fail() { _rl_fail "$1" "$2"; }
 
+# ── Env-input hardening tests ──────────────────────────────────────────────
+# Bash evaluates a variable's VALUE as an arithmetic expression and performs
+# command substitution inside array subscripts while doing so, so any env value
+# reaching $(( )) is an execution sink. These assert the charset gates hold:
+# the payload must NOT run, the render must stay well-formed, and stderr must
+# stay empty. The negative control (an ungated var) is what proves the probe
+# itself works, so a gate that silently stopped being applied cannot read as a
+# pass here.
+env_hardening_tests() {
+    printf '\n'
+    printf 'env-input hardening tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local out err name marker lines
+    local payload_dir="$SCRATCH/exec-probe"
+    mkdir -p "$payload_dir"
+
+    # Every env var that reaches arithmetic in statusline.sh. Adding one to the
+    # script without adding it here is the regression this list exists to catch.
+    local v
+    for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN STATUSLINE_PHONE_COLS \
+             CC_STATUSLINE_NOW COLUMNS; do
+        name="env-exec-$v"
+        marker="$payload_dir/$v"
+        out="$SCRATCH/env-$v.out"; err="$SCRATCH/env-$v.err"
+        rm -f "$marker"
+        ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+            | env "$v=PCT[\$(touch $marker)]" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/env-$v.cache" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -e "$marker" ]; then
+            _rl_fail "$name" "COMMAND EXECUTION: payload in \$$v ran (marker created)"
+        elif [ -s "$err" ]; then
+            _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then
+            _rl_fail "$name" "expected 2 lines with a hostile \$$v, got $lines"
+        else _rl_pass "$name"; fi
+    done
+
+    # Negative control: the same payload in a variable the script feeds to
+    # arithmetic WITHOUT a gate does execute. If this stops executing, the probe
+    # is broken and every pass above is meaningless.
+    name="env-exec-probe-is-live"
+    marker="$payload_dir/control"
+    rm -f "$marker"
+    ( cd "$SCRATCH" && bash -c 'V=$1; : $((V)); exit 0' _ "PCT[\$(touch $marker)]" ) >/dev/null 2>&1
+    if [ -e "$marker" ]; then _rl_pass "$name"
+    else _rl_fail "$name" "probe did not execute in the ungated control; the exec tests above prove nothing"; fi
+
+    # A non-numeric value must fall back to the default, not blank the render.
+    # `STATUSLINE_WIDTH=abc` used to abort at TARGET=$(( )) under set -u and
+    # emit a single empty line, i.e. no statusline at all.
+    for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN CC_STATUSLINE_NOW; do
+        name="env-junk-$v"
+        out="$SCRATCH/junk-$v.out"; err="$SCRATCH/junk-$v.err"
+        ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+            | env "$v=abc" CC_STATUSLINE_RL_CACHE="$SCRATCH/junk-$v.cache" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then
+            _rl_fail "$name" "junk \$$v produced $lines lines (expected 2, i.e. the default was used)"
+        else _rl_pass "$name"; fi
+    done
+
+    # A value too large for the shell's integer conversion must not reach a bare
+    # `[`, and a zero-padded one must not be read as octal (060 is 60, not 48).
+    name="env-columns-overflow"
+    out="$SCRATCH/cols-of.out"; err="$SCRATCH/cols-of.err"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=99999999999999999999 \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/cols-of.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    else _rl_pass "$name"; fi
+
+    # The value has to STRADDLE the threshold under the two readings or the
+    # test cannot fail: 060 is 60 decimal / 48 octal and both select phone, so
+    # it proves nothing. 070 is 70 decimal (SAFE_WIDTH 69 -> wide) and 56 octal
+    # (SAFE_WIDTH 55 -> phone), so the layout is the discriminator.
+    name="env-columns-zero-padded"
+    out="$SCRATCH/cols-pad.out"; err="$SCRATCH/cols-pad.err"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=070 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/cols-pad.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$(_rl_l2 "$out")" "of 1000k"; then
+        _rl_fail "$name" "COLUMNS=070 was read as octal (56): layout flipped to phone"
+    else _rl_pass "$name"; fi
+
+    # A hostile layout-override file must not survive the case match.
+    name="env-layout-file-hostile"
+    out="$SCRATCH/layout-h.out"; err="$SCRATCH/layout-h.err"
+    mkdir -p "$SCRATCH/xdg-hostile/cc-statusline"
+    printf 'phoney; touch %s/layout-pwn\n' "$payload_dir" > "$SCRATCH/xdg-hostile/cc-statusline/layout"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env XDG_CONFIG_HOME="$SCRATCH/xdg-hostile" COLUMNS=200 \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/layout-h.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    lines=$(wc -l <"$out" | tr -d ' ')
+    if [ -e "$payload_dir/layout-pwn" ]; then
+        _rl_fail "$name" "COMMAND EXECUTION: layout file contents ran"
+    elif [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$lines" -ne 2 ]; then _rl_fail "$name" "expected 2 lines, got $lines"
+    elif ! _has "$(_rl_l2 "$out")" "of 1000k"; then
+        _rl_fail "$name" "unrecognized layout value was not ignored (expected the wide render)"
+    else _rl_pass "$name"; fi
+}
+
 if [ ! -x "$STATUSLINE" ]; then
     printf 'error: %s is not executable\n' "$STATUSLINE" >&2
     exit 2
@@ -628,6 +736,7 @@ done
 
 rate_limit_cache_tests
 phone_layout_tests
+env_hardening_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

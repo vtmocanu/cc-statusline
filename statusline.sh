@@ -376,14 +376,26 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
 fi
 
 CTX_SIZE_K=$((CTX_SIZE / 1000))
+# ── Numeric env inputs are charset-gated before they reach arithmetic ───────
+# Bash evaluates a variable's VALUE as an arithmetic expression, and performs
+# command substitution inside array subscripts while doing so, so an unvalidated
+# env var in $(( )) is arbitrary command execution:
+#   STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]' -> touch runs, render looks normal
+# A non-numeric value is just as bad the other way: `STATUSLINE_WIDTH=abc` made
+# $(( )) fail under `set -u` and the statusline vanished entirely. Every env
+# value that reaches $(( )) is gated here; a bad one falls back to the default
+# rather than crashing the render. _gate_int keeps the three call sites honest.
+_gate_int() {   # _gate_int <value> <default> -> a decimal integer, always
+    case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$((10#$1))" ;; esac
+}
 # Max line width before Claude Code's cli-truncate drops line 2
-SAFE_WIDTH=${STATUSLINE_WIDTH:-110}
+SAFE_WIDTH=$(_gate_int "${STATUSLINE_WIDTH:-110}" 110)
 # Width is measured in Unicode codepoints (see measure_cols), but Nerd Font
 # icons can render 1-2 terminal cells depending on the font/terminal. Reserve a
 # few columns so truncation stays conservative on terminals that render the
 # folder/git/k8s/model glyphs double-width. Power users on a known mono-width
 # font can reclaim them with STATUSLINE_GLYPH_MARGIN=0.
-WIDE_GLYPH_MARGIN=${STATUSLINE_GLYPH_MARGIN:-3}
+WIDE_GLYPH_MARGIN=$(_gate_int "${STATUSLINE_GLYPH_MARGIN:-3}" 3)
 
 # ── Viewport detection + layout tier ───────────────────────────────────────
 # Claude Code exports COLUMNS/LINES to the statusline process (v2.1.153+), so
@@ -392,17 +404,23 @@ WIDE_GLYPH_MARGIN=${STATUSLINE_GLYPH_MARGIN:-3}
 # stays a hard CAP: the detected width only ever lowers it, never raises it, so
 # an explicit narrow setting is still honored. One column is held back because
 # the container's own truncation is what drops line 2.
+# 10# forces base 10 throughout: a zero-padded COLUMNS (060) would otherwise be
+# read as octal by $(( )) but as decimal by [, so the range check and the
+# assignment would disagree and a 60-column viewport would land at 47.
 case "${COLUMNS:-}" in
     ''|*[!0-9]*) : ;;
-    *) if [ "$COLUMNS" -ge 20 ] && [ "$COLUMNS" -le 500 ] 2>/dev/null; then
-           [ "$((COLUMNS - 1))" -lt "$SAFE_WIDTH" ] 2>/dev/null && SAFE_WIDTH=$((COLUMNS - 1))
+    *) _COLS=$((10#$COLUMNS))
+       # Each test carries its own redirect: a value too large for the shell's
+       # integer conversion makes the FIRST one write to stderr, and the
+       # statusline's contract is empty stderr on every render.
+       if [ "$_COLS" -ge 20 ] 2>/dev/null && [ "$_COLS" -le 500 ] 2>/dev/null; then
+           [ "$((_COLS - 1))" -lt "$SAFE_WIDTH" ] 2>/dev/null && SAFE_WIDTH=$((_COLS - 1))
        fi ;;
 esac
 # Below PHONE_COLS the wide render cannot say anything useful, so line 1 keeps
 # folder + branch and line 2 keeps account + 5h/7d. STATUSLINE_LAYOUT forces a
 # tier (phone|wide); anything else (or unset) auto-selects from the width.
-PHONE_COLS=${STATUSLINE_PHONE_COLS:-60}
-case "$PHONE_COLS" in ''|*[!0-9]*) PHONE_COLS=60 ;; esac
+PHONE_COLS=$(_gate_int "${STATUSLINE_PHONE_COLS:-60}" 60)
 LAYOUT="${STATUSLINE_LAYOUT:-}"
 # A one-line file flips a RUNNING session on the next render, with no
 # settings.json edit and no restart. Auto-detection covers the normal case
@@ -414,7 +432,10 @@ LAYOUT="${STATUSLINE_LAYOUT:-}"
 if [ -z "$LAYOUT" ]; then
     _LAYOUT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/layout"
     if [ -f "$_LAYOUT_FILE" ]; then
-        case "$(head -1 "$_LAYOUT_FILE" 2>/dev/null | tr -d '[:space:]')" in
+        # tr's stderr is silenced too: a layout file holding invalid UTF-8 makes
+        # BSD tr print "Illegal byte sequence" under a UTF-8 locale (and stays
+        # quiet under LC_ALL=C, so the C-locale harness run cannot catch it).
+        case "$(head -1 "$_LAYOUT_FILE" 2>/dev/null | tr -d '[:space:]' 2>/dev/null)" in
             phone) LAYOUT=phone ;;
             wide)  LAYOUT=wide ;;
         esac
@@ -427,7 +448,7 @@ esac
 # Current epoch, overridable so tests can pin time and get deterministic
 # rate-limit reset countdowns and pace arrows (see CC_STATUSLINE_NOW in the
 # test harness). Used by format_reset and pace_arrow.
-NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
+NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$(date +%s)}" "$(date +%s)")
 
 TOPIC=""  # populated after SESSION_ID is extracted below
 
