@@ -166,7 +166,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 |---|---|---|
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line, and a hard cap: when Claude Code reports a narrower viewport (see below), the render follows the viewport instead. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
-| `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` selects the phone layout. |
+| `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
 | `STATUSLINE_CACHE` | `0` | Set to `1` to show the prompt-cache hit-rate readout (`⚡ NN%`) on line 2 (off by default). |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
@@ -188,7 +188,15 @@ reports the viewport of the client doing the viewing: the same session rendered
 from the Claude mobile app arrives with `COLUMNS=52` while the desk terminal
 renders it at `COLUMNS=324`. Each attached client gets its own render, so both can
 be right at once. Below `STATUSLINE_PHONE_COLS` (60) the script switches to a
-layout built for that width:
+layout built for that width, and above it the switch still happens whenever the
+wide render measurably will not fit: line 2's wide base (model, effort, clock,
+cost, context) cannot be truncated, so the tier is re-decided after measuring it.
+That threshold therefore moves with your own line: a long model display name or a
+5-figure cost can select the phone layout as high as the low 90s, and a lean
+session stays wide down to 60. `STATUSLINE_LAYOUT=wide` overrides this if you
+would rather have the wide render and accept the truncation.
+
+The phone layout:
 
 ```
  󰉋 phone │  devmetaminds/phone !1 ?1
@@ -288,7 +296,7 @@ See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for known limitations.
 
 ## Why two lines?
 
-Claude Code's `cli-truncate` silently drops subsequent lines if line 1 exceeds the container width. This script estimates visible columns and truncates content (in priority order: K8s context, branch, topic) before that happens. See the comments in [statusline.sh](statusline.sh) for the full set of undocumented rendering quirks discovered through testing.
+Claude Code's `cli-truncate` silently drops line 2 when a line exceeds the container width. This script measures visible columns with an ANSI-aware helper (it does not estimate) and truncates content (in priority order: K8s context, branch, agent, mode, topic, directory) before that happens. See the comments in [statusline.sh](statusline.sh) for the full set of undocumented rendering quirks discovered through testing.
 
 ## License
 

@@ -4,6 +4,16 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.14.1] - 2026-08-04
+
+### Fixed
+- The phone layout's context fallback (`ctx NN%`, shown when an account has no rate limits yet) is now a sheddable line-2 segment instead of part of the base. Appended to the base nothing could drop it, so with the account badge enabled and no rate limits, every viewport from 20 to 23 columns rendered 23 columns and the padding pass widened line 1 to match, which is the overflow that makes `cli-truncate` drop line 2. Shipped in v2.14.0; it needs all three conditions at once (badge on, no rate limits, a viewport under 24 columns).
+
+### Documentation
+- `STATUSLINE_PHONE_COLS` is documented as a floor rather than the whole rule. Since v2.14.0 the tier is also re-decided after measuring line 2's wide base, so a long model name or a large cost readout can select the phone layout well above 60 columns (measured: 74 with a cost readout, 94 with a long display name). The README and the env-var table said 60 was the threshold.
+- The v2.14.0 entry below did not mention two of its own behaviors: the measured wide-to-phone fallback, and the codepoint-aware truncation that fixed multibyte names under `LC_ALL=C`. Both are described there now.
+- Corrected a stale line claiming the script "estimates" visible columns; it has measured them since v2.14.0, and the priority list omitted two components.
+
 ## [v2.14.0] - 2026-08-04
 
 ### Added
@@ -17,6 +27,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Phone truncation no longer deletes a short branch name. Bash returns the empty string for a negative offset larger than the string, so the trim step collapsed any branch of 7 characters or fewer to a bare `..` (`main`, `develop`) and widened an 8-character one to `..release1`. A branch at or below the floor is now left intact, and dropped wholesale only as a last resort.
 - A long account label no longer displaces the rate limits in the phone layout. The badge sits in line 2's base, which no tier can shed, so a 28-character label survived while the windows it pushed out were the reason that line exists. It is capped at 8 columns with an ellipsis, so a truncated label reads as truncated rather than silently naming a different account.
 - The phone truncation ladder now converges. It could previously bottom out with line 1 still over budget, so a narrower viewport rendered a wider line (a 30-column viewport produced 51 columns), which is exactly the overflow that makes Claude Code's `cli-truncate` drop line 2.
+- The layout tier is re-decided after measurement, not from the width alone. Line 2's wide base (model, effort, clock, cost, context) has no truncation step, so a viewport just above `STATUSLINE_PHONE_COLS` could drop every rate tier and still overflow: a 61-column viewport rendered 74 columns. If the wide base plus the service icon does not fit, the render falls back to the phone layout. An explicit `STATUSLINE_LAYOUT` is never overridden.
+- Truncation is codepoint-aware. Bash counts bytes for `${#s}` and `${s: -n}` outside a UTF-8 locale, while width is measured in codepoints, so under `LC_ALL=C` a multibyte directory or branch name shed about a third of what the ladder intended and could be cut mid-character, emitting invalid UTF-8. ASCII still takes the pure-bash path.
 
 ### Security
 - Validate every value that reaches bash arithmetic, from the environment (`STATUSLINE_WIDTH`, `STATUSLINE_GLYPH_MARGIN`, `CC_STATUSLINE_NOW`, plus the new `COLUMNS` and `STATUSLINE_PHONE_COLS`) and from the stdin JSON (`context_window.context_window_size`, `cost.total_duration_ms`). The JSON path needs control of what Claude Code sends rather than just the process environment, so it is a narrower threat model, but the sink is identical. Bash evaluates a variable's value as an arithmetic expression and performs command substitution inside array subscripts while doing so, so an unvalidated value in `$(( ))` was arbitrary command execution: `STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]'` ran the command on every render, exit 0, normal-looking output, empty stderr. Present since the initial public release; it needs an attacker who can already set the statusline process's environment (a hostile repo's direnv, another process on the box). A non-numeric value now falls back to the default instead of aborting the render under `set -u`, which previously blanked the statusline entirely (`STATUSLINE_WIDTH=abc`).
@@ -248,6 +260,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v2.14.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.0...v2.14.1
 [v2.14.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.1...v2.13.0
 [v2.12.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...v2.12.1

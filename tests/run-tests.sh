@@ -66,6 +66,14 @@ export CC_STATUSLINE_NOW=1700000000
 # (present on the maintainer's machine, absent in CI) can't change line-2
 # width between environments.
 export STATUSLINE_PROFILE=0
+# Isolate HOME. The effort level falls back to `jq .effortLevel
+# ~/.claude/settings.json`, so the runner's own setting changes line 2's base
+# width (xhigh is 5 columns, medium is 6). That used to be cosmetic; since the
+# layout tier is chosen from the MEASURED base width, the runner's settings can
+# now flip a decision the tests assert on, which is how a suite passes locally
+# and fails in CI. Tests that need a real HOME set it themselves.
+export HOME="$SCRATCH/home"
+mkdir -p "$HOME/.claude"
 
 pass=0
 fail=0
@@ -807,6 +815,13 @@ phone_gap_tests() {
 
     local name out err l1 l2 c w bad
 
+    # The badge fixture is shared by G4 and G6, so it is built once up here.
+    local bh="$SCRATCH/badge-home"
+    mkdir -p "$bh/.claude"
+    printf '{"oauthAccount":{"accountUuid":"11111111-2222-3333-4444-555555555555"}}\n' > "$bh/.claude.json"
+    printf '{"enabled":true,"profiles":{"11111111-2222-3333-4444-555555555555":{"label":"very-long-account-label-here","color":"blue"}}}\n' \
+        > "$bh/.claude/profile-labels.json"
+
     # G1. The service icon's width is reserved BEFORE the rate tier is chosen
     #     (AVAIL = TARGET - BASE_W - SVC_W). Nothing else in the suite seeds the
     #     service cache in phone mode, so dropping SVC_W from that subtraction
@@ -873,15 +888,58 @@ phone_gap_tests() {
     elif ! _has "$l2" "ctx 50%"; then _rl_fail "$name" "ctx fallback lost the real percentage: $l2"
     else _rl_pass "$name"; fi
 
+    # G5. The service icon's width is also part of the WIDE-BASE FALLBACK
+    #     condition (BASE_W + SVC_W > TARGET). Dropping the SVC_W term there
+    #     leaves the suite green and overflows by up to 3 columns at 72-74 with
+    #     a seeded service cache, because nothing else in the suite ever writes
+    #     one. This is a different mutant from G1, which guards the AVAIL
+    #     reservation; both terms are load-bearing and neither implies the other.
+    name="phone-fallback-reserves-svc"; bad=""
+    for c in 72 73 74; do
+        out="$SCRATCH/fbsvc$c.out"; err="$SCRATCH/fbsvc$c.err"
+        ( cd "$SCRATCH" && _rl_json_rich \
+            | env COLUMNS="$c" CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-seeded" \
+                  XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/fbsvc$c.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+        if [ -s "$err" ]; then bad="COLUMNS=$c stderr: $(head -1 "$err")"; break; fi
+        w=$(_widest "$out")
+        if [ "$w" -gt "$((c - 1))" ]; then bad="COLUMNS=$c rendered $w cols (cap $((c-1)))"; break; fi
+    done
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # G6. The phone ctx fallback must be SHEDDABLE. Appended to line 2's base it
+    #     could not be dropped by anything, so with a badge and no rate limits
+    #     every viewport from 20 to 23 rendered 23 columns and the padding pass
+    #     widened line 1 to match. Needs all three conditions at once (badge on,
+    #     no rate limits, very narrow), which is why no other test sees it.
+    name="phone-ctx-fallback-sheds"; bad=""
+    printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},"cwd":"/work/proj/leaf",' \
+        > "$SCRATCH/norl-badge.json"
+    printf '"context_window":{"remaining_percentage":0,"context_window_size":1000000},' \
+        >> "$SCRATCH/norl-badge.json"
+    printf '"cost":{"total_duration_ms":300000},"session_id":"ctxfb"}' >> "$SCRATCH/norl-badge.json"
+    for c in 20 21 22 23 24 30; do
+        out="$SCRATCH/ctxfb$c.out"; err="$SCRATCH/ctxfb$c.err"
+        ( cd "$SCRATCH" && env COLUMNS="$c" HOME="$bh" STATUSLINE_PROFILE=1 \
+            XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+            CC_STATUSLINE_RL_CACHE="$SCRATCH/ctxfb$c.cache" \
+            bash "$STATUSLINE" <"$SCRATCH/norl-badge.json" ) >"$out" 2>"$err"
+        if [ -s "$err" ]; then bad="COLUMNS=$c stderr: $(head -1 "$err")"; break; fi
+        if [ "$(wc -l <"$out" | tr -d ' ')" -ne 2 ]; then bad="COLUMNS=$c produced $(wc -l <"$out" | tr -d ' ') lines"; break; fi
+        w=$(_widest "$out")
+        if [ "$w" -gt "$((c - 1))" ]; then bad="COLUMNS=$c rendered $w cols (cap $((c-1)))"; break; fi
+    done
+    # ...and it must still be SHOWN where it fits, or "sheddable" would be
+    # satisfied by never rendering it at all.
+    if [ -z "$bad" ] && ! _has "$(_rl_l2 "$SCRATCH/ctxfb30.out")" "ctx "; then
+        bad="COLUMNS=30 dropped the ctx fallback even though it fits"
+    fi
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
     # G4. The account badge lives in the phone line-2 base, which no tier can
     #     shed. A long label must be capped AND marked as truncated, and must
     #     not displace the rate limits that are the reason line 2 exists.
     name="phone-badge-fits"
-    local bh="$SCRATCH/badge-home"
-    mkdir -p "$bh/.claude"
-    printf '{"oauthAccount":{"accountUuid":"11111111-2222-3333-4444-555555555555"}}\n' > "$bh/.claude.json"
-    printf '{"enabled":true,"profiles":{"11111111-2222-3333-4444-555555555555":{"label":"very-long-account-label-here","color":"blue"}}}\n' \
-        > "$bh/.claude/profile-labels.json"
     out="$SCRATCH/badge.out"; err="$SCRATCH/badge.err"
     ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
         | env COLUMNS=30 HOME="$bh" STATUSLINE_PROFILE=1 \

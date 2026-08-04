@@ -1035,7 +1035,7 @@ fi
 # ↻ costs one column and stops the countdown reading as a second percentage.
 _apply_phone_l2() {
     L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2}"
-    PH_SEP=""
+    local PH_SEP=""
     if [ -n "$PROFILE_LABEL" ]; then
         # The badge sits in the line-2 BASE, which no tier can shed, so a long
         # label (an email, "metaminds-prod-account") would survive while the
@@ -1068,8 +1068,16 @@ _apply_phone_l2() {
         # No rate limits at all (fresh session, limit-less account, or the
         # no-rate-limits fixture): fall back to the context percentage so line 2
         # is not an empty band.
-        RATE_FULL=""; RATE_COMPACT=""; RATE_MINIMAL=""
-        L2C+="${PH_SEP} ${L2_TXT}ctx ${CTX_CLR}${PCT}%${B2}"
+        #
+        # It goes in the TIERS, not the base. Appended to the base it could not
+        # be shed by anything, so at a viewport narrower than base + ctx both
+        # lines overflowed and the padding pass widened line 1 to match: with a
+        # badge and no rate limits, COLUMNS 20 through 23 all rendered 23
+        # columns. All three tiers carry the same string, so the selector shows
+        # it when it fits and drops it when it does not, which is the same rule
+        # every other line-2 segment already follows.
+        local ctx_seg="${PH_SEP} ${L2_TXT}ctx ${CTX_CLR}${PCT}%${B2}"
+        RATE_FULL="$ctx_seg"; RATE_COMPACT="$ctx_seg"; RATE_MINIMAL="$ctx_seg"
     fi
 }
 [ "$LAYOUT" = "phone" ] && _apply_phone_l2
