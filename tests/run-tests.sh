@@ -793,6 +793,110 @@ phone_truncation_tests() {
     esac
 }
 
+# ── Phone gap tests (mutation-derived) ─────────────────────────────────────
+# Each of these kills a mutant that survived the rest of the suite: the render
+# could lose the service-icon width reservation, collapse to a lower rate tier,
+# drop the git dirty markers, or print a constant context percentage, and every
+# other assertion stayed green. A test nobody can fail is documentation, so
+# these were written FROM the surviving mutants rather than from the feature
+# description. Derived from the tester's proposed guards.
+phone_gap_tests() {
+    printf '\n'
+    printf 'phone gap tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local name out err l1 l2 c w bad
+
+    # G1. The service icon's width is reserved BEFORE the rate tier is chosen
+    #     (AVAIL = TARGET - BASE_W - SVC_W). Nothing else in the suite seeds the
+    #     service cache in phone mode, so dropping SVC_W from that subtraction
+    #     shipped silently; with the cache seeded it overflows at 34/38/39/40.
+    name="phone-svc-reserved"; bad=""
+    printf 'operational\n' > "$SCRATCH/svc-seeded"
+    for c in 34 38 39 40; do
+        out="$SCRATCH/svc$c.out"; err="$SCRATCH/svc$c.err"
+        ( cd "$SCRATCH" && _rl_json 100 1700009660 100 1700361000 \
+            | env COLUMNS="$c" CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-seeded" \
+                  XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/svc$c.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+        l2=$(_rl_l2 "$out")
+        if [ -s "$err" ]; then bad="COLUMNS=$c stderr: $(head -1 "$err")"; break; fi
+        _has "$l2" "✓" || { bad="COLUMNS=$c lost the service icon"; break; }
+        w=$(sed -n '2p' "$out" | vis_cols)
+        if [ "$w" -gt "$((c - 1))" ]; then bad="COLUMNS=$c line 2 is $w cols (cap $((c-1)))"; break; fi
+    done
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # G2. Tier selection must actually DIFFER by width. "line 2 contains 5h and
+    #     7d" passes for every tier, so a render that silently collapsed to the
+    #     minimal tier was invisible: assert the countdown is present at 46 and
+    #     that both windows survive at 30.
+    name="phone-tier-detail"; bad=""
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=46 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/t46.cache" bash "$STATUSLINE" ) \
+        >"$SCRATCH/t46.out" 2>"$SCRATCH/t46.err"
+    l2=$(_rl_l2 "$SCRATCH/t46.out")
+    # Pin BOTH countdowns by value, not the ↻ glyph: the compact tier still
+    # carries one ↻, so asserting the glyph passes on a render that silently
+    # dropped the 5h countdown and fell back a tier. Verified: that mutant
+    # survives a glyph check and dies against these two.
+    _has "$l2" "↻2h41m" || bad="COLUMNS=46 lost the 5h reset countdown: $l2"
+    _has "$l2" "↻4d4h"  || bad="${bad:-COLUMNS=46 lost the 7d reset countdown: $l2}"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=30 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/t30.cache" bash "$STATUSLINE" ) \
+        >"$SCRATCH/t30.out" 2>"$SCRATCH/t30.err"
+    l2=$(_rl_l2 "$SCRATCH/t30.out")
+    { _has "$l2" "5h " && _has "$l2" "7d "; } || bad="${bad:-COLUMNS=30 dropped a window: $l2}"
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # G3. Phone line 1 keeps the git dirty markers when they fit, and the ctx
+    #     fallback shows the REAL percentage rather than a constant.
+    name="phone-l1-dirty-markers"
+    local dr="$SCRATCH/dirty-repo"
+    mkdir -p "$dr"
+    ( cd "$dr" && git init -q -b main . && git -c user.email=t@t -c user.name=t \
+        commit -q --allow-empty -m init && : > untracked ) >/dev/null 2>&1
+    printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},"cwd":"%s",' "$dr" \
+        > "$SCRATCH/dirty.json"
+    printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000},' \
+        >> "$SCRATCH/dirty.json"
+    printf '"cost":{"total_duration_ms":300000},"session_id":"d"}' >> "$SCRATCH/dirty.json"
+    ( cd "$dr" && env COLUMNS=46 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+        CC_STATUSLINE_RL_CACHE="$SCRATCH/dirty.cache" bash "$STATUSLINE" <"$SCRATCH/dirty.json" ) \
+        >"$SCRATCH/dirty.out" 2>"$SCRATCH/dirty.err"
+    l1=$(sed -n '1p' "$SCRATCH/dirty.out" | _strip_ansi)
+    l2=$(_rl_l2 "$SCRATCH/dirty.out")
+    if [ -s "$SCRATCH/dirty.err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$SCRATCH/dirty.err")"
+    elif ! _has "$l1" "?1"; then _rl_fail "$name" "line 1 lost the dirty marker: $l1"
+    elif ! _has "$l2" "ctx 50%"; then _rl_fail "$name" "ctx fallback lost the real percentage: $l2"
+    else _rl_pass "$name"; fi
+
+    # G4. The account badge lives in the phone line-2 base, which no tier can
+    #     shed. A long label must be capped AND marked as truncated, and must
+    #     not displace the rate limits that are the reason line 2 exists.
+    name="phone-badge-fits"
+    local bh="$SCRATCH/badge-home"
+    mkdir -p "$bh/.claude"
+    printf '{"oauthAccount":{"accountUuid":"11111111-2222-3333-4444-555555555555"}}\n' > "$bh/.claude.json"
+    printf '{"enabled":true,"profiles":{"11111111-2222-3333-4444-555555555555":{"label":"very-long-account-label-here","color":"blue"}}}\n' \
+        > "$bh/.claude/profile-labels.json"
+    out="$SCRATCH/badge.out"; err="$SCRATCH/badge.err"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=30 HOME="$bh" STATUSLINE_PROFILE=1 \
+              XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/badge.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); w=$(sed -n '2p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w" -gt 29 ]; then _rl_fail "$name" "badge pushed line 2 to $w cols at COLUMNS=30"
+    elif ! _has "$l2" "5h"; then
+        _rl_fail "$name" "badge displaced the rate limits: $l2"
+    elif ! _has "$l2" "…"; then
+        _rl_fail "$name" "a truncated badge is not marked as truncated: $l2"
+    else _rl_pass "$name"; fi
+}
+
 # ── Env-input hardening tests ──────────────────────────────────────────────
 # Bash evaluates a variable's VALUE as an arithmetic expression and performs
 # command substitution inside array subscripts while doing so, so any env value
@@ -970,6 +1074,7 @@ done
 rate_limit_cache_tests
 phone_layout_tests
 phone_truncation_tests
+phone_gap_tests
 env_hardening_tests
 
 printf '%s\n' "------------------------------------------------------------"

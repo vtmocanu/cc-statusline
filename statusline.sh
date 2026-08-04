@@ -1042,8 +1042,12 @@ _apply_phone_l2() {
         # rate limits it pushed out are the entire reason this line exists.
         # Cap it here: on a phone an 8-character account hint is enough to tell
         # two logins apart, which is all the badge is for.
+        # The ellipsis is not decoration: a silent cut renders "work-prod" and
+        # "work-proj" identically, so the badge would confidently name the wrong
+        # account. Eight columns cannot make two long labels distinct, but they
+        # can say "this is truncated, shorten your label".
         local lbl="$PROFILE_LABEL"
-        [ "${#lbl}" -gt 8 ] && lbl="${lbl:0:8}"
+        [ "$(_clen "$lbl")" -gt 8 ] && lbl="$(_head_cp "$lbl" 7)…"
         L2C+=" ${PROFILE_FG}${lbl}${B2}"
         PH_SEP=" ${L2_DIM}│${B2}"
     fi

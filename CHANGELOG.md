@@ -15,6 +15,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Phone truncation no longer deletes a short branch name. Bash returns the empty string for a negative offset larger than the string, so the trim step collapsed any branch of 7 characters or fewer to a bare `..` (`main`, `develop`) and widened an 8-character one to `..release1`. A branch at or below the floor is now left intact, and dropped wholesale only as a last resort.
+- A long account label no longer displaces the rate limits in the phone layout. The badge sits in line 2's base, which no tier can shed, so a 28-character label survived while the windows it pushed out were the reason that line exists. It is capped at 8 columns with an ellipsis, so a truncated label reads as truncated rather than silently naming a different account.
 - The phone truncation ladder now converges. It could previously bottom out with line 1 still over budget, so a narrower viewport rendered a wider line (a 30-column viewport produced 51 columns), which is exactly the overflow that makes Claude Code's `cli-truncate` drop line 2.
 
 ### Security

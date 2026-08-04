@@ -23,6 +23,23 @@ stands in for it.
 **Workaround for tighter terminals**: set `STATUSLINE_WIDTH` a few columns below
 your terminal's safe width (e.g. `STATUSLINE_WIDTH=105` for a 110-col container).
 
+### The margin does not scale down to phone widths
+
+The 3-column cushion above was sized for a 110-column line, where it is a
+rounding error. In the phone tier it is the same 3 columns against a 40-column
+line, and East Asian text makes that insufficient: `measure_cols` counts
+codepoints, but a CJK character occupies two terminal cells. Measured with an
+East-Asian-Width-aware counter, a Japanese directory name at a 32-column
+viewport is 29 codepoints and **49 cells**, so the render believes it fits while
+the terminal wraps or the container truncates it.
+
+Truncation is correct in codepoints (including under `LC_ALL=C`, where bash's
+own `${#s}` counts bytes; see `_clen`/`_head_cp`/`_tail_cp`), so this is
+specifically a codepoints-vs-cells gap, not a locale bug. A real fix needs an
+EAW-aware `measure_cols`, which would also let `WIDE_GLYPH_MARGIN` drop to 0 for
+everyone. Until then, a mostly-CJK project name on a narrow client can still
+cost you line 2.
+
 ## Viewport detection: `COLUMNS` works, `tput cols` still does not
 
 Claude Code captures the script's stdout, so `tput cols` (and any language-level

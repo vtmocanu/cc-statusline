@@ -187,6 +187,8 @@ Other portable patterns we use:
 
 Line widths are measured with a single ANSI-aware `measure_cols` (perl) helper, run **before** truncation decisions, not estimated in bash. One batched call measures line 1, line 2's base, every rate-detail tier candidate, the cache segment, and the service icon; truncation (priority K8s > branch > agent > mode > topic > dir) re-measures only when a line actually overflows. Line 2 picks the widest rate-detail tier that fits, reserving the service icon's real width. This replaced the old bash `L1_EST`/`L2_BASE_W` estimate and its off-by-2. Common-case cost is ~2 perl invocations per render.
 
+Two paths cost more, both bounded and both off the common path. A viewport that cannot fit line 2's wide base re-runs the whole batch once after switching to the phone layout (one extra call). And the truncation ladder's length/slice helpers (`_clen`, `_head_cp`, `_tail_cp`) take a pure-bash path for ASCII but shell out to perl for a non-ASCII value, so truncating a multibyte directory or branch name costs a few more: the helpers exist because bash counts bytes rather than codepoints outside a UTF-8 locale, which silently under-sheds and cuts characters in half. An ASCII render at any width still costs ~2.
+
 `WIDE_GLYPH_MARGIN` (env `STATUSLINE_GLYPH_MARGIN`, default 3) keeps a small real-terminal cushion for Nerd Font glyphs that render double-width; see `KNOWN_ISSUES.md`.
 
 ## Hook security note
