@@ -42,6 +42,44 @@ _state_dir() {
     printf '%s' "$d"
 }
 
+# Charset gate for every value that reaches bash arithmetic, wherever it comes
+# from. Bash evaluates a variable's VALUE as an arithmetic expression and
+# performs command substitution inside array subscripts while doing so, so an
+# unvalidated value in $(( )) is arbitrary command execution:
+#   STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]'  -> touch runs, render looks normal
+# A non-numeric value is just as bad the other way: it aborts the arithmetic
+# under `set -u` and the statusline vanishes entirely. This lives up here with
+# the other helpers because both the stdin JSON (parsed below) and the env
+# inputs (read further down) need it.
+_gate_int() {   # _gate_int <value> <default> -> a decimal integer, always
+    case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$((10#$1))" ;; esac
+}
+
+# ── Codepoint-aware length and slicing for the truncation math ─────────────
+# Bash's ${#s} and ${s: -n} count BYTES whenever the locale is not UTF-8 (the
+# LC_ALL=C the second test-suite run uses, and any user whose environment lands
+# there), while measure_cols counts CODEPOINTS. A truncation step that computes
+# its budget in bytes and its result in codepoints sheds about a third of what
+# it thinks it does on a 3-byte-per-character name, so the ladder terminates
+# believing it converged and the line still overflows: measured under LC_ALL=C,
+# a Japanese directory name at a 20-column viewport rendered 23 columns. Byte
+# slicing also cuts multibyte characters in half, emitting invalid UTF-8.
+# ASCII takes the pure-bash fast path, so the perl call only happens on the
+# overflow path of a non-ASCII name.
+_is_ascii() { case "$1" in *[!$'\x01'-$'\x7f']*) return 1 ;; *) return 0 ;; esac; }
+_clen() {     # codepoint length
+    if _is_ascii "$1"; then printf '%s' "${#1}"
+    else printf '%s' "$1" | perl -CS -ne 'chomp; print length' 2>/dev/null; fi
+}
+_tail_cp() {  # last N codepoints
+    if _is_ascii "$1"; then printf '%s' "${1: -$2}"
+    else printf '%s' "$1" | perl -CS -sne 'chomp; print substr($_, -$n) if $n > 0' -- -n="$2" 2>/dev/null; fi
+}
+_head_cp() {  # first N codepoints
+    if _is_ascii "$1"; then printf '%s' "${1:0:$2}"
+    else printf '%s' "$1" | perl -CS -sne 'chomp; print substr($_, 0, $n) if $n > 0' -- -n="$2" 2>/dev/null; fi
+}
+
 DATA=$(timeout 2 cat 2>/dev/null) || DATA=""
 [ -z "$DATA" ] && exit 0
 
@@ -85,7 +123,13 @@ eval "$(echo "$DATA" | jq -r '
 
 # Guard: if jq failed completely, use safe defaults
 MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
-PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}; DURATION_MS=${DURATION_MS:-0}; COST_USD=${COST_USD:-0}
+# CTX_SIZE and DURATION_MS reach $(( )) further down, so they get the same gate
+# the env inputs get. The stdin JSON is a narrower threat model than the process
+# environment (it needs control of what Claude Code sends), but the sink is
+# identical and the fix costs one call each.
+PCT=${PCT:-0}; COST_USD=${COST_USD:-0}
+CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
+DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
@@ -290,7 +334,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     RL_AUTH=0; RL_AGE=9999
     if [ "$CACHE_RL" = "1" ] && [[ "$C_AT" =~ ^[0-9]{1,12}$ ]]; then
         RL_AGE=$((RL_NOW - C_AT))
-        [ "$RL_AGE" -ge 0 ] && [ "$RL_AGE" -lt "${STATUSLINE_RL_AUTH_TTL:-300}" ] && RL_AUTH=1
+        [ "$RL_AGE" -ge 0 ] && [ "$RL_AGE" -lt "$(_gate_int "${STATUSLINE_RL_AUTH_TTL:-300}" 300)" ] && RL_AUTH=1
     fi
 
     # Spawn the background usage fetcher when the authoritative snapshot is
@@ -311,7 +355,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
     RL_BACK=0
     if [ -f "$RL_CACHE.backoff" ]; then
         RL_BACK_AGE=$((RL_NOW - $(_file_mtime "$RL_CACHE.backoff")))
-        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "${STATUSLINE_RL_BACKOFF:-300}" ] && RL_BACK=1
+        [ "$RL_BACK_AGE" -ge 0 ] && [ "$RL_BACK_AGE" -lt "$(_gate_int "${STATUSLINE_RL_BACKOFF:-300}" 300)" ] && RL_BACK=1
     fi
     if [ "${STATUSLINE_RL_FETCH:-1}" != "0" ] && [ -x "$RL_FETCH" ] \
         && [ "$RL_AGE" -ge 60 ] && [ "$RL_BACK" = "0" ]; then
@@ -377,17 +421,72 @@ fi
 
 CTX_SIZE_K=$((CTX_SIZE / 1000))
 # Max line width before Claude Code's cli-truncate drops line 2
-SAFE_WIDTH=${STATUSLINE_WIDTH:-110}
+SAFE_WIDTH=$(_gate_int "${STATUSLINE_WIDTH:-110}" 110)
 # Width is measured in Unicode codepoints (see measure_cols), but Nerd Font
 # icons can render 1-2 terminal cells depending on the font/terminal. Reserve a
 # few columns so truncation stays conservative on terminals that render the
 # folder/git/k8s/model glyphs double-width. Power users on a known mono-width
 # font can reclaim them with STATUSLINE_GLYPH_MARGIN=0.
-WIDE_GLYPH_MARGIN=${STATUSLINE_GLYPH_MARGIN:-3}
+WIDE_GLYPH_MARGIN=$(_gate_int "${STATUSLINE_GLYPH_MARGIN:-3}" 3)
+
+# ── Viewport detection + layout tier ───────────────────────────────────────
+# Claude Code exports COLUMNS/LINES to the statusline process (v2.1.153+), so
+# the render can follow the real viewport instead of a fixed safe width. tput
+# cols still cannot help (stdout is captured, see KNOWN_ISSUES). STATUSLINE_WIDTH
+# stays a hard CAP: the detected width only ever lowers it, never raises it, so
+# an explicit narrow setting is still honored. One column is held back because
+# the container's own truncation is what drops line 2.
+# 10# forces base 10 throughout: a zero-padded COLUMNS (060) would otherwise be
+# read as octal by $(( )) but as decimal by [, so the range check and the
+# assignment would disagree and a 60-column viewport would land at 47.
+case "${COLUMNS:-}" in
+    ''|*[!0-9]*) : ;;
+    *) _COLS=$((10#$COLUMNS))
+       # Each test carries its own redirect: a value too large for the shell's
+       # integer conversion makes the FIRST one write to stderr, and the
+       # statusline's contract is empty stderr on every render.
+       if [ "$_COLS" -ge 20 ] 2>/dev/null && [ "$_COLS" -le 500 ] 2>/dev/null; then
+           [ "$((_COLS - 1))" -lt "$SAFE_WIDTH" ] 2>/dev/null && SAFE_WIDTH=$((_COLS - 1))
+       fi ;;
+esac
+# Below PHONE_COLS the wide render cannot say anything useful, so line 1 keeps
+# folder + branch and line 2 keeps account + 5h/7d. STATUSLINE_LAYOUT forces a
+# tier (phone|wide); anything else (or unset) auto-selects from the width.
+PHONE_COLS=$(_gate_int "${STATUSLINE_PHONE_COLS:-60}" 60)
+LAYOUT="${STATUSLINE_LAYOUT:-}"
+# A one-line file flips a RUNNING session on the next render, with no
+# settings.json edit and no restart. Auto-detection covers the normal case
+# (verified: a session viewed from the Claude mobile app renders with
+# COLUMNS=52 while the same session on the desk renders at COLUMNS=324, each
+# attached client getting its own render), so this is an escape hatch for
+# clients that do not report a viewport. Env var wins over the file; the file
+# wins over auto-detection.
+if [ -z "$LAYOUT" ]; then
+    _LAYOUT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/layout"
+    if [ -f "$_LAYOUT_FILE" ]; then
+        # tr's stderr is silenced too: a layout file holding invalid UTF-8 makes
+        # BSD tr print "Illegal byte sequence" under a UTF-8 locale (and stays
+        # quiet under LC_ALL=C, so the C-locale harness run cannot catch it).
+        case "$(head -1 "$_LAYOUT_FILE" 2>/dev/null | tr -d '[:space:]' 2>/dev/null)" in
+            phone) LAYOUT=phone ;;
+            wide)  LAYOUT=wide ;;
+        esac
+    fi
+fi
+# LAYOUT_FORCED records that a human chose the tier, so the measured fallback
+# further down does not overrule them: asking for the wide render on a narrow
+# viewport is a legitimate choice (you accept the container's truncation), and
+# an override that silently does something else is not an override.
+LAYOUT_FORCED=0
+case "$LAYOUT" in
+    phone|wide) LAYOUT_FORCED=1 ;;
+    *) if [ "$SAFE_WIDTH" -lt "$PHONE_COLS" ] 2>/dev/null; then LAYOUT=phone; else LAYOUT=wide; fi ;;
+esac
 # Current epoch, overridable so tests can pin time and get deterministic
 # rate-limit reset countdowns and pace arrows (see CC_STATUSLINE_NOW in the
 # test harness). Used by format_reset and pace_arrow.
-NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
+_NOW_REAL=$(date +%s)
+NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$_NOW_REAL}" "$_NOW_REAL")
 
 TOPIC=""  # populated after SESSION_ID is extracted below
 
@@ -800,6 +899,18 @@ measure_cols() {
 L1_PREFIX="${RST}${PROJ_FG}${NF_CORNER_TL}${BG1}"
 assemble_l1() {
     L1C="${L1_PREFIX}"
+    # Phone: folder + branch only. Topic, agent, mode and k8s are the first
+    # things a narrow viewport cannot afford, and the folder answers "which
+    # session am I looking at" more reliably than any of them.
+    if [ "$LAYOUT" = "phone" ]; then
+        L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
+        if [ -n "$BRANCH" ]; then
+            L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
+            [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
+        fi
+        L1C+=" "
+        return
+    fi
     [ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
     L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
     if [ -n "$BRANCH" ]; then
@@ -914,6 +1025,55 @@ if [ -f "$SVC_CACHE" ]; then
     esac
 fi
 
+# ── Phone layout: line 2 override ──────────────────────────────────────────
+# Same palette, corners, bands and tier machinery as the wide render, fewer
+# segments: "<account> │ 5h <pct><arrow> ↻<reset> │ 7d <pct><arrow> ↻<reset>".
+# The tiers below feed the SAME widest-that-fits selection used for the wide
+# render, so the countdowns drop before the percentages and the pace arrows
+# survive longest (they are the alert). Model, effort, elapsed, cost, context
+# and cache are dropped: on a phone they cost more columns than they earn.
+# ↻ costs one column and stops the countdown reading as a second percentage.
+_apply_phone_l2() {
+    L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2}"
+    PH_SEP=""
+    if [ -n "$PROFILE_LABEL" ]; then
+        # The badge sits in the line-2 BASE, which no tier can shed, so a long
+        # label (an email, "metaminds-prod-account") would survive while the
+        # rate limits it pushed out are the entire reason this line exists.
+        # Cap it here: on a phone an 8-character account hint is enough to tell
+        # two logins apart, which is all the badge is for.
+        # The ellipsis is not decoration: a silent cut renders "work-prod" and
+        # "work-proj" identically, so the badge would confidently name the wrong
+        # account. Eight columns cannot make two long labels distinct, but they
+        # can say "this is truncated, shorten your label".
+        local lbl="$PROFILE_LABEL"
+        [ "$(_clen "$lbl")" -gt 8 ] && lbl="$(_head_cp "$lbl" 7)…"
+        L2C+=" ${PROFILE_FG}${lbl}${B2}"
+        PH_SEP=" ${L2_DIM}│${B2}"
+    fi
+    CACHE_SEG=""
+    if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
+        # Full: both reset countdowns.
+        RATE_FULL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+        RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
+        # Compact: 5h countdown only (the one you act on).
+        RATE_COMPACT="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        [ -n "${FIVE_TIME:-}" ] && RATE_COMPACT+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+        RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        # Minimal: percentages and arrows.
+        RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+    else
+        # No rate limits at all (fresh session, limit-less account, or the
+        # no-rate-limits fixture): fall back to the context percentage so line 2
+        # is not an empty band.
+        RATE_FULL=""; RATE_COMPACT=""; RATE_MINIMAL=""
+        L2C+="${PH_SEP} ${L2_TXT}ctx ${CTX_CLR}${PCT}%${B2}"
+    fi
+}
+[ "$LAYOUT" = "phone" ] && _apply_phone_l2
+
 # ── One batch measurement: full L1 + L2 base + every L2 candidate ──────────
 # measure_cols takes N strings and emits N codepoint counts in a single perl
 # call, so the common (no-overflow) render costs just this measurement plus
@@ -927,33 +1087,104 @@ L1_COLS=${L1_COLS:-0}; BASE_W=${BASE_W:-0}
 RFULL_W=${RFULL_W:-0}; RCOMPACT_W=${RCOMPACT_W:-0}; RMINIMAL_W=${RMINIMAL_W:-0}
 CACHE_W=${CACHE_W:-0}; SVC_W=${SVC_W:-0}
 
+# ── Wide-base fallback: the tier is chosen from the width, but only a
+# MEASUREMENT can say whether the wide render actually fits it. Line 2's wide
+# base (model, effort, profile, clock, cost, context) has no truncation step of
+# its own, so at a viewport just above PHONE_COLS every rate tier could be
+# dropped and the line would still overflow; the padding pass then widened line
+# 1 to match, so BOTH lines blew past the viewport. Measured before this guard:
+# a 61-column viewport rendered 74 columns. The band moves with the base (a
+# longer model name or a 5-figure cost widens it), which is exactly why the
+# threshold cannot be a constant and the decision has to be re-taken here.
+# The comparison has to include the service icon: it is appended after tier
+# selection and is not sheddable, so a base that fits alone can still overflow
+# once it is added. Measured with the base-only form: a 72-column viewport had
+# BASE_W exactly equal to TARGET, kept the wide render, and emitted 74 columns.
+if [ "$LAYOUT" = "wide" ] && [ "$LAYOUT_FORCED" = "0" ] \
+   && [ "$((BASE_W + SVC_W))" -gt "$TARGET" ] 2>/dev/null; then
+    LAYOUT=phone
+    _apply_phone_l2
+    assemble_l1
+    read -r L1_COLS BASE_W RFULL_W RCOMPACT_W RMINIMAL_W CACHE_W SVC_W < <(
+        measure_cols "$L1C" "$L2C" "$RATE_FULL" "$RATE_COMPACT" "$RATE_MINIMAL" "$CACHE_SEG" "$SVC_SEG" | tr '\n' ' '
+    )
+    L1_COLS=${L1_COLS:-0}; BASE_W=${BASE_W:-0}
+    RFULL_W=${RFULL_W:-0}; RCOMPACT_W=${RCOMPACT_W:-0}; RMINIMAL_W=${RMINIMAL_W:-0}
+    CACHE_W=${CACHE_W:-0}; SVC_W=${SVC_W:-0}
+fi
+
 # ── Line 1 truncation, measured. Priority (least to most essential, so the
 # leaf dir is preserved longest): K8S > BRANCH > AGENT > MODE > TOPIC > DIR.
 # Each round trims one component by the measured overage (plus 2 for "..") and
 # re-measures. The common case takes zero rounds; only an overflowing line
 # re-measures, keeping the perl-call budget at ~2 per render.
-for _t in K8S BRANCH AGENT MODE TOPIC DIR; do
+# Phone renders only DIR + BRANCH, so trimming the others would burn a
+# re-measure without shrinking the line: walk just the components in play.
+TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC DIR"
+# DIRLEAF drops the parent component ("cc-statusline/phone" -> "phone") before
+# anything gets character-mangled: on a phone a whole leaf name reads better
+# than two half-words, and it usually buys back more columns than trimming the
+# branch would.
+# The phone ladder must CONVERGE: every step either sheds columns or defers to
+# the next, and the last two steps can always shed. Without them the ladder
+# bottomed out with line 1 still over budget, and a NARROWER viewport rendered a
+# WIDER line (COLUMNS=30 produced 51 columns against a 29-column budget), which
+# is precisely the overflow that makes cli-truncate drop line 2.
+[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="DIRLEAF BRANCH GITST DIR BRANCHDROP DIRHARD"
+for _t in $TRUNC_ORDER; do
     [ "$L1_COLS" -le "$TARGET" ] 2>/dev/null && break
     OVER=$((L1_COLS - TARGET))
     case $_t in
+        DIRLEAF) case "$DIR" in */*) DIR="${DIR##*/}" ;; *) continue ;; esac ;;
+        GITST)  [ -n "$GIT_STATUS" ] || continue
+                GIT_STATUS="" ;;   # dirty markers go before the leaf dir does
         K8S)    [ -n "$K8S_CTX" ] || continue
-                MAX=$((${#K8S_CTX} - OVER - 2))
-                if [ "$MAX" -gt 5 ]; then K8S_CTX="${K8S_CTX:0:$MAX}.."; else K8S_CTX=""; fi ;;
+                MAX=$(($(_clen "$K8S_CTX") - OVER - 2))
+                if [ "$MAX" -gt 5 ]; then K8S_CTX="$(_head_cp "$K8S_CTX" "$MAX").."; else K8S_CTX=""; fi ;;
         BRANCH) [ -n "$BRANCH" ] || continue
-                MAX=$((${#BRANCH} - OVER - 2))
-                if [ "$MAX" -gt 5 ]; then BRANCH="${BRANCH:0:$MAX}.."; else BRANCH="${BRANCH:0:8}.."; fi ;;
+                MAX=$(($(_clen "$BRANCH") - OVER - 2))
+                # Phone keeps the TAIL: worktree branches share a long prefix
+                # ("feat/", "devmetaminds/"), so the leaf is what identifies
+                # them. The wide render keeps the head, unchanged.
+                # A negative offset larger than the string yields the EMPTY
+                # string in bash, so a blind "..${BRANCH: -8}" deleted every
+                # branch of 7 characters or fewer (main, develop -> "..") and
+                # GREW an 8-character one (release1 -> "..release1"). Trim only
+                # while there is something to trim; a branch already at or below
+                # the floor is left for BRANCHDROP to remove wholesale.
+                if [ "$LAYOUT" = "phone" ]; then
+                    if   [ "$MAX" -gt 5 ];              then BRANCH="..$(_tail_cp "$BRANCH" "$MAX")"
+                    elif [ "$(_clen "$BRANCH")" -gt 8 ]; then BRANCH="..$(_tail_cp "$BRANCH" 6)"
+                    else continue; fi
+                elif [ "$MAX" -gt 5 ]; then BRANCH="$(_head_cp "$BRANCH" "$MAX").."
+                else BRANCH="$(_head_cp "$BRANCH" 8).."; fi ;;
         AGENT)  [ -n "$AGENT" ] || continue
-                MAX=$((${#AGENT} - OVER - 2))
-                if [ "$MAX" -gt 3 ]; then AGENT="${AGENT:0:$MAX}.."; else AGENT="${AGENT:0:3}.."; fi ;;
+                MAX=$(($(_clen "$AGENT") - OVER - 2))
+                if [ "$MAX" -gt 3 ]; then AGENT="$(_head_cp "$AGENT" "$MAX").."; else AGENT="$(_head_cp "$AGENT" 3).."; fi ;;
         MODE)   [ -n "$MODE" ] || continue
-                MAX=$((${#MODE} - OVER - 2))
-                if [ "$MAX" -gt 3 ]; then MODE="${MODE:0:$MAX}.."; else MODE="${MODE:0:3}.."; fi ;;
+                MAX=$(($(_clen "$MODE") - OVER - 2))
+                if [ "$MAX" -gt 3 ]; then MODE="$(_head_cp "$MODE" "$MAX").."; else MODE="$(_head_cp "$MODE" 3).."; fi ;;
         TOPIC)  [ -n "$TOPIC" ] || continue
-                MAX=$((${#TOPIC} - OVER - 2))
-                if [ "$MAX" -gt 5 ]; then TOPIC="${TOPIC:0:$MAX}.."; else TOPIC=""; fi ;;
+                MAX=$(($(_clen "$TOPIC") - OVER - 2))
+                if [ "$MAX" -gt 5 ]; then TOPIC="$(_head_cp "$TOPIC" "$MAX").."; else TOPIC=""; fi ;;
         DIR)    [ -n "$DIR" ] || continue
-                MAX=$((${#DIR} - OVER - 2))                 # keep the tail (leaf dir)
-                if [ "$MAX" -gt 5 ]; then DIR="..${DIR: -$MAX}"; else DIR="${DIR: -6}"; fi ;;
+                MAX=$(($(_clen "$DIR") - OVER - 2))                 # keep the tail (leaf dir)
+                if [ "$MAX" -gt 5 ]; then DIR="..$(_tail_cp "$DIR" "$MAX")"
+                # Phone has already collapsed DIR to the leaf; defer to DIRHARD
+                # rather than mangling it here, and never take the wide path's
+                # `${DIR: -6}`, which EMPTIES a leaf shorter than 6 characters.
+                elif [ "$LAYOUT" = "phone" ]; then continue
+                else DIR="$(_tail_cp "$DIR" 6)"; fi ;;
+        # ── Phone-only last resorts. Reached only when everything above has
+        # bottomed out and line 1 is still over budget; between them they can
+        # always shed, which is what makes the ladder terminate.
+        BRANCHDROP) [ -n "$BRANCH" ] || continue
+                    BRANCH=""; GIT_STATUS="" ;;   # identity beats provenance
+        DIRHARD)    [ -n "$DIR" ] || continue
+                    # No ".." here: at this width the two dots cost more than
+                    # they explain. Keep the tail, never fewer than 1 char.
+                    MAX=$(($(_clen "$DIR") - OVER))
+                    if [ "$MAX" -ge 1 ]; then DIR="$(_tail_cp "$DIR" "$MAX")"; else DIR="$(_tail_cp "$DIR" 1)"; fi ;;
     esac
     assemble_l1
     L1_COLS=$(measure_cols "$L1C"); L1_COLS=${L1_COLS:-0}

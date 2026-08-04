@@ -35,6 +35,14 @@ SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 export KUBECONFIG=/dev/null
 unset GIT_DIR GIT_WORK_TREE
+# The statusline now narrows SAFE_WIDTH to the viewport when Claude Code exports
+# COLUMNS (v2.1.153+). A runner that happens to export it would silently shrink
+# every fixture's budget (and flip the phone layout on), so drop it here; the
+# phone-layout tests below set it explicitly per run.
+unset COLUMNS LINES
+# Isolate the layout override file ($XDG_CONFIG_HOME/cc-statusline/layout): the
+# maintainer's own file must not decide which layout the fixtures render.
+export XDG_CONFIG_HOME="$SCRATCH/xdg-empty"
 # An ambient token (harness run from inside a CLAUDE_CODE_OAUTH_TOKEN session)
 # would silently switch the account-keyed rate-limits cache path; drop it so
 # the rl-account-keyed test controls the token explicitly.
@@ -174,6 +182,18 @@ _rl_json() {
     printf '"session_id":"rl-test","rate_limits":'
     printf '{"five_hour":{"used_percentage":%s,"resets_at":%s},' "$1" "$2"
     printf '"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$3" "$4"
+}
+# A REALISTIC payload: rate limits plus a cost readout, so line 2's wide base is
+# as wide as a real session's. The viewport-band defect is invisible to a bare
+# payload, whose base fits in widths where a real one does not.
+_rl_json_rich() {
+    printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},'
+    printf '"cwd":"/home/test/rl","context_window":{"remaining_percentage":50,'
+    printf '"context_window_size":1000000},'
+    printf '"cost":{"total_duration_ms":300000,"total_cost_usd":12.34},'
+    printf '"session_id":"rl-rich","rate_limits":'
+    printf '{"five_hour":{"used_percentage":15,"resets_at":1700009660},'
+    printf '"seven_day":{"used_percentage":2,"resets_at":1700361000}}}'
 }
 # Same payload but with NO rate_limits object at all.
 _rl_json_norl() {
@@ -493,6 +513,546 @@ rate_limit_cache_tests() {
     else _rl_pass "$name"; fi
 }
 
+# ── Phone-layout tests ─────────────────────────────────────────────────────
+# Cover the viewport-driven layout switch: COLUMNS narrows SAFE_WIDTH, a width
+# under STATUSLINE_PHONE_COLS selects the phone render (folder + branch on line
+# 1, account + 5h/7d on line 2), and STATUSLINE_LAYOUT forces a tier either way.
+phone_layout_tests() {
+    printf '\n'
+    printf 'phone-layout tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local out err l2 name w1 w2 lines
+
+    _phone_run() {  # _phone_run <out> <err> <cols-env...> -- runs one render
+        local o="$1" e="$2"; shift 2
+        ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+            | env "$@" bash "$STATUSLINE" ) >"$o" 2>"$e"
+    }
+    _w() { sed -n "$2p" "$1" | vis_cols; }
+
+    # 1. COLUMNS=46 -> phone layout, both lines inside the viewport, line 2
+    #    carries the account-window percentages and the 5h reset countdown.
+    name="phone-cols-46"; out="$SCRATCH/ph1.out"; err="$SCRATCH/ph1.err"
+    _phone_run "$out" "$err" COLUMNS=46 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph1.cache"
+    lines=$(wc -l <"$out" | tr -d ' '); w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$lines" -ne 2 ]; then _phone_fail "$name" "expected 2 lines, got $lines"
+    elif [ "$w1" -gt 45 ] || [ "$w2" -gt 45 ]; then
+        _phone_fail "$name" "line widths $w1/$w2 exceed COLUMNS-1 (45)"
+    elif ! _has "$l2" "5h " || ! _has "$l2" "7d "; then
+        _phone_fail "$name" "line 2 missing 5h/7d: $l2"
+    elif _has "$l2" "Opus" || _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "line 2 still carries wide-layout segments: $l2"
+    else _phone_pass "$name"; fi
+
+    # 2. Wide viewport -> untouched wide render (model + context still present).
+    name="phone-cols-wide"; out="$SCRATCH/ph2.out"; err="$SCRATCH/ph2.err"
+    _phone_run "$out" "$err" COLUMNS=200 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph2.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "wide viewport lost the context segment: $l2"
+    else _phone_pass "$name"; fi
+
+    # 3. STATUSLINE_WIDTH stays a cap: a wide COLUMNS must not raise it.
+    name="phone-width-is-a-cap"; out="$SCRATCH/ph3.out"; err="$SCRATCH/ph3.err"
+    _phone_run "$out" "$err" COLUMNS=300 STATUSLINE_WIDTH=70 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph3.cache"
+    w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w1" -gt 70 ] || [ "$w2" -gt 70 ]; then
+        _phone_fail "$name" "COLUMNS raised the cap: $w1/$w2 > 70"
+    else _phone_pass "$name"; fi
+
+    # 4. Forced phone layout on a wide viewport.
+    name="phone-forced"; out="$SCRATCH/ph4.out"; err="$SCRATCH/ph4.err"
+    _phone_run "$out" "$err" COLUMNS=200 STATUSLINE_LAYOUT=phone CC_STATUSLINE_RL_CACHE="$SCRATCH/ph4.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "STATUSLINE_LAYOUT=phone still rendered the wide line 2: $l2"
+    else _phone_pass "$name"; fi
+
+    # 5. Forced wide layout on a narrow viewport (escape hatch).
+    name="phone-forced-wide"; out="$SCRATCH/ph5.out"; err="$SCRATCH/ph5.err"
+    _phone_run "$out" "$err" COLUMNS=46 STATUSLINE_LAYOUT=wide CC_STATUSLINE_RL_CACHE="$SCRATCH/ph5.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "Opus"; then
+        _phone_fail "$name" "STATUSLINE_LAYOUT=wide dropped the model segment: $l2"
+    else _phone_pass "$name"; fi
+
+    # 6. The layout FILE flips a wide viewport to phone. This is the escape
+    #     hatch for clients that report NO viewport; auto-detection covers the
+    #     normal case, since COLUMNS reports the viewing client's width (see
+    #     KNOWN_ISSUES). Env var still wins over the file.
+    name="phone-layout-file"; out="$SCRATCH/ph7.out"; err="$SCRATCH/ph7.err"
+    mkdir -p "$SCRATCH/xdg/cc-statusline"
+    printf 'phone\n' > "$SCRATCH/xdg/cc-statusline/layout"
+    _phone_run "$out" "$err" COLUMNS=200 XDG_CONFIG_HOME="$SCRATCH/xdg" \
+        CC_STATUSLINE_RL_CACHE="$SCRATCH/ph7.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "layout file ignored, wide line 2 rendered: $l2"
+    else _phone_pass "$name"; fi
+
+    # 7. The env var still beats the file.
+    name="phone-layout-file-env-wins"; out="$SCRATCH/ph8.out"; err="$SCRATCH/ph8.err"
+    _phone_run "$out" "$err" COLUMNS=200 XDG_CONFIG_HOME="$SCRATCH/xdg" \
+        STATUSLINE_LAYOUT=wide CC_STATUSLINE_RL_CACHE="$SCRATCH/ph8.cache"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "of 1000k"; then
+        _phone_fail "$name" "env var did not override the layout file: $l2"
+    else _phone_pass "$name"; fi
+
+    # 8. Phone layout with no rate limits at all -> context fallback, not an
+    #    empty band.
+    name="phone-no-rate-limits"; out="$SCRATCH/ph6.out"; err="$SCRATCH/ph6.err"
+    ( cd "$SCRATCH" && _rl_json_norl \
+        | env COLUMNS=46 CC_STATUSLINE_RL_CACHE="$SCRATCH/ph6.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _phone_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "ctx "; then
+        _phone_fail "$name" "expected the ctx fallback on line 2, got: $l2"
+    else _phone_pass "$name"; fi
+}
+_phone_pass() { _rl_pass "$1"; }
+_phone_fail() { _rl_fail "$1" "$2"; }
+
+# ── Phone truncation-ladder tests ──────────────────────────────────────────
+# The ladder (DIRLEAF -> BRANCH -> GITST -> DIR -> BRANCHDROP -> DIRHARD) had NO
+# coverage when it shipped: every other phone test runs from $SCRATCH, which is
+# not a git repo, so BRANCH and GIT_STATUS are empty and line 1 is ~16 columns.
+# Two blocking bugs lived in exactly that blind spot: a short branch collapsed to
+# a bare ".." (bash returns the empty string for an over-long negative offset),
+# and the ladder could bottom out over budget so a NARROWER viewport rendered a
+# WIDER line. These tests need a real git repo with a real branch to reach it.
+phone_truncation_tests() {
+    printf '\n'
+    printf 'phone truncation-ladder tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local repo="$SCRATCH/ladder-repo"
+    local leaf="a-very-long-worktree-leaf-name"
+    local wd="$repo/$leaf"
+    mkdir -p "$wd"
+    ( cd "$repo" && git init -q -b main . && git -c user.email=t@t -c user.name=t \
+        commit -q --allow-empty -m init ) >/dev/null 2>&1
+
+    local name out err cols cap widest line stripped
+    local json='{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"WD",'
+    json+='"context_window":{"remaining_percentage":50,"context_window_size":1000000},'
+    json+='"cost":{"total_duration_ms":300000},"session_id":"ladder"}'
+
+    _ladder_render() {  # _ladder_render <cols> <outfile> <errfile>
+        printf '%s' "${json/WD/$wd}" \
+            | ( cd "$wd" && env COLUMNS="$1" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/ladder.cache" bash "$STATUSLINE" ) \
+              >"$2" 2>"$3"
+    }
+    _widest() {  # _widest <outfile> -> max visible columns across both lines
+        local w=0 c
+        while IFS= read -r line; do
+            c=$(printf '%s' "$line" | vis_cols)
+            [ "$c" -gt "$w" ] && w=$c
+        done <"$1"
+        printf '%s' "$w"
+    }
+
+    # 1. A short branch must SURVIVE the ladder, not collapse to "..". The dir is
+    #    long enough that line 1 genuinely overflows, so the BRANCH step runs.
+    #    An 8-char branch is the regression case that used to GROW to 10 chars.
+    local br
+    for br in main develop release1; do
+        name="ladder-short-branch-$br"
+        out="$SCRATCH/lad-$br.out"; err="$SCRATCH/lad-$br.err"
+        ( cd "$repo" && git checkout -q -B "$br" ) >/dev/null 2>&1
+        _ladder_render 44 "$out" "$err"
+        stripped=$(sed -n '1p' "$out" | _strip_ansi)
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif ! _has "$stripped" "$br"; then
+            _rl_fail "$name" "branch '$br' did not survive truncation: $stripped"
+        elif _has "$stripped" "..$br"; then
+            # Containing the name is not enough: "..release1" contains
+            # "release1" while being two columns WIDER than the untrimmed name,
+            # so a substring check alone cannot see the growth regression.
+            _rl_fail "$name" "branch '$br' was widened to '..$br' by the trim step: $stripped"
+        elif [ "$(_widest "$out")" -gt 43 ]; then
+            _rl_fail "$name" "line exceeds COLUMNS-1: $(_widest "$out") > 43"
+        else _rl_pass "$name"; fi
+    done
+
+    # 2. Convergence across the whole accepted COLUMNS range, with a branch and
+    #    leaf both long enough to force every rung. The ladder must never leave
+    #    a line wider than the viewport, at ANY width the code accepts.
+    ( cd "$repo" && git checkout -q -B devmetaminds/feature/really-long-branch-name-here ) >/dev/null 2>&1
+    name="ladder-converges"
+    local failed_at=""
+    for cols in 20 22 26 30 32 36 40 44 50 60 80; do
+        out="$SCRATCH/lad-c$cols.out"; err="$SCRATCH/lad-c$cols.err"
+        _ladder_render "$cols" "$out" "$err"
+        cap=$((cols - 1))
+        widest=$(_widest "$out")
+        if [ -s "$err" ]; then failed_at="COLUMNS=$cols stderr: $(head -1 "$err")"; break; fi
+        if [ "$(wc -l <"$out" | tr -d ' ')" -ne 2 ]; then
+            failed_at="COLUMNS=$cols produced $(wc -l <"$out" | tr -d ' ') lines"; break
+        fi
+        if [ "$widest" -gt "$cap" ]; then
+            failed_at="COLUMNS=$cols rendered $widest cols (cap $cap)"; break
+        fi
+    done
+    if [ -n "$failed_at" ]; then _rl_fail "$name" "$failed_at"; else _rl_pass "$name"; fi
+
+    # 3. Monotonicity: a narrower viewport must never render a WIDER line. This
+    #    is the property the non-convergent ladder violated (30 cols -> 51 wide,
+    #    while 40 cols -> 38 wide), and a width-cap assertion alone misses it
+    #    whenever both widths happen to sit under their own caps.
+    name="ladder-monotonic"
+    local prev=0 cur bad=""
+    for cols in 20 26 30 36 44 60 80; do
+        out="$SCRATCH/lad-m$cols.out"; err="$SCRATCH/lad-m$cols.err"
+        _ladder_render "$cols" "$out" "$err"
+        cur=$(_widest "$out")
+        if [ "$cur" -lt "$prev" ]; then
+            bad="COLUMNS=$cols rendered $cur cols, narrower than the previous step's $prev"
+        fi
+        prev=$cur
+    done
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # 3b. The viewport BAND. The tier is picked from the width, but only a
+    #     measurement knows whether the wide render fits it: line 2's wide base
+    #     (model, effort, clock, cost, context) has no truncation step, so just
+    #     above the phone threshold every rate tier could be dropped and the
+    #     line still overflowed, and the padding pass widened line 1 to match.
+    #     Measured before the fallback: COLUMNS=61 rendered 74 columns. The band
+    #     MOVES with the base, so a realistic payload (rate limits AND cost) is
+    #     required; a bare payload has a base narrow enough to fit and the band
+    #     does not exist for it. That is why this sweeps with _rl_json_rich.
+    name="viewport-band"
+    local band_fail=""
+    for cols in $(seq 56 1 92); do
+        out="$SCRATCH/band-$cols.out"; err="$SCRATCH/band-$cols.err"
+        ( cd "$SCRATCH" && _rl_json_rich \
+            | env COLUMNS="$cols" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/band-$cols.cache" bash "$STATUSLINE" ) \
+            >"$out" 2>"$err"
+        widest=$(_widest "$out")
+        if [ -s "$err" ]; then band_fail="COLUMNS=$cols stderr: $(head -1 "$err")"; break; fi
+        if [ "$widest" -gt "$((cols - 1))" ]; then
+            band_fail="COLUMNS=$cols rendered $widest cols (cap $((cols - 1)))"; break
+        fi
+    done
+    if [ -n "$band_fail" ]; then _rl_fail "$name" "$band_fail"; else _rl_pass "$name"; fi
+
+    # 3c. Multibyte names, in whatever locale the suite is running. Bash counts
+    #     BYTES for ${#s} and ${s: -n} when the locale is not UTF-8, while the
+    #     width measurement counts codepoints, so under LC_ALL=C a 3-byte-per-
+    #     character name used to shed a third of what the ladder thought and the
+    #     render overflowed (COLUMNS=20 -> 23 cols) with a half-cut character in
+    #     it. This test only discriminates under LC_ALL=C, which is exactly what
+    #     the second suite run provides.
+    name="phone-multibyte-leaf"
+    local mb_leaf="日本語のディレクトリ名前テスト-très-long"
+    local mb_dir="$repo/$mb_leaf"
+    mkdir -p "$mb_dir"
+    local mb_fail=""
+    for cols in 20 24 28 32 40 52; do
+        out="$SCRATCH/mb-$cols.out"; err="$SCRATCH/mb-$cols.err"
+        printf '%s' "${json/WD/$mb_dir}" \
+            | ( cd "$mb_dir" && env COLUMNS="$cols" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/mb-$cols.cache" bash "$STATUSLINE" ) \
+              >"$out" 2>"$err"
+        widest=$(_widest "$out")
+        if [ -s "$err" ]; then mb_fail="COLUMNS=$cols stderr: $(head -1 "$err")"; break; fi
+        if [ "$widest" -gt "$((cols - 1))" ]; then
+            mb_fail="COLUMNS=$cols rendered $widest cols (cap $((cols - 1)))"; break
+        fi
+        # Byte slicing cuts a multibyte character in half; assert the output is
+        # still decodable rather than merely narrow.
+        if ! perl -e 'use Encode; my $s = do { local $/; <STDIN> };
+                      eval { Encode::decode("UTF-8", $s, Encode::FB_CROAK) }; exit($@ ? 1 : 0);' <"$out"; then
+            mb_fail="COLUMNS=$cols emitted invalid UTF-8 (a character was cut mid-sequence)"; break
+        fi
+    done
+    if [ -n "$mb_fail" ]; then _rl_fail "$name" "$mb_fail"; else _rl_pass "$name"; fi
+
+    # 4. The leaf directory is the last thing standing: at a width where nothing
+    #    else fits, line 1 must still carry part of it (identity beats
+    #    provenance), and must not be blank or a bare "..".
+    name="ladder-keeps-the-leaf"
+    out="$SCRATCH/lad-leaf.out"; err="$SCRATCH/lad-leaf.err"
+    _ladder_render 22 "$out" "$err"
+    stripped=$(sed -n '1p' "$out" | _strip_ansi)
+    case "$stripped" in
+        *[a-z]*) _rl_pass "$name" ;;
+        *) _rl_fail "$name" "line 1 lost the directory entirely at COLUMNS=22: '$stripped'" ;;
+    esac
+}
+
+# ── Phone gap tests (mutation-derived) ─────────────────────────────────────
+# Each of these kills a mutant that survived the rest of the suite: the render
+# could lose the service-icon width reservation, collapse to a lower rate tier,
+# drop the git dirty markers, or print a constant context percentage, and every
+# other assertion stayed green. A test nobody can fail is documentation, so
+# these were written FROM the surviving mutants rather than from the feature
+# description. Derived from the tester's proposed guards.
+phone_gap_tests() {
+    printf '\n'
+    printf 'phone gap tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local name out err l1 l2 c w bad
+
+    # G1. The service icon's width is reserved BEFORE the rate tier is chosen
+    #     (AVAIL = TARGET - BASE_W - SVC_W). Nothing else in the suite seeds the
+    #     service cache in phone mode, so dropping SVC_W from that subtraction
+    #     shipped silently; with the cache seeded it overflows at 34/38/39/40.
+    name="phone-svc-reserved"; bad=""
+    printf 'operational\n' > "$SCRATCH/svc-seeded"
+    for c in 34 38 39 40; do
+        out="$SCRATCH/svc$c.out"; err="$SCRATCH/svc$c.err"
+        ( cd "$SCRATCH" && _rl_json 100 1700009660 100 1700361000 \
+            | env COLUMNS="$c" CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-seeded" \
+                  XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/svc$c.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+        l2=$(_rl_l2 "$out")
+        if [ -s "$err" ]; then bad="COLUMNS=$c stderr: $(head -1 "$err")"; break; fi
+        _has "$l2" "✓" || { bad="COLUMNS=$c lost the service icon"; break; }
+        w=$(sed -n '2p' "$out" | vis_cols)
+        if [ "$w" -gt "$((c - 1))" ]; then bad="COLUMNS=$c line 2 is $w cols (cap $((c-1)))"; break; fi
+    done
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # G2. Tier selection must actually DIFFER by width. "line 2 contains 5h and
+    #     7d" passes for every tier, so a render that silently collapsed to the
+    #     minimal tier was invisible: assert the countdown is present at 46 and
+    #     that both windows survive at 30.
+    name="phone-tier-detail"; bad=""
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=46 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/t46.cache" bash "$STATUSLINE" ) \
+        >"$SCRATCH/t46.out" 2>"$SCRATCH/t46.err"
+    l2=$(_rl_l2 "$SCRATCH/t46.out")
+    # Pin BOTH countdowns by value, not the ↻ glyph: the compact tier still
+    # carries one ↻, so asserting the glyph passes on a render that silently
+    # dropped the 5h countdown and fell back a tier. Verified: that mutant
+    # survives a glyph check and dies against these two.
+    _has "$l2" "↻2h41m" || bad="COLUMNS=46 lost the 5h reset countdown: $l2"
+    _has "$l2" "↻4d4h"  || bad="${bad:-COLUMNS=46 lost the 7d reset countdown: $l2}"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=30 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/t30.cache" bash "$STATUSLINE" ) \
+        >"$SCRATCH/t30.out" 2>"$SCRATCH/t30.err"
+    l2=$(_rl_l2 "$SCRATCH/t30.out")
+    { _has "$l2" "5h " && _has "$l2" "7d "; } || bad="${bad:-COLUMNS=30 dropped a window: $l2}"
+    if [ -n "$bad" ]; then _rl_fail "$name" "$bad"; else _rl_pass "$name"; fi
+
+    # G3. Phone line 1 keeps the git dirty markers when they fit, and the ctx
+    #     fallback shows the REAL percentage rather than a constant.
+    name="phone-l1-dirty-markers"
+    local dr="$SCRATCH/dirty-repo"
+    mkdir -p "$dr"
+    ( cd "$dr" && git init -q -b main . && git -c user.email=t@t -c user.name=t \
+        commit -q --allow-empty -m init && : > untracked ) >/dev/null 2>&1
+    printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},"cwd":"%s",' "$dr" \
+        > "$SCRATCH/dirty.json"
+    printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000},' \
+        >> "$SCRATCH/dirty.json"
+    printf '"cost":{"total_duration_ms":300000},"session_id":"d"}' >> "$SCRATCH/dirty.json"
+    ( cd "$dr" && env COLUMNS=46 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+        CC_STATUSLINE_RL_CACHE="$SCRATCH/dirty.cache" bash "$STATUSLINE" <"$SCRATCH/dirty.json" ) \
+        >"$SCRATCH/dirty.out" 2>"$SCRATCH/dirty.err"
+    l1=$(sed -n '1p' "$SCRATCH/dirty.out" | _strip_ansi)
+    l2=$(_rl_l2 "$SCRATCH/dirty.out")
+    if [ -s "$SCRATCH/dirty.err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$SCRATCH/dirty.err")"
+    elif ! _has "$l1" "?1"; then _rl_fail "$name" "line 1 lost the dirty marker: $l1"
+    elif ! _has "$l2" "ctx 50%"; then _rl_fail "$name" "ctx fallback lost the real percentage: $l2"
+    else _rl_pass "$name"; fi
+
+    # G4. The account badge lives in the phone line-2 base, which no tier can
+    #     shed. A long label must be capped AND marked as truncated, and must
+    #     not displace the rate limits that are the reason line 2 exists.
+    name="phone-badge-fits"
+    local bh="$SCRATCH/badge-home"
+    mkdir -p "$bh/.claude"
+    printf '{"oauthAccount":{"accountUuid":"11111111-2222-3333-4444-555555555555"}}\n' > "$bh/.claude.json"
+    printf '{"enabled":true,"profiles":{"11111111-2222-3333-4444-555555555555":{"label":"very-long-account-label-here","color":"blue"}}}\n' \
+        > "$bh/.claude/profile-labels.json"
+    out="$SCRATCH/badge.out"; err="$SCRATCH/badge.err"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=30 HOME="$bh" STATUSLINE_PROFILE=1 \
+              XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/badge.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); w=$(sed -n '2p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w" -gt 29 ]; then _rl_fail "$name" "badge pushed line 2 to $w cols at COLUMNS=30"
+    elif ! _has "$l2" "5h"; then
+        _rl_fail "$name" "badge displaced the rate limits: $l2"
+    elif ! _has "$l2" "…"; then
+        _rl_fail "$name" "a truncated badge is not marked as truncated: $l2"
+    else _rl_pass "$name"; fi
+}
+
+# ── Env-input hardening tests ──────────────────────────────────────────────
+# Bash evaluates a variable's VALUE as an arithmetic expression and performs
+# command substitution inside array subscripts while doing so, so any env value
+# reaching $(( )) is an execution sink. These assert the charset gates hold:
+# the payload must NOT run, the render must stay well-formed, and stderr must
+# stay empty. The negative control (an ungated var) is what proves the probe
+# itself works, so a gate that silently stopped being applied cannot read as a
+# pass here.
+env_hardening_tests() {
+    printf '\n'
+    printf 'env-input hardening tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local out err name marker lines
+    local payload_dir="$SCRATCH/exec-probe"
+    mkdir -p "$payload_dir"
+
+    # Every env var that reaches arithmetic OR a numeric [ in statusline.sh.
+    # Adding one to the script without adding it here is the regression this
+    # list exists to catch. The last two reach a numeric [ rather than $(( )),
+    # which cannot execute but does break the empty-stderr contract.
+    local v
+    for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN STATUSLINE_PHONE_COLS \
+             CC_STATUSLINE_NOW COLUMNS \
+             STATUSLINE_RL_AUTH_TTL STATUSLINE_RL_BACKOFF; do
+        name="env-exec-$v"
+        marker="$payload_dir/$v"
+        out="$SCRATCH/env-$v.out"; err="$SCRATCH/env-$v.err"
+        rm -f "$marker"
+        ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+            | env "$v=PCT[\$(touch $marker)]" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/env-$v.cache" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -e "$marker" ]; then
+            _rl_fail "$name" "COMMAND EXECUTION: payload in \$$v ran (marker created)"
+        elif [ -s "$err" ]; then
+            _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then
+            _rl_fail "$name" "expected 2 lines with a hostile \$$v, got $lines"
+        else _rl_pass "$name"; fi
+    done
+
+    # Negative control: the same payload in a variable the script feeds to
+    # arithmetic WITHOUT a gate does execute. If this stops executing, the probe
+    # is broken and every pass above is meaningless.
+    name="env-exec-probe-is-live"
+    marker="$payload_dir/control"
+    rm -f "$marker"
+    ( cd "$SCRATCH" && bash -c 'V=$1; : $((V)); exit 0' _ "PCT[\$(touch $marker)]" ) >/dev/null 2>&1
+    if [ -e "$marker" ]; then _rl_pass "$name"
+    else _rl_fail "$name" "probe did not execute in the ungated control; the exec tests above prove nothing"; fi
+
+    # A non-numeric value must fall back to the default, not blank the render.
+    # `STATUSLINE_WIDTH=abc` used to abort at TARGET=$(( )) under set -u and
+    # emit a single empty line, i.e. no statusline at all.
+    for v in STATUSLINE_WIDTH STATUSLINE_GLYPH_MARGIN CC_STATUSLINE_NOW \
+             STATUSLINE_RL_AUTH_TTL STATUSLINE_RL_BACKOFF; do
+        name="env-junk-$v"
+        out="$SCRATCH/junk-$v.out"; err="$SCRATCH/junk-$v.err"
+        # The two RL vars are only COMPARED when an authoritative (5-field,
+        # fetch-stamped) cache exists and, for the backoff, a .backoff marker.
+        # Without both, the branch never runs and the assertion cannot fail:
+        # verified against the pre-fix script, where an unseeded run passes and
+        # a seeded one reports "[: abc: integer expected".
+        printf '90|1700018000|70|1700200000|1699999990\n' > "$SCRATCH/junk-$v.cache"
+        : > "$SCRATCH/junk-$v.cache.backoff"
+        # The marker's age is computed against the PINNED clock (2023-11-14), so
+        # a marker created now yields a negative age and the `-ge 0` test
+        # short-circuits before the junk value is ever compared. Backdate it.
+        touch -t 202311010000 "$SCRATCH/junk-$v.cache.backoff" 2>/dev/null
+        ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+            | env "$v=abc" CC_STATUSLINE_RL_CACHE="$SCRATCH/junk-$v.cache" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then
+            _rl_fail "$name" "junk \$$v produced $lines lines (expected 2, i.e. the default was used)"
+        else _rl_pass "$name"; fi
+    done
+
+    # A value too large for the shell's integer conversion must not reach a bare
+    # `[`, and a zero-padded one must not be read as octal (060 is 60, not 48).
+    name="env-columns-overflow"
+    out="$SCRATCH/cols-of.out"; err="$SCRATCH/cols-of.err"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=99999999999999999999 \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/cols-of.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    else _rl_pass "$name"; fi
+
+    # The value has to STRADDLE the threshold under the two readings or the
+    # test cannot fail: 060 is 60 decimal / 48 octal and both select phone, so
+    # it proves nothing. 070 is 70 decimal (SAFE_WIDTH 69 -> wide) and 56 octal
+    # (SAFE_WIDTH 55 -> phone), so the layout is the discriminator.
+    name="env-columns-zero-padded"
+    out="$SCRATCH/cols-pad.out"; err="$SCRATCH/cols-pad.err"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env COLUMNS=070 XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/cols-pad.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$(_rl_l2 "$out")" "of 1000k"; then
+        _rl_fail "$name" "COLUMNS=070 was read as octal (56): layout flipped to phone"
+    else _rl_pass "$name"; fi
+
+    # The stdin JSON reaches the same arithmetic sinks as the environment does.
+    # Narrower threat model (it needs control of what Claude Code sends, not
+    # just the process env), identical mechanism: context_window_size lands in
+    # CTX_SIZE_K=$((CTX_SIZE / 1000)) and total_duration_ms in
+    # TOTAL_SEC=$((DURATION_MS / 1000)).
+    local field
+    for field in ctx dur; do
+        name="json-exec-$field"
+        marker="$payload_dir/json-$field"
+        out="$SCRATCH/json-$field.out"; err="$SCRATCH/json-$field.err"
+        rm -f "$marker"
+        if [ "$field" = ctx ]; then
+            printf '{"model":{"display_name":"O","id":"opus"},"cwd":"/home/test/rl",'  >"$SCRATCH/json-$field.json"
+            printf '"context_window":{"remaining_percentage":50,'                     >>"$SCRATCH/json-$field.json"
+            printf '"context_window_size":"PCT[$(touch %s)]"},'          "$marker"    >>"$SCRATCH/json-$field.json"
+            printf '"cost":{"total_duration_ms":300000},"session_id":"j"}'            >>"$SCRATCH/json-$field.json"
+        else
+            printf '{"model":{"display_name":"O","id":"opus"},"cwd":"/home/test/rl",'  >"$SCRATCH/json-$field.json"
+            printf '"context_window":{"remaining_percentage":50,'                     >>"$SCRATCH/json-$field.json"
+            printf '"context_window_size":1000000},'                                  >>"$SCRATCH/json-$field.json"
+            printf '"cost":{"total_duration_ms":"PCT[$(touch %s)]"},'     "$marker"    >>"$SCRATCH/json-$field.json"
+            printf '"session_id":"j"}'                                                >>"$SCRATCH/json-$field.json"
+        fi
+        ( cd "$SCRATCH" && env CC_STATUSLINE_RL_CACHE="$SCRATCH/json-$field.cache" \
+            bash "$STATUSLINE" <"$SCRATCH/json-$field.json" ) >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -e "$marker" ]; then
+            _rl_fail "$name" "COMMAND EXECUTION: hostile stdin JSON ($field) ran"
+        elif [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then _rl_fail "$name" "expected 2 lines, got $lines"
+        else _rl_pass "$name"; fi
+    done
+
+    # A hostile layout-override file must not survive the case match.
+    name="env-layout-file-hostile"
+    out="$SCRATCH/layout-h.out"; err="$SCRATCH/layout-h.err"
+    mkdir -p "$SCRATCH/xdg-hostile/cc-statusline"
+    printf 'phoney; touch %s/layout-pwn\n' "$payload_dir" > "$SCRATCH/xdg-hostile/cc-statusline/layout"
+    ( cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | env XDG_CONFIG_HOME="$SCRATCH/xdg-hostile" COLUMNS=200 \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/layout-h.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    lines=$(wc -l <"$out" | tr -d ' ')
+    if [ -e "$payload_dir/layout-pwn" ]; then
+        _rl_fail "$name" "COMMAND EXECUTION: layout file contents ran"
+    elif [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$lines" -ne 2 ]; then _rl_fail "$name" "expected 2 lines, got $lines"
+    elif ! _has "$(_rl_l2 "$out")" "of 1000k"; then
+        _rl_fail "$name" "unrecognized layout value was not ignored (expected the wide render)"
+    else _rl_pass "$name"; fi
+}
+
 if [ ! -x "$STATUSLINE" ]; then
     printf 'error: %s is not executable\n' "$STATUSLINE" >&2
     exit 2
@@ -512,6 +1072,10 @@ for f in "$FIXTURES"/*.json; do
 done
 
 rate_limit_cache_tests
+phone_layout_tests
+phone_truncation_tests
+phone_gap_tests
+env_hardening_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

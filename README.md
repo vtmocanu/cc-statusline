@@ -164,7 +164,9 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line. Lower this if you see line 2 disappearing. |
+| `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line, and a hard cap: when Claude Code reports a narrower viewport (see below), the render follows the viewport instead. Lower this if you see line 2 disappearing. |
+| `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
+| `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` selects the phone layout. |
 | `STATUSLINE_CACHE` | `0` | Set to `1` to show the prompt-cache hit-rate readout (`⚡ NN%`) on line 2 (off by default). |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
@@ -178,6 +180,43 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
+
+### Phone layout (narrow viewports)
+
+Claude Code exports `COLUMNS`/`LINES` to the statusline process (v2.1.153+), and it
+reports the viewport of the client doing the viewing: the same session rendered
+from the Claude mobile app arrives with `COLUMNS=52` while the desk terminal
+renders it at `COLUMNS=324`. Each attached client gets its own render, so both can
+be right at once. Below `STATUSLINE_PHONE_COLS` (60) the script switches to a
+layout built for that width:
+
+```
+ 󰉋 phone │  devmetaminds/phone !1 ?1
+ wxs │ 5h 77%↑ ↻2h28m │ 7d 81%↑ ↻4d8h │ ✓
+```
+
+Line 1 keeps the folder, branch and dirty markers; line 2 keeps the account badge,
+both rate-limit windows with their pace arrows, and the reset countdowns (`↻`).
+Topic, model, effort, elapsed, cost, context and cache are dropped: at 50 columns
+they cost more room than they earn. As the viewport narrows further, each line
+sheds independently. Line 2 drops the 7d countdown, then the 5h countdown, then
+falls back to bare percentages. Line 1 collapses the folder to its leaf, trims
+the branch (keeping its tail, since worktree branches share long prefixes), drops
+the dirty markers, trims the folder, and at the very narrowest drops the branch
+entirely so the leaf folder survives: at that width, which session this is
+matters more than which branch it is on.
+
+No configuration is needed. `STATUSLINE_LAYOUT=phone|wide` forces a layout, and a
+one-line `$XDG_CONFIG_HOME/cc-statusline/layout` file holding `phone` or `wide`
+does the same for a running session (useful for clients that report no viewport);
+the environment variable wins over the file, and the file wins over auto-detection.
+
+Note that the tier follows the *effective* width, which is `STATUSLINE_WIDTH`
+capped by the reported viewport. So an explicit `STATUSLINE_WIDTH` below
+`STATUSLINE_PHONE_COLS` selects the phone layout even on a wide terminal. That is
+deliberate (the layout should match the width the line is being fitted to), but
+if you set a narrow `STATUSLINE_WIDTH` as a truncation workaround and want the
+full render anyway, pin it with `STATUSLINE_LAYOUT=wide`.
 
 ### Account/profile badge (multi-account setups)
 

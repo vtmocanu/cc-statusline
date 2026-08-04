@@ -4,6 +4,24 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.14.0] - 2026-08-03
+
+### Added
+- Phone layout for narrow viewports. Claude Code exports `COLUMNS`/`LINES` to the statusline process (v2.1.153+) and they carry the viewport of the client doing the viewing, so a session opened in the Claude mobile app renders at `COLUMNS=52` while the same session at the desk renders at `COLUMNS=324`, each with its own layout. Below `STATUSLINE_PHONE_COLS` (60) line 1 keeps the folder, branch and dirty markers, and line 2 keeps the account badge plus both rate-limit windows with their pace arrows and reset countdowns (`↻`); topic, model, effort, elapsed, cost, context and cache are dropped. Force a tier with `STATUSLINE_LAYOUT=phone|wide`, or with a one-line `$XDG_CONFIG_HOME/cc-statusline/layout` file for clients that report no viewport.
+- Phone-layout truncation ladder: the folder collapses to its leaf before anything is character-truncated, the branch keeps its tail (worktree branches share long prefixes), then dirty markers drop, then the branch and folder are trimmed.
+
+### Changed
+- `STATUSLINE_WIDTH` is now a hard cap rather than a fixed width: a reported viewport narrower than it wins, a wider one never raises it. Terminals that report nothing behave exactly as before.
+
+### Fixed
+- Phone truncation no longer deletes a short branch name. Bash returns the empty string for a negative offset larger than the string, so the trim step collapsed any branch of 7 characters or fewer to a bare `..` (`main`, `develop`) and widened an 8-character one to `..release1`. A branch at or below the floor is now left intact, and dropped wholesale only as a last resort.
+- A long account label no longer displaces the rate limits in the phone layout. The badge sits in line 2's base, which no tier can shed, so a 28-character label survived while the windows it pushed out were the reason that line exists. It is capped at 8 columns with an ellipsis, so a truncated label reads as truncated rather than silently naming a different account.
+- The phone truncation ladder now converges. It could previously bottom out with line 1 still over budget, so a narrower viewport rendered a wider line (a 30-column viewport produced 51 columns), which is exactly the overflow that makes Claude Code's `cli-truncate` drop line 2.
+
+### Security
+- Validate every value that reaches bash arithmetic, from the environment (`STATUSLINE_WIDTH`, `STATUSLINE_GLYPH_MARGIN`, `CC_STATUSLINE_NOW`, plus the new `COLUMNS` and `STATUSLINE_PHONE_COLS`) and from the stdin JSON (`context_window.context_window_size`, `cost.total_duration_ms`). The JSON path needs control of what Claude Code sends rather than just the process environment, so it is a narrower threat model, but the sink is identical. Bash evaluates a variable's value as an arithmetic expression and performs command substitution inside array subscripts while doing so, so an unvalidated value in `$(( ))` was arbitrary command execution: `STATUSLINE_WIDTH='PCT[$(touch /tmp/PWN)]'` ran the command on every render, exit 0, normal-looking output, empty stderr. Present since the initial public release; it needs an attacker who can already set the statusline process's environment (a hostile repo's direnv, another process on the box). A non-numeric value now falls back to the default instead of aborting the render under `set -u`, which previously blanked the statusline entirely (`STATUSLINE_WIDTH=abc`).
+- Silence three stderr paths that broke the empty-stderr contract without affecting output: a `COLUMNS` value too large for the shell's integer conversion, a non-numeric `STATUSLINE_RL_AUTH_TTL` or `STATUSLINE_RL_BACKOFF` reaching a numeric `[`, and a layout-override file holding invalid UTF-8 (BSD `tr` only, under a UTF-8 locale).
+
 ## [v2.13.0] - 2026-07-18
 
 ### Added
@@ -230,6 +248,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v2.14.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.1...v2.13.0
 [v2.12.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.0...v2.12.1
 [v2.12.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.11.2...v2.12.0
