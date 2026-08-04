@@ -4,7 +4,7 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v2.14.0] - 2026-08-03
+## [v2.14.0] - 2026-08-04
 
 ### Added
 - Phone layout for narrow viewports. Claude Code exports `COLUMNS`/`LINES` to the statusline process (v2.1.153+) and they carry the viewport of the client doing the viewing, so a session opened in the Claude mobile app renders at `COLUMNS=52` while the same session at the desk renders at `COLUMNS=324`, each with its own layout. Below `STATUSLINE_PHONE_COLS` (60) line 1 keeps the folder, branch and dirty markers, and line 2 keeps the account badge plus both rate-limit windows with their pace arrows and reset countdowns (`↻`); topic, model, effort, elapsed, cost, context and cache are dropped. Force a tier with `STATUSLINE_LAYOUT=phone|wide`, or with a one-line `$XDG_CONFIG_HOME/cc-statusline/layout` file for clients that report no viewport.
