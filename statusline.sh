@@ -853,11 +853,17 @@ format_reset() {
 #   projected% = used% * window_duration / elapsed
 # where elapsed = now - (resets_at - window_duration) is how far into the
 # current window we are. Integer-only (no bc).
-# Assumes the 5h/7d limits are fixed/anchored windows (usage resets to zero at a
-# boundary), not rolling ones -- confirmed: the unified rate-limit headers expose
-# a single reset epoch each (anthropic-ratelimit-unified-5h-reset / -7d-reset),
-# which only makes sense for an anchored window. If they ever go rolling, elapsed
-# is ill-defined and the projected magnitude (not direction) breaks.
+# Assumes the 5h/7d limits are fixed/anchored windows (usage accumulates from zero
+# and resets at a boundary). This is NOT confirmed, and the public evidence leans
+# the other way: Anthropic does not document the unified 5h/7d window semantics,
+# and its own claude-code tracker describes the 5-hour window as a SLIDING window
+# whose "resets at HH:MM" label is a known misnomer -- only the oldest tokens
+# expire at that time (github.com/anthropics/claude-code/issues/62223). The single
+# reset epoch each (anthropic-ratelimit-unified-5h-reset / -7d-reset) IS that
+# misleading label, not proof of an anchored window. If the windows are sliding,
+# elapsed here is ill-defined and the projected MAGNITUDE is invalid (direction
+# stays roughly useful). Best-effort hint pending an empirical check: does used%
+# decay between polls with no new usage? -> sliding.
 #   ↑ coral  projected > 115 — burning fast, will hit the cap before reset
 #   → gold   projected 85-115 — roughly on pace to land at ~100%
 #   (empty)  projected < 85  — under-consuming, safe; no arrow is shown so the
