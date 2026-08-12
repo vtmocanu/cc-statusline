@@ -4,6 +4,14 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.14.2] - 2026-08-12
+
+### Fixed
+- The pace-arrow early-window suppression floor is now `max(duration/50, 900)` instead of a bare `duration/50`. The 2% ratio suited the 7-day window (~3.4h of settling) but gave the 5-hour window only 6 minutes, so a burst in the opening minutes still projected wildly (8% used in 8 min projected ~300%, a false "on pace"). The 15-minute absolute minimum gives short windows a real settling period; the 7-day window is unaffected. See issue #8.
+
+### Documentation
+- Recorded the pace-arrow's one load-bearing assumption in a comment: the projection treats the 5h/7d limits as fixed/anchored windows, confirmed by the single-reset-epoch unified rate-limit headers (`anthropic-ratelimit-unified-5h-reset` / `-7d-reset`), which only make sense for anchored windows.
+
 ## [v2.14.1] - 2026-08-04
 
 ### Fixed
@@ -260,6 +268,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v2.14.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.1...v2.14.2
 [v2.14.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.0...v2.14.1
 [v2.14.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.12.1...v2.13.0

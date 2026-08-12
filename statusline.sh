@@ -853,6 +853,11 @@ format_reset() {
 #   projected% = used% * window_duration / elapsed
 # where elapsed = now - (resets_at - window_duration) is how far into the
 # current window we are. Integer-only (no bc).
+# Assumes the 5h/7d limits are fixed/anchored windows (usage resets to zero at a
+# boundary), not rolling ones -- confirmed: the unified rate-limit headers expose
+# a single reset epoch each (anthropic-ratelimit-unified-5h-reset / -7d-reset),
+# which only makes sense for an anchored window. If they ever go rolling, elapsed
+# is ill-defined and the projected magnitude (not direction) breaks.
 #   ↑ coral  projected > 115 — burning fast, will hit the cap before reset
 #   → gold   projected 85-115 — roughly on pace to land at ~100%
 #   (empty)  projected < 85  — under-consuming, safe; no arrow is shown so the
@@ -869,7 +874,14 @@ pace_arrow() {
     case "$resets_at" in *[!0-9]*) return ;; esac
     [ "$used" -le 0 ] 2>/dev/null && return
     local elapsed=$(( now - (resets_at - duration) ))
-    [ "$elapsed" -le $(( duration / 50 )) ] 2>/dev/null && return
+    # Suppress the arrow early in the window, where little signal projects wildly.
+    # Floor is max(duration/50, 900): the 2% ratio suits the 7d window (~3.4h),
+    # but on the 5h window it is only 6 min (18000/50=360), too thin -- an 8%
+    # burst in the first 8 min would project ~108% ("on pace"). The absolute
+    # 15-min minimum gives short windows a real settling period. Integer-only.
+    local floor=$(( duration / 50 ))
+    [ "$floor" -lt 900 ] && floor=900
+    [ "$elapsed" -le "$floor" ] 2>/dev/null && return
     local projected=$(( used * duration / elapsed ))
     if   [ "$projected" -gt 115 ]; then printf '\033[38;2;225;150;150m↑'
     elif [ "$projected" -gt 85  ]; then printf '\033[38;2;215;195;125m→'
