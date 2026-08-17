@@ -121,9 +121,9 @@ scan. Secret scanning is GitHub-native (push protection on). Other gates:
 
 Highest-value surfaces:
 
-- `hooks/session-topic-capture.sh` and `claude-usage-fetch.sh` handle the
+- `claude-usage-fetch.sh` handles the
   user's Claude Code OAuth token (macOS Keychain, `~/.claude/.credentials.json`,
-  or a scanned `CLAUDE_CODE_OAUTH_TOKEN`) and call the Anthropic API. Enforce:
+  or a scanned `CLAUDE_CODE_OAUTH_TOKEN`) and calls the Anthropic API. Enforce:
   the token is NEVER logged (even under `STATUSLINE_DEBUG=1`) and is redacted on
   every error path; it reaches curl via stdin, never argv or env; the per-prompt
   rate limit (prompt 1 + every 10) stays; the User-Agent stays
@@ -132,12 +132,14 @@ Highest-value surfaces:
 - Shell injection: `statusline.sh` extracts JSON via `jq @sh | eval`. Confirm
   every interpolated field stays `@sh`-quoted and that data from stdin JSON,
   transcript files, or `~/.claude/*.json` never reaches a command unquoted.
-- Untrusted disk inputs, all read at render time: session-topic files, the
-  color-override JSON, `profile-labels.json`, the service-status and
-  rate-limits caches, and the layout-override file
-  (`$XDG_CONFIG_HOME/cc-statusline/layout`). Flag any that could inject ANSI
-  control sequences or shell metacharacters into output; `_strip_ctl` is the
-  sanitizer for text that reaches the terminal, and the tab-title write to
+- Untrusted disk inputs, all read at render time: the per-session registry
+  (`~/.claude/sessions/*.json`, source of the `@handle`), the color-override
+  JSON, `profile-labels.json`, the service-status and rate-limits caches, and
+  the layout-override file (`$XDG_CONFIG_HOME/cc-statusline/layout`). Untrusted
+  stdin JSON fields printed to line 1 include `.session_name` (the title) and
+  the model/dir/agent/mode values. Flag any that could inject ANSI control
+  sequences or shell metacharacters into output; each printed field gets the
+  `${v//[$'\001'-$'\037\177']/}` control-byte strip, and the tab-title write to
   `/dev/tty` is the highest-consequence sink.
 - Untrusted ENVIRONMENT inputs: `COLUMNS`/`LINES` feed arithmetic that narrows
   `SAFE_WIDTH`. The script runs `set -uo pipefail` with no `-e`, so an

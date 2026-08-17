@@ -64,8 +64,7 @@ detection in that case.
 
 ## `perl` is a hard dependency
 
-ANSI/OSC/control stripping, UTF-8-aware width measurement, and topic
-sanitization all use `perl` (a single helper, `measure_cols`, plus `_strip_ctl`).
+UTF-8-aware width measurement uses `perl` (a single helper, `measure_cols`).
 This replaced the earlier macOS-only `gsed` dependency, so `gsed`/`gnu-sed` is no
 longer required on any platform. `perl` ships by default on macOS and every Linux
 distro and the GitHub Actions runner image, so this is a safe baseline; the
@@ -95,5 +94,5 @@ environment of the ancestor `claude` process: `/proc/PID/environ` on Linux,
 Setting the terminal tab title via `printf '\033]1;%s\007' > /dev/tty` only works
 when the script has a controlling terminal. Under tmux, screen, and most CI
 runners it silently no-ops (since v2.0.1, without leaking stderr). The title text
-is sanitized of control bytes first, so a crafted session topic cannot inject a
-spoofed title.
+is sanitized of control bytes first, so a crafted session title cannot inject a
+spoofed terminal title.

@@ -106,7 +106,7 @@ if ! git -C "$REPO_DIR" archive --format=tar "$REF" | tar -x -C "$STAGE_DIR"; th
 fi
 
 # Sanity-check required files in the staged tree
-for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh hooks/session-topic-capture.sh; do
+for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh; do
     if [ ! -f "$STAGE_DIR/$f" ]; then
         err "staged tree missing required file: $f"
         exit 1
@@ -114,11 +114,10 @@ for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh hooks/sessio
 done
 
 # Install from the staged tree
-mkdir -p "$INSTALL_DIR/hooks"
-install -m 0755 "$STAGE_DIR/statusline.sh"                  "$INSTALL_DIR/statusline.sh"
-install -m 0755 "$STAGE_DIR/claude-status-fetch.sh"         "$INSTALL_DIR/claude-status-fetch.sh"
-install -m 0755 "$STAGE_DIR/claude-usage-fetch.sh"          "$INSTALL_DIR/claude-usage-fetch.sh"
-install -m 0755 "$STAGE_DIR/hooks/session-topic-capture.sh" "$INSTALL_DIR/hooks/session-topic-capture.sh"
+mkdir -p "$INSTALL_DIR"
+install -m 0755 "$STAGE_DIR/statusline.sh"          "$INSTALL_DIR/statusline.sh"
+install -m 0755 "$STAGE_DIR/claude-status-fetch.sh" "$INSTALL_DIR/claude-status-fetch.sh"
+install -m 0755 "$STAGE_DIR/claude-usage-fetch.sh"  "$INSTALL_DIR/claude-usage-fetch.sh"
 # VERSION is the human semver used in the scripts' User-Agent. Absent in tags
 # that predate it (the scripts then fall back to "dev"), so guard the copy.
 [ -f "$STAGE_DIR/VERSION" ] && install -m 0644 "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"
@@ -146,21 +145,10 @@ refreshInterval re-runs the statusline every N seconds so idle sessions keep
 fresh reset times, service health, and rate-limit bars (requires a recent
 Claude Code). Remove the line to update only on activity.
 
-To enable AI-generated session topics, also add this UserPromptSubmit hook:
-
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$INSTALL_DIR/hooks/session-topic-capture.sh"
-          }
-        ]
-      }
-    ]
-  }
+The descriptive session title on line 1 comes from Claude Code's native session
+name (its /rename value or auto-generated title). No hook or extra setup is
+needed; hide it with STATUSLINE_TOPIC=0, and the @handle with
+STATUSLINE_SESSION_NAME=0.
 
 To roll back to a previous version: ./install.sh --version v2.0.0
 To uninstall:                       ./install.sh --uninstall

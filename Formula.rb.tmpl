@@ -23,7 +23,7 @@ class CcStatusline < Formula
     # fetcher relative to its own (non-symlink-resolved) dirname, and the
     # fetcher/hook read the VERSION file from their dir or its parent for the
     # User-Agent. A bare bin symlink would break both, hence the wrapper.
-    libexec.install "statusline.sh", "claude-status-fetch.sh", "claude-usage-fetch.sh", "VERSION", "hooks"
+    libexec.install "statusline.sh", "claude-status-fetch.sh", "claude-usage-fetch.sh", "VERSION"
 
     (bin/"cc-statusline").write <<~SH
       #!/bin/bash
@@ -61,21 +61,9 @@ class CcStatusline < Formula
           "refreshInterval": 60
         }
 
-      Optional AI-generated session topics (UserPromptSubmit hook):
-
-        "hooks": {
-          "UserPromptSubmit": [
-            {
-              "matcher": "",
-              "hooks": [
-                {
-                  "type": "command",
-                  "command": "#{opt_libexec}/hooks/session-topic-capture.sh"
-                }
-              ]
-            }
-          ]
-        }
+      The descriptive session title on line 1 comes from Claude Code's native
+      session name; no hook is required. Hide it with STATUSLINE_TOPIC=0, and the
+      @handle with STATUSLINE_SESSION_NAME=0.
 
       Dev mode (render a working tree instead of the brewed copy):
 

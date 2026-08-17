@@ -4,7 +4,7 @@
 [![release](https://img.shields.io/github/v/release/vtmocanu/cc-statusline?label=release)](https://github.com/vtmocanu/cc-statusline/releases)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-code) with project-aware colors, git status, Kubernetes context, rate-limit bars, Claude service health, and AI-generated session topics.
+A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-code) with project-aware colors, git status, Kubernetes context, rate-limit bars, Claude service health, and the session's name and title.
 
 ![cc-statusline screenshot](images/screenshot.png)
 
@@ -23,9 +23,10 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
 - **GitHub service status**: line-1 icon (same glyphs/colors as the Claude one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
-- **Session topic**: optional hook calls Claude Haiku to label each session with `Project: Focus`
-- **Tab title**: sets the terminal tab title from the topic or directory
-- **Width-aware truncation**: K8s context, branch, and topic shrink first to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2
+- **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
+- **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
+- **Tab title**: sets the terminal tab title from the session title or directory
+- **Width-aware truncation**: K8s context, branch, title, and name shrink first to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2
 
 ## Requirements
 
@@ -33,7 +34,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - `bash` 4 or newer
 - `jq`
 - `perl` (for ANSI-aware width measurement)
-- `curl` (for service status and the optional session-topic hook)
+- `curl` (for service status)
 - GNU `timeout` (coreutils; not stock on macOS)
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal for the icons
 
@@ -126,25 +127,7 @@ If you'd rather skip `install.sh`, point `statusLine.command` directly at your c
 
 `refreshInterval` (seconds) re-runs the statusline on a timer in addition to activity-driven updates, so idle sessions keep fresh rate-limit reset times, service health, and usage bars. It requires a recent Claude Code version; remove the line to update only on activity. Rate-limit bars specifically stay fresh across *all* your sessions, not just the one being refreshed: each render shares the freshest known account-wide values with the others via a small per-user cache (`STATUSLINE_RL_SHARE=0` to disable). The cache is keyed per account: sessions launched with `CLAUDE_CODE_OAUTH_TOKEN=... claude` get their own cache file (keyed by a hash of the token, never the token itself), so different accounts never see each other's bars.
 
-To enable the optional session-topic feature, also add the hook:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/cc-statusline/hooks/session-topic-capture.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+No hook is needed for the session name or title: line 1 reads both from Claude Code directly (the `@handle` from its per-session registry, the descriptive title from the `.session_name` payload field).
 
 ## Configuration
 
@@ -169,6 +152,8 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
 | `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
 | `STATUSLINE_CACHE` | `0` | Set to `1` to show the prompt-cache hit-rate readout (`⚡ NN%`) on line 2 (off by default). |
+| `STATUSLINE_SESSION_NAME` | `1` | Set to `0` to hide the `@handle` (the addressable session name peers message, read from Claude Code's per-session registry) at the start of line 1. |
+| `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
@@ -207,8 +192,8 @@ The phone layout:
 
 Line 1 keeps the folder, branch and dirty markers; line 2 keeps the account badge,
 both rate-limit windows with their pace arrows, and the reset countdowns (`↻`).
-Topic, model, effort, elapsed, cost, context and cache are dropped: at 50 columns
-they cost more room than they earn. As the viewport narrows further, each line
+The session name and title, model, effort, elapsed, cost, context and cache are
+dropped: at 50 columns they cost more room than they earn. As the viewport narrows further, each line
 sheds independently. Line 2 drops the 7d countdown, then the 5h countdown, then
 falls back to bare percentages. Line 1 collapses the folder to its leaf, trims
 the branch (keeping its tail, since worktree branches share long prefixes), drops
@@ -242,11 +227,14 @@ Opt-in: create `~/.claude/profile-labels.json` with a `profiles` map and the bad
 }
 ```
 
-### Session-topic hook
+### Session name and title
 
-The hook (`hooks/session-topic-capture.sh`) calls the Anthropic API with your locally stored Claude Code OAuth credentials (read from the macOS Keychain entry `Claude Code-credentials`, or `~/.claude/.credentials.json` on Linux) to generate a `Project: Focus` label for each session. It runs at most once per 10 prompts and writes to `~/.claude/session-topics/{session_id}.txt`.
+Line 1 leads with two identifiers Claude Code provides natively, so neither needs a hook or an API call:
 
-> **Security note**: this hook reads your OAuth token and sends excerpts of your Claude Code transcript to the Anthropic API. If you'd rather not, simply don't register the hook in `settings.json`; the statusline will skip the topic block entirely.
+- **`@handle`** (the session name): the short, addressable name other Claude sessions use to message this one (`SendMessage({to: "<handle>"})`), for example `@uzi-60`. It is read from Claude Code's per-session registry under `~/.claude/sessions/*.json` (the `.name` field, matched to the session by its id), which reflects both the auto-derived default and a `/rename`. Hide it with `STATUSLINE_SESSION_NAME=0`. This registry is an internal Claude Code file, so the read is best-effort: if its shape changes in a future release, the handle simply doesn't show.
+- **Title** (the descriptive label): Claude Code's native session name, from the `.session_name` field of the statusline payload, which is your `/rename` value or the auto-generated session title (for example `Add session names to status line`). Hide it with `STATUSLINE_TOPIC=0`. It is absent until Claude Code has named the session, so a brand-new session may show no title for its first moments.
+
+Earlier versions synthesized the title with an opt-in `UserPromptSubmit` hook that called Claude Haiku; that hook has been removed in favor of the native field, which needs no credential, transcript excerpt, or quota.
 
 ### Per-account usage fetcher
 
@@ -291,14 +279,15 @@ CI runs the same harness on every push and pull request via `.github/workflows/c
 | Statusline not showing at all | Script crash; `set -uo pipefail` exits silently | Run `STATUSLINE_DEBUG=1 bash statusline.sh < /tmp/test.json` and check `/tmp/statusline-debug.log` |
 | Wrong project color | Color hash collision or stale override | Add the project root to `~/.claude/statusline-color-overrides.json` |
 | Service status icon missing | `claude-status-fetch.sh` not yet run, or `curl` failed | Wait 60s, or run the fetcher manually: `bash claude-status-fetch.sh` |
-| Topic field empty | Hook hasn't run yet (first 1-2 prompts) or OAuth token not found | Send a few prompts; check `~/.claude/session-topics/{session_id}.txt` |
+| Session title empty | Claude Code hasn't named the session yet (brand-new session), or you're on a Claude Code without `.session_name` | Send a few prompts so a title is generated, or set one with `/rename`; upgrade Claude Code if the field is absent |
+| `@handle` missing | Registry file absent (older Claude Code), or its shape changed | Upgrade Claude Code; the handle reads `~/.claude/sessions/*.json` best-effort |
 | Boxes/squares instead of icons | Terminal font is not a Nerd Font | Install one from [nerdfonts.com](https://www.nerdfonts.com/) and configure your terminal |
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for known limitations.
 
 ## Why two lines?
 
-Claude Code's `cli-truncate` silently drops line 2 when a line exceeds the container width. This script measures visible columns with an ANSI-aware helper (it does not estimate) and truncates content (in priority order: K8s context, branch, agent, mode, topic, directory) before that happens. See the comments in [statusline.sh](statusline.sh) for the full set of undocumented rendering quirks discovered through testing.
+Claude Code's `cli-truncate` silently drops line 2 when a line exceeds the container width. This script measures visible columns with an ANSI-aware helper (it does not estimate) and truncates content (in priority order: K8s context, branch, agent, mode, title, session name, directory) before that happens. See the comments in [statusline.sh](statusline.sh) for the full set of undocumented rendering quirks discovered through testing.
 
 ## License
 

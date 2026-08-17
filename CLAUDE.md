@@ -28,8 +28,6 @@ cc-statusline/
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
 ├── claude-status-fetch.sh            Background helper, polls an Atlassian Statuspage summary.json every 60s, writes a per-user service-status cache. Defaults to status.claude.com; the statusline also spawns it with CC_STATUSLINE_SVC_URL=githubstatus.com for the optional line-1 GitHub icon (STATUSLINE_GITHUB_STATUS, on by default, shown only on github.com remotes)
 ├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
-├── hooks/
-│   └── session-topic-capture.sh      Optional UserPromptSubmit hook, calls Claude Haiku to label sessions
 ├── install.sh                        Installer for public users (--version vX.Y.Z, --uninstall, --help)
 ├── Formula.rb.tmpl                   Homebrew formula template (@@URL@@/@@SHA256@@ placeholders); rendered and pushed to vtmocanu/homebrew-tap by release.yml on each v* tag
 ├── examples/
@@ -191,14 +189,16 @@ Two paths cost more, both bounded and both off the common path. A viewport that 
 
 `WIDE_GLYPH_MARGIN` (env `STATUSLINE_GLYPH_MARGIN`, default 3) keeps a small real-terminal cushion for Nerd Font glyphs that render double-width; see `KNOWN_ISSUES.md`.
 
-## Hook security note
+## Session name and title (both native, no hook)
 
-`hooks/session-topic-capture.sh` calls the Anthropic API with the user's Claude Code OAuth token (read from macOS Keychain or `~/.claude/.credentials.json`). It sends excerpts of the conversation transcript to Claude Haiku for topic generation.
+Line 1 leads with two identifiers that come straight from Claude Code, sourced in `statusline.sh` (grep `SESSION_HANDLE` and `SESSION_TITLE`):
 
-If you're modifying the hook:
-- **Never log the token**, even with `STATUSLINE_DEBUG=1`. Redact it in any error path.
-- **Don't change the User-Agent** to something that impersonates the official Claude Code client. Use `cc-statusline/X.Y.Z`. We had `claude-code/2.1.4` in v2.0.0 and removed it in v2.0.1 specifically because the public repo shouldn't ship UA spoofing.
-- **Keep the rate limit** (currently: prompt 1 + every 10 prompts). Removing it would burn the user's API quota and is rude.
+- **`@handle`** (`SESSION_HANDLE`): the addressable name peers message (`SendMessage({to})`), e.g. `@uzi-60`. Read from Claude Code's per-session registry `~/.claude/sessions/<pid>.json`, selecting the file whose `.sessionId` matches the stdin `.session_id` and taking `.name`. This covers both the auto-derived handle and a `/rename` value. **This registry is an UNDOCUMENTED internal file** (verified against Claude Code 2.1.233: `.sessionId`, `.name`, `.nameSource`, `.status`, `.messagingSocketPath`); its shape may change across versions, so the read is fully guarded and the handle just doesn't show on any miss. Toggle: `STATUSLINE_SESSION_NAME` (default 1). Test seam: `CC_STATUSLINE_SESSIONS_DIR`.
+- **Title** (`SESSION_TITLE` -> `TOPIC`): the descriptive label, from the **documented** stdin `.session_name` field (Claude Code's `/rename` value, else its auto-generated session title, which it also stores in the transcript as `.aiTitle`). Absent until a title exists, so a brand-new session shows none. Toggle: `STATUSLINE_TOPIC` (default 1).
+
+Do NOT conflate the two: `.session_name` is the *title*, never the addressable handle. The default `my-app-3f`-style display name does NOT populate `.session_name` (it stays absent), which is why the handle has to come from the registry. Both values are user/model-controlled, so both get the standard control-byte strip and a 40-codepoint cap, and both ride the line-1 truncation ladder (title on the `TOPIC` rung, handle on the `NAME` rung).
+
+**History:** the title was previously synthesized by an opt-in `UserPromptSubmit` hook (`hooks/session-topic-capture.sh`) that called Claude Haiku and wrote `~/.claude/session-topics/<id>.txt`. That hook was removed once Claude Code exposed `.session_name` natively (no credential, transcript excerpt, or quota needed). If you see references to `session-topic-capture.sh`, `_strip_ctl`, or `session-topics/` in old commits/docs, they predate that removal.
 
 ## GitHub interaction notes
 

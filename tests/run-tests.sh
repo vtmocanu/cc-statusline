@@ -1048,6 +1048,139 @@ github_status_tests() {
     else _rl_pass "$name"; fi
 }
 
+# ── Session name/title tests ───────────────────────────────────────────────
+# Line 1 carries two distinct native identifiers:
+#   @handle  the addressable name peers message (SendMessage to:), read ONLY from
+#            Claude Code's per-session registry (~/.claude/sessions/<pid>.json
+#            .name, keyed by .sessionId), via the CC_STATUSLINE_SESSIONS_DIR seam
+#            so the suite never reads the real registry.
+#   topic    the descriptive session title, read from the stdin .session_name
+#            (Claude Code's /rename value or auto-generated title).
+# These come from different sources and must not bleed into each other: a
+# .session_name must NEVER appear as a handle, and the registry .name must NEVER
+# appear as the topic. Covers both sources, both opt-outs
+# (STATUSLINE_SESSION_NAME / STATUSLINE_TOPIC), coexistence, absence, and
+# control-byte stripping of each user-controlled value.
+session_name_tests() {
+    printf '\n'
+    printf 'session name/title tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local name out err l1 reg home esc
+    reg="$SCRATCH/sess-reg"
+    home="$SCRATCH/sess-home"; mkdir -p "$home/.claude"
+    # A JSON escape for ESC (U+001B) built without a literal backslash-u in the
+    # source, so jq decodes it to a real byte the statusline must strip.
+    esc="$(printf '\\')u001b"
+
+    _sess_json() {  # _sess_json <session_id> [session_name]  (name may hold $esc)
+        printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"/home/test/sess",'
+        printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000},'
+        printf '"cost":{"total_duration_ms":300000},"session_id":"%s"' "$1"
+        [ -n "${2:-}" ] && printf ',"session_name":"%s"' "$2"
+        printf '}'
+    }
+    _sess_reg() {  # _sess_reg <sessionId> <name-json>  (name-json may hold $esc)
+        rm -rf "$reg"; mkdir -p "$reg"
+        printf '{"pid":123,"sessionId":"%s","name":"%s","nameSource":"derived","status":"idle"}\n' \
+            "$1" "$2" > "$reg/123.json"
+        # A second, non-matching entry proves the sessionId select is real.
+        printf '{"pid":456,"sessionId":"other-sid","name":"other-99","status":"idle"}\n' \
+            > "$reg/456.json"
+    }
+    _sess_run() {  # _sess_run <out> <err> <stdin-json> <env...>
+        local o="$1" e="$2" j="$3"; shift 3
+        ( cd "$SCRATCH" && printf '%s' "$j" \
+            | env HOME="$home" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/sess.cache" "$@" \
+                  bash "$STATUSLINE" ) >"$o" 2>"$e"
+    }
+
+    # 1. Registry .name is shown as the leading @handle, matched by sessionId.
+    name="sess-handle-from-registry"; out="$SCRATCH/s1.out"; err="$SCRATCH/s1.err"
+    _sess_reg "sid-1" "uzi-60"
+    _sess_run "$out" "$err" "$(_sess_json sid-1)" CC_STATUSLINE_SESSIONS_DIR="$reg"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "@uzi-60"; then _rl_fail "$name" "line 1 missing @uzi-60 handle: $l1"
+    elif _has "$l1" "other-99"; then _rl_fail "$name" "non-matching registry entry leaked: $l1"
+    else _rl_pass "$name"; fi
+
+    # 2. The handle is registry-ONLY: a stdin .session_name with no registry match
+    #    must NOT become a handle. It appears as the topic instead (no @).
+    name="sess-handle-is-registry-only"; out="$SCRATCH/s2.out"; err="$SCRATCH/s2.err"
+    _sess_reg "sid-other" "uzi-60"   # registry present, but no entry for sid-2
+    _sess_run "$out" "$err" "$(_sess_json sid-2 lonely-title)" CC_STATUSLINE_SESSIONS_DIR="$reg"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "@"; then _rl_fail "$name" "session_name leaked in as a handle: $l1"
+    elif ! _has "$l1" "lonely-title"; then _rl_fail "$name" "session_name not shown as the topic: $l1"
+    else _rl_pass "$name"; fi
+
+    # 3. Both together: registry handle AND the native title (topic) coexist, with
+    #    the title kept out of the @ segment.
+    name="sess-handle-and-title"; out="$SCRATCH/s3.out"; err="$SCRATCH/s3.err"
+    _sess_reg "sid-3" "uzi-60"
+    _sess_run "$out" "$err" "$(_sess_json sid-3 Add-session-names)" CC_STATUSLINE_SESSIONS_DIR="$reg"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "@uzi-60"; then _rl_fail "$name" "handle missing: $l1"
+    elif ! _has "$l1" "Add-session-names"; then _rl_fail "$name" "native title (topic) missing: $l1"
+    elif _has "$l1" "@Add-session-names"; then _rl_fail "$name" "title bled into the handle: $l1"
+    else _rl_pass "$name"; fi
+
+    # 4. STATUSLINE_SESSION_NAME=0 hides the @handle; the topic still shows.
+    name="sess-opt-out-handle"; out="$SCRATCH/s4.out"; err="$SCRATCH/s4.err"
+    _sess_reg "sid-4" "uzi-60"
+    _sess_run "$out" "$err" "$(_sess_json sid-4 keep-topic)" \
+        CC_STATUSLINE_SESSIONS_DIR="$reg" STATUSLINE_SESSION_NAME=0
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "@"; then _rl_fail "$name" "opt-out still rendered a handle: $l1"
+    elif ! _has "$l1" "keep-topic"; then _rl_fail "$name" "opt-out also dropped the topic: $l1"
+    else _rl_pass "$name"; fi
+
+    # 5. STATUSLINE_TOPIC=0 hides the title; the @handle still shows.
+    name="sess-opt-out-topic"; out="$SCRATCH/s5.out"; err="$SCRATCH/s5.err"
+    _sess_reg "sid-5" "uzi-60"
+    _sess_run "$out" "$err" "$(_sess_json sid-5 drop-this-title)" \
+        CC_STATUSLINE_SESSIONS_DIR="$reg" STATUSLINE_TOPIC=0
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "@uzi-60"; then _rl_fail "$name" "topic opt-out also dropped the handle: $l1"
+    elif _has "$l1" "drop-this-title"; then _rl_fail "$name" "STATUSLINE_TOPIC=0 still showed the title: $l1"
+    else _rl_pass "$name"; fi
+
+    # 6. No registry match and no stdin title -> neither segment appears.
+    name="sess-none"; out="$SCRATCH/s6.out"; err="$SCRATCH/s6.err"
+    _sess_reg "sid-other" "uzi-60"
+    _sess_run "$out" "$err" "$(_sess_json sid-6)" CC_STATUSLINE_SESSIONS_DIR="$reg"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "@"; then _rl_fail "$name" "a handle appeared with no source: $l1"
+    else _rl_pass "$name"; fi
+
+    # 7. Control byte in the registry name (a crafted /rename value) is stripped:
+    #    no raw ESC reaches the line, stderr stays empty, "evil" survives as @evil.
+    name="sess-handle-control-bytes"; out="$SCRATCH/s7.out"; err="$SCRATCH/s7.err"
+    _sess_reg "sid-7" "ev${esc}il"
+    _sess_run "$out" "$err" "$(_sess_json sid-7)" CC_STATUSLINE_SESSIONS_DIR="$reg"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "@evil"; then _rl_fail "$name" "handle control byte not stripped cleanly: $l1"
+    else _rl_pass "$name"; fi
+
+    # 8. Control byte in the stdin title is stripped too (same guard, its own site):
+    #    "safe" survives as the topic, no raw ESC, stderr empty.
+    name="sess-title-control-bytes"; out="$SCRATCH/s8.out"; err="$SCRATCH/s8.err"
+    _sess_reg "sid-other" "uzi-60"
+    _sess_run "$out" "$err" "$(_sess_json sid-8 "sa${esc}fe")" CC_STATUSLINE_SESSIONS_DIR="$reg"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "safe"; then _rl_fail "$name" "title control byte not stripped cleanly: $l1"
+    else _rl_pass "$name"; fi
+}
+
 # ── Env-input hardening tests ──────────────────────────────────────────────
 # Bash evaluates a variable's VALUE as an arithmetic expression and performs
 # command substitution inside array subscripts while doing so, so any env value
@@ -1227,6 +1360,7 @@ phone_layout_tests
 phone_truncation_tests
 phone_gap_tests
 github_status_tests
+session_name_tests
 env_hardening_tests
 
 printf '%s\n' "------------------------------------------------------------"

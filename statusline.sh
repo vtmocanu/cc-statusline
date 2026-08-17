@@ -15,20 +15,6 @@ _reverse_file() {
         || tail -r "$1" 2>/dev/null \
         || cat "$1" 2>/dev/null
 }
-# Strip ANSI/OSC/control sequences AND bare control bytes from untrusted text
-# (the session topic comes from a model response on disk; a crafted value must
-# not be able to move the cursor, clear the screen, or spoof the tab title when
-# we print it). Byte-oriented: only deletes C0 controls + DEL + ESC-introduced
-# sequences, never multibyte UTF-8 (those bytes are all >= 0x80).
-_strip_ctl() {
-    perl -pe '
-        s/\e\][^\a\e]*(?:\a|\e\\)//g;     # OSC ... (BEL or ST)
-        s/\eP.*?\e\\//g;                  # DCS ... ST
-        s/\e\[[0-9;?]*[ -\/]*[@-~]//g;    # CSI ... final (includes SGR colors)
-        s/\e[@-Z\\-_]//g;                 # other 2-byte ESC sequences
-        s/[\x00-\x1f\x7f]//g;             # residual C0 controls + DEL (BEL, ESC, ...)
-    ' 2>/dev/null
-}
 # Per-user runtime dir (mode 700) for cache/lock/counter files. Replaces the
 # old predictable, world-writable /tmp paths (symlink / cache-poison risk on
 # multi-user hosts). XDG_RUNTIME_DIR (Linux) and TMPDIR (macOS) are already
@@ -115,6 +101,7 @@ eval "$(echo "$DATA" | jq -r '
     @sh "TRANSCRIPT_PATH=\(.transcript_path // "")",
     @sh "CWD_FULL=\(.cwd // "~")",
     @sh "SESSION_ID=\(.session_id // "")",
+    @sh "SESSION_TITLE=\(.session_name // "")",
     @sh "FIVE_PCT=\(.rate_limits.five_hour.used_percentage // "")",
     @sh "SEVEN_PCT=\(.rate_limits.seven_day.used_percentage // "")",
     @sh "FIVE_RESET_TS=\(.rate_limits.five_hour.resets_at // "")",
@@ -132,13 +119,49 @@ CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
 DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
+SESSION_TITLE=${SESSION_TITLE:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
-# crafted value can't inject terminal escapes (defense in depth; topic/profile
-# are handled separately). Multibyte UTF-8 (bytes >= 0x80) is preserved.
+# crafted value can't inject terminal escapes (defense in depth; the session
+# title/handle and profile label are stripped the same way at their own sites).
+# Multibyte UTF-8 (bytes >= 0x80) is preserved.
 DIR="${DIR//[$'\001'-$'\037\177']/}"
 MODEL="${MODEL//[$'\001'-$'\037\177']/}"
 AGENT="${AGENT//[$'\001'-$'\037\177']/}"
 MODE="${MODE//[$'\001'-$'\037\177']/}"
+# Session name = the addressable "@handle" other Claude sessions use to reach
+# this one (peer messaging: SendMessage({to: "<handle>"})), shown as the first
+# segment on line 1 so multi-session setups can tell who is who. On by default;
+# STATUSLINE_SESSION_NAME=0 hides it.
+#
+# Source: Claude Code's live per-session registry, ~/.claude/sessions/<pid>.json,
+# whose .name is the true handle (e.g. "uzi-60") keyed by .sessionId. It covers
+# BOTH the derived default handle AND a /rename value, which is exactly the
+# address peers use. The stdin .session_name does NOT carry this: that field is
+# the descriptive session title, shown as the topic instead (see the topic block
+# below). The registry is an UNDOCUMENTED internal file (shape may change across
+# Claude Code versions); the read is fully guarded and simply yields no handle on
+# any miss.
+#
+# Then strip control bytes (a /rename value is user-controlled) and hard-cap the
+# length so a pathological name cannot dominate line 1 at a wide viewport;
+# width-driven truncation on the NAME rung shortens it further on real overflow.
+SESSION_HANDLE=""
+if [ "${STATUSLINE_SESSION_NAME:-1}" != "0" ]; then
+    # CC_STATUSLINE_SESSIONS_DIR overrides the registry location (test isolation,
+    # mirrors the SVC/RL cache seams), so the suite never reads the real registry.
+    _SESS_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
+    if [ -n "$SESSION_ID" ] && [ -d "$_SESS_DIR" ]; then
+        # One jq pass over the (few, tiny) registry files; match on sessionId,
+        # take the first .name. Any failure (no files, unreadable, bad JSON) is
+        # swallowed and leaves the handle empty. The glob is literal when nothing
+        # matches, so jq errors to /dev/null and SESSION_HANDLE stays empty.
+        SESSION_HANDLE=$(jq -r --arg sid "$SESSION_ID" \
+            'select(.sessionId == $sid) | .name // empty' \
+            "$_SESS_DIR"/*.json 2>/dev/null | head -n1 || true)
+    fi
+    SESSION_HANDLE="${SESSION_HANDLE//[$'\001'-$'\037\177']/}"
+    [ "$(_clen "$SESSION_HANDLE")" -gt 40 ] 2>/dev/null && SESSION_HANDLE="$(_head_cp "$SESSION_HANDLE" 40)"
+fi
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
 FIVE_RESET_TS=${FIVE_RESET_TS:-}; SEVEN_RESET_TS=${SEVEN_RESET_TS:-}
 CACHE_PCT=${CACHE_PCT:-}
@@ -488,7 +511,7 @@ esac
 _NOW_REAL=$(date +%s)
 NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$_NOW_REAL}" "$_NOW_REAL")
 
-TOPIC=""  # populated after SESSION_ID is extracted below
+TOPIC=""  # populated from the native session title (SESSION_TITLE) below
 
 # ── Effort level detection (transcript -> settings -> default) ──────────────
 EFFORT=""
@@ -702,22 +725,22 @@ RST="\033[0m"
 PROJECT_ROOT=$(git -C "$CWD_FULL" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_FULL")
 PHASH=$(printf '%s' "${SESSION_ID:-$CWD_FULL}" | cksum | cut -d' ' -f1 || echo "0")
 
-# ── Session topic ─────────────────────────────────────────────────────────
-# Validate SESSION_ID to a safe charset before building a file path from it
-# (defends against path traversal via a crafted session_id).
-case "${SESSION_ID:-}" in
-    ''|*[!A-Za-z0-9_-]*) : ;;   # empty or out-of-charset -> no topic
-    *)
-        TOPIC_FILE="$HOME/.claude/session-topics/${SESSION_ID}.txt"
-        if [ -f "$TOPIC_FILE" ]; then
-            # Strip color/control sequences (portable: perl, already a hard
-            # dep, replacing the macOS-only gsed) and limit to 40 chars.
-            # _strip_ctl also neutralises any cursor/OSC/BEL bytes a model
-            # response on disk might contain before we print the topic.
-            TOPIC=$(_strip_ctl < "$TOPIC_FILE" 2>/dev/null | tr -d '\n' | cut -c1-40)
-        fi
-        ;;
-esac
+# ── Session topic (Claude Code's native session title) ─────────────────────
+# The descriptive label for line 1, sourced from the stdin .session_name
+# (SESSION_TITLE): the /rename value if set, else Claude Code's auto-generated
+# session title (e.g. "Add session names to status line"), which Claude Code
+# writes to the transcript as .aiTitle and serves here. This replaced an earlier
+# opt-in hook that called Claude Haiku to synthesize the same kind of label; the
+# native title needs no extra API call, credential, or quota. Shown bold after
+# the @handle. On by default; STATUSLINE_TOPIC=0 hides it. Control bytes are
+# stripped (same as every other JSON-sourced field: removing the ESC byte
+# neutralizes any CSI/OSC a model-authored title might contain) and the length is
+# capped so it cannot dominate line 1 at a wide viewport; the TOPIC truncation
+# rung shrinks it further on real overflow.
+if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
+    TOPIC="${SESSION_TITLE//[$'\001'-$'\037\177']/}"
+    [ "$(_clen "$TOPIC")" -gt 40 ] 2>/dev/null && TOPIC="$(_head_cp "$TOPIC" 40)"
+fi
 
 # Check for manual color override
 COLOR_OVERRIDES="$HOME/.claude/statusline-color-overrides.json"
@@ -936,6 +959,7 @@ assemble_l1() {
         L1C+=" "
         return
     fi
+    [ -n "$SESSION_HANDLE" ] && L1C+=" ${TXT_BOLD}@${SESSION_HANDLE}${B} ${SEP}${B}"
     [ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
     L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
     if [ -n "$BRANCH" ]; then
@@ -1200,7 +1224,7 @@ fi
 # re-measures, keeping the perl-call budget at ~2 per render.
 # Phone renders only DIR + BRANCH, so trimming the others would burn a
 # re-measure without shrinking the line: walk just the components in play.
-TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC DIR"
+TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC NAME DIR"
 # DIRLEAF drops the parent component ("cc-statusline/phone" -> "phone") before
 # anything gets character-mangled: on a phone a whole leaf name reads better
 # than two half-words, and it usually buys back more columns than trimming the
@@ -1247,6 +1271,9 @@ for _t in $TRUNC_ORDER; do
         TOPIC)  [ -n "$TOPIC" ] || continue
                 MAX=$(($(_clen "$TOPIC") - OVER - 2))
                 if [ "$MAX" -gt 5 ]; then TOPIC="$(_head_cp "$TOPIC" "$MAX").."; else TOPIC=""; fi ;;
+        NAME)   [ -n "$SESSION_HANDLE" ] || continue
+                MAX=$(($(_clen "$SESSION_HANDLE") - OVER - 2))
+                if [ "$MAX" -gt 5 ]; then SESSION_HANDLE="$(_head_cp "$SESSION_HANDLE" "$MAX").."; else SESSION_HANDLE=""; fi ;;
         DIR)    [ -n "$DIR" ] || continue
                 MAX=$(($(_clen "$DIR") - OVER - 2))                 # keep the tail (leaf dir)
                 if [ "$MAX" -gt 5 ]; then DIR="..$(_tail_cp "$DIR" "$MAX")"

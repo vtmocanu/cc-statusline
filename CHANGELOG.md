@@ -4,6 +4,18 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.0.0] - 2026-08-17
+
+### Added
+- Session name (`@handle`) as the first segment on line 1: the addressable name other Claude sessions use to message this one (`SendMessage({to: "<handle>"})`, e.g. `@uzi-60`). It is read from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the `.name` field matched to the session by its id), which reflects both the auto-derived default handle and a `/rename`. On by default; hide with `STATUSLINE_SESSION_NAME=0`. That registry is an internal Claude Code file, so the read is best-effort: if its shape changes in a future release, the handle simply does not show.
+- `STATUSLINE_TOPIC=0` to hide the descriptive session title on line 1.
+
+### Changed
+- The line-1 descriptive title now comes from Claude Code's native session name (the `.session_name` payload field: your `/rename` value, else the auto-generated session title), instead of a locally synthesized label. No hook, credential, transcript excerpt, or API quota is involved. It is absent until Claude Code has named the session, so a brand-new session may show no title briefly.
+
+### Removed
+- The optional `UserPromptSubmit` session-topic hook (`hooks/session-topic-capture.sh`), which called Claude Haiku to generate a `Project: Focus` label and wrote `~/.claude/session-topics/{session_id}.txt`. The native `.session_name` field replaces it. If you registered this hook in `settings.json`, remove that `UserPromptSubmit` entry: the script no longer ships (dropped from `install.sh` and the Homebrew formula), and the title is now native.
+
 ## [v2.15.0] - 2026-08-17
 
 ### Added
@@ -276,6 +288,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v3.0.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.15.0...v3.0.0
 [v2.15.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.2...v2.15.0
 [v2.14.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.1...v2.14.2
 [v2.14.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.0...v2.14.1

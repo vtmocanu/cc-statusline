@@ -21,7 +21,7 @@ includes:
   shell:
     taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/shell.yml{{else}}{{.TASK_REPO_LOCAL}}/shell.yml{{end}}"
     vars:
-      SCRIPTS: statusline.sh claude-status-fetch.sh install.sh hooks/session-topic-capture.sh tests/run-tests.sh tests/run-fetch-tests.sh
+      SCRIPTS: statusline.sh claude-status-fetch.sh install.sh tests/run-tests.sh tests/run-fetch-tests.sh
   # Homebrew formula render + tap publish (run by .github/workflows/release.yml
   # on each v* tag; the formula body lives in Formula.rb.tmpl).
   brew:

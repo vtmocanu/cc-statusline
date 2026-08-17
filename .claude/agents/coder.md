@@ -115,7 +115,7 @@ written under exactly the conditions that produce weak ones.
 ## For this repo
 
 Portable bash, no compiled build (`statusline.sh`, `claude-status-fetch.sh`,
-`claude-usage-fetch.sh`, `install.sh`, `hooks/session-topic-capture.sh`). Gate
+`claude-usage-fetch.sh`, `install.sh`). Gate
 slots, all via the Taskfile:
 
 - format: none (gap)

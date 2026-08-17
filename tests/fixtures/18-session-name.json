@@ -1,0 +1,15 @@
+{
+  "model": {"display_name": "Claude Opus 4.6", "id": "opus"},
+  "cwd": "/home/test/example-project",
+  "session_name": "auth-refactor",
+  "context_window": {"remaining_percentage": 75, "context_window_size": 1000000},
+  "cost": {"total_duration_ms": 300000, "total_cost_usd": 1.23},
+  "agent": {"name": ""},
+  "mode": "",
+  "session_id": "test-session-name",
+  "transcript_path": "",
+  "rate_limits": {
+    "five_hour": {"used_percentage": 15, "resets_at": 0},
+    "seven_day": {"used_percentage": 2, "resets_at": 0}
+  }
+}

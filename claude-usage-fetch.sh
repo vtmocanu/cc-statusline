@@ -12,9 +12,9 @@
 # bars authoritative per account.
 #
 # Credential: read from STDIN (never argv or env, so it cannot leak through
-# ps/procargs). Empty stdin falls back to the stored login, exactly like
-# hooks/session-topic-capture.sh: macOS Keychain first, then
-# ~/.claude/.credentials.json. The credential is only ever sent to
+# ps/procargs). Empty stdin falls back to the stored login: the macOS Keychain
+# entry "Claude Code-credentials" first, then ~/.claude/.credentials.json. The
+# credential is only ever sent to
 # api.anthropic.com over HTTPS (via a curl config on stdin, keeping it out of
 # curl's argv) and is never logged or written to disk.
 #
@@ -63,7 +63,7 @@ trap 'rm -f "$TMP_FILE" "$BODY_FILE"' EXIT
 # whitespace-stripped; `timeout` so a ttyless manual invocation cannot hang.
 TOKEN=$(timeout 2 head -c 4096 2>/dev/null | tr -d '[:space:]') || TOKEN=""
 if [ -z "$TOKEN" ]; then
-    # Stored-login fallback (keychain sessions), matching the topic hook.
+    # Stored-login fallback (keychain sessions).
     creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) \
         && TOKEN=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
     if [ -z "$TOKEN" ]; then
