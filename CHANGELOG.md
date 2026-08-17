@@ -12,7 +12,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - `claude-status-fetch.sh` is now a generic Statuspage fetcher. It takes an optional `CC_STATUSLINE_SVC_URL` (defaulting to `status.claude.com`), and `CC_STATUSLINE_IGNORE_INCIDENTS` now honors an explicitly empty value as "ignore nothing" (via the `-` rather than `:-` default), which is what the GitHub path passes to turn off the Claude-only mythos/fable suspension filter. Claude's behavior is unchanged.
 
-
+## [v2.14.2] - 2026-08-12
 
 ### Fixed
 - The pace-arrow early-window suppression floor is now `max(duration/50, 900)` instead of a bare `duration/50`. The 2% ratio suited the 7-day window (~3.4h of settling) but gave the 5-hour window only 6 minutes, so a burst in the opening minutes still projected wildly (8% used in 8 min projected ~300%, a false "on pace"). The 15-minute absolute minimum gives short windows a real settling period; the 7-day window is unaffected. See issue #8.
