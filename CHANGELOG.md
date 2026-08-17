@@ -4,7 +4,15 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v2.14.2] - 2026-08-12
+## [v2.15.0] - 2026-08-17
+
+### Added
+- GitHub service-status icon on line 1, right after the branch. On by default; disable with `STATUSLINE_GITHUB_STATUS=0`. It uses the same glyph vocabulary and colors as the Claude service icon (green `✓` operational, gold `~` degraded, orange `⚠` incident, coral `✗` partial/major outage), and shows **only** when the current repo has a `github.com` remote, since GitHub's health is only worth a column where you actually push to it. On any other repo the separator and glyph are both absent, so line 1 looks exactly as before. GitHub publishes the same Atlassian Statuspage API as Claude, so the icon reuses `claude-status-fetch.sh` pointed at `githubstatus.com` (auto-refreshed every 60s in the background) with its own per-user cache.
+
+### Changed
+- `claude-status-fetch.sh` is now a generic Statuspage fetcher. It takes an optional `CC_STATUSLINE_SVC_URL` (defaulting to `status.claude.com`), and `CC_STATUSLINE_IGNORE_INCIDENTS` now honors an explicitly empty value as "ignore nothing" (via the `-` rather than `:-` default), which is what the GitHub path passes to turn off the Claude-only mythos/fable suspension filter. Claude's behavior is unchanged.
+
+
 
 ### Fixed
 - The pace-arrow early-window suppression floor is now `max(duration/50, 900)` instead of a bare `duration/50`. The 2% ratio suited the 7-day window (~3.4h of settling) but gave the 5-hour window only 6 minutes, so a burst in the opening minutes still projected wildly (8% used in 8 min projected ~300%, a false "on pace"). The 15-minute absolute minimum gives short windows a real settling period; the 7-day window is unaffected. See issue #8.
@@ -268,6 +276,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v2.15.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.2...v2.15.0
 [v2.14.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.1...v2.14.2
 [v2.14.1]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.0...v2.14.1
 [v2.14.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.13.0...v2.14.0

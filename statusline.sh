@@ -916,6 +916,11 @@ measure_cols() {
 # removes the old off-by-2 between the initial estimate (seed 5) and the
 # recalculation paths after each truncation (which re-seeded to 2).
 L1_PREFIX="${RST}${PROJ_FG}${NF_CORNER_TL}${BG1}"
+# GitHub service-status icon (empty unless the repo has a github.com remote and
+# STATUSLINE_GITHUB_STATUS is not 0; populated in the GitHub-status block below,
+# before assemble_l1 is first called). Declared here so the function never
+# references an unset var under set -u regardless of ordering.
+GH_SEG=""
 assemble_l1() {
     L1C="${L1_PREFIX}"
     # Phone: folder + branch only. Topic, agent, mode and k8s are the first
@@ -927,6 +932,7 @@ assemble_l1() {
             L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
             [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
         fi
+        L1C+="$GH_SEG"
         L1C+=" "
         return
     fi
@@ -936,6 +942,7 @@ assemble_l1() {
         L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
         [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
     fi
+    L1C+="$GH_SEG"
     [ -n "$AGENT" ] && L1C+=" ${TXT_FG}${AGENT}${B}"
     [ -n "$MODE" ]  && L1C+=" ${SEP}${B} \033[1;38;2;150;100;0m${MODE}${B}"
     [ -n "$K8S_CTX" ] && L1C+=" ${SEP}${B} ${TXT_FG}${NF_K8S} ${K8S_CTX}${B}"
@@ -1042,6 +1049,52 @@ if [ -f "$SVC_CACHE" ]; then
         degraded_performance:*)          SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;215;195;125m~${B2}" ;;
         partial_outage:*|major_outage:*) SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;100;100m✗${B2}" ;;
     esac
+fi
+
+# ── GitHub service status (line 1, after the branch; repo-scoped) ───────────
+# On by default; opt OUT with STATUSLINE_GITHUB_STATUS=0. Uses the SAME status
+# glyphs and colors as the Claude icon above (green ✓ / gold ~ / orange ⚠ /
+# coral ✗), but on line 1 with the project palette, and ONLY when the current
+# repo has a github.com remote (GitHub's health is only worth a column where you
+# are actually pushing to it) -- on any other repo the separator and glyph are
+# both absent, so line 1 is unchanged. Reuses claude-status-fetch.sh pointed at
+# githubstatus.com (same Statuspage API), writing a SEPARATE per-user cache;
+# CC_STATUSLINE_IGNORE_INCIDENTS="" turns off the Claude-only suspension filter
+# so real GitHub incidents are never masked. Test seams mirror the SVC ones:
+# CC_STATUSLINE_GH_CACHE overrides the cache path AND (when set) stands in for
+# the github-remote probe so a render is deterministic; CC_STATUSLINE_GH_FETCH
+# overrides the fetcher path.
+if [ "${STATUSLINE_GITHUB_STATUS:-1}" != "0" ]; then
+    GH_ON=0
+    if [ -n "${CC_STATUSLINE_GH_CACHE:-}" ]; then
+        GH_ON=1   # explicit cache (test seam) implies "treat this as a GitHub repo"
+    else
+        case "$(git -C "$CWD_FULL" remote get-url origin 2>/dev/null || echo '')" in
+            *github.com*) GH_ON=1 ;;
+        esac
+    fi
+    if [ "$GH_ON" = "1" ]; then
+        GH_CACHE="${CC_STATUSLINE_GH_CACHE:-$(_state_dir)/github-status}"
+        GH_FETCH="${CC_STATUSLINE_GH_FETCH:-$SVC_FETCH}"
+        if [ -x "$GH_FETCH" ]; then
+            GH_AGE=9999
+            [ -f "$GH_CACHE" ] && GH_AGE=$(($(date +%s) - $(_file_mtime "$GH_CACHE")))
+            if [ "$GH_AGE" -ge 60 ]; then
+                (CC_STATUSLINE_SVC_CACHE="$GH_CACHE" \
+                 CC_STATUSLINE_SVC_URL="https://www.githubstatus.com/api/v2/summary.json" \
+                 CC_STATUSLINE_IGNORE_INCIDENTS="" \
+                 "$GH_FETCH" >/dev/null 2>/dev/null &)
+            fi
+        fi
+        if [ -f "$GH_CACHE" ]; then
+            case "$(head -1 "$GH_CACHE" 2>/dev/null)" in
+                operational)                     GH_SEG=" ${SEP}${B} \033[38;2;100;200;120m✓${B}" ;;
+                incident:*)                      GH_SEG=" ${SEP}${B} \033[38;2;225;150;100m⚠${B}" ;;
+                degraded_performance:*)          GH_SEG=" ${SEP}${B} \033[38;2;215;195;125m~${B}" ;;
+                partial_outage:*|major_outage:*) GH_SEG=" ${SEP}${B} \033[38;2;225;100;100m✗${B}" ;;
+            esac
+        fi
+    fi
 fi
 
 # ── Phone layout: line 2 override ──────────────────────────────────────────

@@ -955,6 +955,99 @@ phone_gap_tests() {
     else _rl_pass "$name"; fi
 }
 
+# ── GitHub service-status tests ────────────────────────────────────────────
+# The opt-in (STATUSLINE_GITHUB_STATUS=1) line-1 icon: same glyph vocabulary as
+# the Claude icon, but only on a repo with a github.com remote. Covers the
+# cache->glyph mapping (via the CC_STATUSLINE_GH_CACHE seam, which stands in for
+# the remote probe), default-off, and the real git-remote probe both ways.
+github_status_tests() {
+    printf '\n'
+    printf 'github status tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local name out err l1 spec cacheline want statedir
+    local nofetch="$SCRATCH/no-such-gh-fetcher.sh"
+    local gh_repo="$SCRATCH/gh-repo" nongh_repo="$SCRATCH/nongh-repo"
+    statedir="$SCRATCH/gh-state/cc-statusline-$(id -u)"
+
+    mkdir -p "$gh_repo" "$nongh_repo" "$statedir"
+    ( cd "$gh_repo" && git init -q -b main . && git -c user.email=t@t -c user.name=t \
+        commit -q --allow-empty -m init \
+        && git remote add origin https://github.com/vtmocanu/cc-statusline.git ) >/dev/null 2>&1
+    ( cd "$nongh_repo" && git init -q -b main . && git -c user.email=t@t -c user.name=t \
+        commit -q --allow-empty -m init \
+        && git remote add origin https://gitlab.com/vtmocanu/thing.git ) >/dev/null 2>&1
+
+    _gh_json() {  # _gh_json <cwd>
+        printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"%s",' "$1"
+        printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000},'
+        printf '"cost":{"total_duration_ms":300000},"session_id":"gh"}'
+    }
+    _gh_l1() { sed -n '1p' "$1" | _strip_ansi; }
+
+    # A. Each cache state maps to the right glyph on line 1. Runs from a
+    #    non-repo scratch cwd (no branch), so only the seeded status can add a
+    #    glyph; the CC_STATUSLINE_GH_CACHE seam stands in for the remote probe.
+    for spec in "operational=✓" \
+                "incident:GitHub Actions incident=⚠" \
+                "degraded_performance:x:Actions=~" \
+                "partial_outage:x:Pages=✗" \
+                "major_outage:x:Git Operations=✗"; do
+        cacheline="${spec%=*}"; want="${spec##*=}"
+        name="gh-glyph-$cacheline"
+        out="$SCRATCH/ghg.out"; err="$SCRATCH/ghg.err"
+        printf '%s\n' "$cacheline" > "$SCRATCH/gh-seam-cache"
+        ( cd "$SCRATCH" && _gh_json "$SCRATCH" \
+            | env STATUSLINE_GITHUB_STATUS=1 CC_STATUSLINE_GH_CACHE="$SCRATCH/gh-seam-cache" \
+                  CC_STATUSLINE_GH_FETCH="$nofetch" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/gh.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+        l1=$(_gh_l1 "$out")
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif ! _has "$l1" "$want"; then _rl_fail "$name" "line 1 missing '$want' glyph: $l1"
+        else _rl_pass "$name"; fi
+    done
+
+    # B. Opt-OUT: STATUSLINE_GITHUB_STATUS=0 must suppress the icon (and its
+    #    separator) even on a github repo with a seeded cache.
+    name="gh-explicit-off"; out="$SCRATCH/ghoff.out"; err="$SCRATCH/ghoff.err"
+    printf 'major_outage:x:Git\n' > "$SCRATCH/gh-seam-cache"
+    ( cd "$SCRATCH" && _gh_json "$SCRATCH" \
+        | env STATUSLINE_GITHUB_STATUS=0 CC_STATUSLINE_GH_CACHE="$SCRATCH/gh-seam-cache" \
+              CC_STATUSLINE_GH_FETCH="$nofetch" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/gh.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l1=$(_gh_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "✗"; then _rl_fail "$name" "icon shown while opted out (=0): $l1"
+    else _rl_pass "$name"; fi
+
+    # C. Default ON via the real git-remote probe: with the var UNSET and a
+    #    github.com origin, the icon shows, reading the DEFAULT cache path (no
+    #    seam). XDG_RUNTIME_DIR points _state_dir at a scratch dir whose
+    #    github-status file is pre-seeded.
+    name="gh-default-on-github-remote"; out="$SCRATCH/ghp.out"; err="$SCRATCH/ghp.err"
+    printf 'major_outage:x:Git\n' > "$statedir/github-status"
+    ( cd "$gh_repo" && _gh_json "$gh_repo" \
+        | env XDG_RUNTIME_DIR="$SCRATCH/gh-state" \
+              CC_STATUSLINE_GH_FETCH="$nofetch" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/ghp.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l1=$(_gh_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "✗"; then _rl_fail "$name" "github remote did not show the icon by default: $l1"
+    else _rl_pass "$name"; fi
+
+    # D. Real probe, NON-github origin -> no icon even by default with a seeded
+    #    default cache (repo-scoping: GitHub health only where you push it).
+    name="gh-nongithub-remote-no-icon"; out="$SCRATCH/ghn.out"; err="$SCRATCH/ghn.err"
+    ( cd "$nongh_repo" && _gh_json "$nongh_repo" \
+        | env XDG_RUNTIME_DIR="$SCRATCH/gh-state" \
+              CC_STATUSLINE_GH_FETCH="$nofetch" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/ghn.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l1=$(_gh_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "✗"; then _rl_fail "$name" "non-github repo showed the icon: $l1"
+    else _rl_pass "$name"; fi
+}
+
 # ── Env-input hardening tests ──────────────────────────────────────────────
 # Bash evaluates a variable's VALUE as an arithmetic expression and performs
 # command substitution inside array subscripts while doing so, so any env value
@@ -1133,6 +1226,7 @@ rate_limit_cache_tests
 phone_layout_tests
 phone_truncation_tests
 phone_gap_tests
+github_status_tests
 env_hardening_tests
 
 printf '%s\n' "------------------------------------------------------------"

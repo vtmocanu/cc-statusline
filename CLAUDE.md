@@ -26,7 +26,7 @@ Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 ```
 cc-statusline/
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
-├── claude-status-fetch.sh            Background helper, polls status.claude.com every 60s, writes the per-user service-status cache
+├── claude-status-fetch.sh            Background helper, polls an Atlassian Statuspage summary.json every 60s, writes a per-user service-status cache. Defaults to status.claude.com; the statusline also spawns it with CC_STATUSLINE_SVC_URL=githubstatus.com for the optional line-1 GitHub icon (STATUSLINE_GITHUB_STATUS, on by default, shown only on github.com remotes)
 ├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
 ├── hooks/
 │   └── session-topic-capture.sh      Optional UserPromptSubmit hook, calls Claude Haiku to label sessions

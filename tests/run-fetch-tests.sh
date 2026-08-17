@@ -122,6 +122,40 @@ else
     printf '  PASS  array description did not execute a command\n'; PASS=$((PASS + 1))
 fi
 
+# ── Generic Statuspage reuse (GitHub): empty ignore = "ignore nothing" ──────
+# The statusline points this same fetcher at githubstatus.com and passes
+# CC_STATUSLINE_IGNORE_INCIDENTS="" to turn OFF the Claude-only mythos/fable
+# suspension filter. An empty ignore must filter NOTHING, so an incident the
+# DEFAULT regex would drop is reported verbatim; the default still filters it.
+# run_case_env NAME JSON EXPECTED [ENV...]
+run_case_env() {
+    local name="$1" json="$2" expected="$3"; shift 3
+    local data="$SCRATCH/data.json" cache="$SCRATCH/cache"
+    printf '%s' "$json" > "$data"; rm -f "$cache"
+    env "$@" CC_STATUSLINE_SVC_DATA="$data" CC_STATUSLINE_SVC_CACHE="$cache" bash "$FETCH"
+    local got=""; [ -f "$cache" ] && got=$(head -1 "$cache" 2>/dev/null)
+    if [ "$got" = "$expected" ]; then
+        printf '  PASS  %s\n' "$name"; PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s\n        want: [%s]\n        got:  [%s]\n' "$name" "$expected" "$got"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+run_case_env "empty ignore reports an incident the default would filter" \
+    '{"status":{"indicator":"minor","description":"x"},"incidents":[{"name":"suspend mythos please"}],"components":[]}' \
+    "incident:suspend mythos please" \
+    CC_STATUSLINE_IGNORE_INCIDENTS=""
+
+run_case "default ignore still filters that same incident -> operational" \
+    '{"status":{"indicator":"minor","description":"x"},"incidents":[{"name":"suspend mythos please"}],"components":[]}' \
+    "operational"
+
+run_case_env "github-shaped summary: worst component wins under empty ignore" \
+    '{"status":{"indicator":"major","description":"Partial System Outage"},"incidents":[],"components":[{"name":"Git Operations","status":"operational"},{"name":"Actions","status":"degraded_performance"},{"name":"Copilot","status":"major_outage"}]}' \
+    "major_outage:Partial System Outage:Actions, Copilot" \
+    CC_STATUSLINE_IGNORE_INCIDENTS=""
+
 # ═══ Per-account usage fetcher (claude-usage-fetch.sh) ═════════════════════
 # Drives the /api/oauth/usage fetcher through the CC_STATUSLINE_USAGE_DATA seam
 # and asserts the 5-field authoritative cache line it writes. A dummy token is

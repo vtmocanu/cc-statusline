@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Fetches Claude service status from status.claude.com and writes a cache file.
+# Fetches a service's status from an Atlassian Statuspage summary.json and writes
+# a cache file. Defaults to Claude's page (status.claude.com); point it at any
+# other Statuspage-hosted service with CC_STATUSLINE_SVC_URL (the statusline uses
+# this to also poll githubstatus.com when STATUSLINE_GITHUB_STATUS=1).
 # Called by the statusline in the background when the cache is >60s old.
 # Output file: per-user state dir (see _state_dir / CC_STATUSLINE_SVC_CACHE).
 # Format: one line, one of:
@@ -63,7 +66,7 @@ else
     data=$(curl -s --max-time 8 \
         -H "Accept: application/json" \
         -H "User-Agent: cc-statusline/${VERSION}" \
-        "https://status.claude.com/api/v2/summary.json" 2>/dev/null) || {
+        "${CC_STATUSLINE_SVC_URL:-https://status.claude.com/api/v2/summary.json}" 2>/dev/null) || {
         # On network error, leave existing cache intact
         exit 0
     }
@@ -73,8 +76,11 @@ fi
 
 # Incidents and components whose name matches this regex are ignored (see the
 # header comment). Default keys on the suspension sentence, not the bare model
-# name, so real future incidents for those models are still reported.
-IGNORE_RE="${CC_STATUSLINE_IGNORE_INCIDENTS:-suspend.*(mythos|fable)}"
+# name, so real future incidents for those models are still reported. Uses the
+# `-` (not `:-`) form so an explicitly-empty value is honored as "ignore
+# nothing": the statusline passes CC_STATUSLINE_IGNORE_INCIDENTS="" for GitHub,
+# whose page has no persistent always-on incident to filter out.
+IGNORE_RE="${CC_STATUSLINE_IGNORE_INCIDENTS-suspend.*(mythos|fable)}"
 
 # Extract everything in a single jq call. The decision is derived from the
 # *filtered* incidents and the worst *non-ignored* non-operational component,
@@ -102,10 +108,10 @@ affected=""
 # `affected` is already coerced by `join`, and the name fields additionally sit
 # behind `test()` (which throws on non-strings, failing the whole run closed).
 parsed=$(echo "$data" | jq -r --arg ignore "$IGNORE_RE" '
-    ( [ .incidents[]? | select((.name // "") | test($ignore; "i") | not) ] ) as $inc
+    ( [ .incidents[]? | select(($ignore == "") or ((.name // "") | test($ignore; "i") | not)) ] ) as $inc
   | ( [ .components[]?
         | select(.status != "operational")
-        | select((.name // "") | test($ignore; "i") | not) ] ) as $comp
+        | select(($ignore == "") or ((.name // "") | test($ignore; "i") | not)) ] ) as $comp
   | ( ["major_outage","partial_outage","degraded_performance"]
       | map(select(. as $s | $comp | any(.status == $s)))
       | first // "" ) as $worst
