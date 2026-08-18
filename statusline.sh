@@ -731,7 +731,12 @@ PHASH=$(printf '%s' "${SESSION_ID:-$CWD_FULL}" | cksum | cut -d' ' -f1 || echo "
 # session title (e.g. "Add session names to status line"), which Claude Code
 # writes to the transcript as .aiTitle and serves here. This replaced an earlier
 # opt-in hook that called Claude Haiku to synthesize the same kind of label; the
-# native title needs no extra API call, credential, or quota. Shown bold after
+# native title needs no extra API call, credential, or quota. If you upgraded from
+# a version that shipped that hook and still have its UserPromptSubmit entry in
+# settings.json, Claude Code prints "session-topic-capture.sh: No such file or
+# directory" on every prompt (non-blocking): delete that one UserPromptSubmit entry
+# to silence it. The old ~/.claude/session-topics/ cache is dead and safe to remove.
+# Shown bold after
 # the @handle. On by default; STATUSLINE_TOPIC=0 hides it. Control bytes are
 # stripped (same as every other JSON-sourced field: removing the ESC byte
 # neutralizes any CSI/OSC a model-authored title might contain) and the length is

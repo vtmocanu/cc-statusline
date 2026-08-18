@@ -14,7 +14,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The line-1 descriptive title now comes from Claude Code's native session name (the `.session_name` payload field: your `/rename` value, else the auto-generated session title), instead of a locally synthesized label. No hook, credential, transcript excerpt, or API quota is involved. It is absent until Claude Code has named the session, so a brand-new session may show no title briefly.
 
 ### Removed
-- The optional `UserPromptSubmit` session-topic hook (`hooks/session-topic-capture.sh`), which called Claude Haiku to generate a `Project: Focus` label and wrote `~/.claude/session-topics/{session_id}.txt`. The native `.session_name` field replaces it. If you registered this hook in `settings.json`, remove that `UserPromptSubmit` entry: the script no longer ships (dropped from `install.sh` and the Homebrew formula), and the title is now native.
+- The optional `UserPromptSubmit` session-topic hook (`hooks/session-topic-capture.sh`), which called Claude Haiku to generate a `Project: Focus` label and wrote `~/.claude/session-topics/{session_id}.txt`. The native `.session_name` field replaces it. If you registered this hook in `settings.json`, remove that `UserPromptSubmit` entry: the script no longer ships (dropped from `install.sh` and the Homebrew formula), and the title is now native. **If you leave the entry in place after upgrading**, Claude Code prints `session-topic-capture.sh: No such file or directory` on every prompt (a non-blocking hook error, harmless but noisy). Deleting that one `UserPromptSubmit` entry stops it; the leftover `~/.claude/session-topics/` cache is dead and safe to delete.
 
 ## [v2.15.0] - 2026-08-17
 
