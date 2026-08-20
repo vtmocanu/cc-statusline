@@ -23,6 +23,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
 - **GitHub service status**: line-1 icon (same glyphs/colors as the Claude one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
+- **Clickable status icons**: both service-status icons are OSC 8 hyperlinks (GitHub icon to `githubstatus.com`, Claude icon to `status.claude.com`), so Cmd+click (macOS) / Ctrl+click opens the status page in a supporting terminal; on by default, disable with `STATUSLINE_HYPERLINKS=0`
 - **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
 - **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
 - **Tab title**: sets the terminal tab title from the session title or directory
@@ -155,6 +156,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_SESSION_NAME` | `1` | Set to `0` to hide the `@handle` (the addressable session name peers message, read from Claude Code's per-session registry) at the start of line 1. |
 | `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
+| `STATUSLINE_HYPERLINKS` | `1` | Set to `0` to disable the OSC 8 hyperlinks on the service-status icons (GitHub icon to `githubstatus.com`, Claude icon to `status.claude.com`). Needs a terminal that supports OSC 8 (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the escape is swallowed and the icon shows as plain text. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |

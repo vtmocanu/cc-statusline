@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.1.0] - 2026-08-20
+
+### Added
+- Clickable service-status icons via OSC 8 terminal hyperlinks. The line-1 GitHub icon links to `githubstatus.com` and the line-2 Claude icon links to `status.claude.com`, so Cmd+click (macOS) or Ctrl+click (Linux/Windows) opens the relevant status page. On by default; disable with `STATUSLINE_HYPERLINKS=0`. Only fixed glyphs are wrapped (never truncation-ladder text), and `measure_cols` strips the OSC 8 escape so the link stays zero-width for layout. Requires a terminal that supports OSC 8 hyperlinks (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the sequence is swallowed and the icon shows as plain text. `FORCE_HYPERLINK=1` (Claude Code env) can help when a supporting terminal renders the escape literally over SSH or tmux.
+
 ## [v3.0.0] - 2026-08-17
 
 ### Added
@@ -288,6 +293,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v3.1.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.0.0...v3.1.0
 [v3.0.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.15.0...v3.0.0
 [v2.15.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.2...v2.15.0
 [v2.14.2]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.1...v2.14.2

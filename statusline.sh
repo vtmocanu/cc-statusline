@@ -929,6 +929,7 @@ measure_cols() {
     local args=()
     for s in "$@"; do args+=("$(printf '%b' "$s")"); done
     printf '%s\n' "${args[@]}" | perl -ne '
+        s/\e\]8;;.*?(?:\a|\e\\)//g;   # OSC 8 hyperlink open/close (zero width)
         s/\e\[[0-9;]*m//g;
         chomp;
         use Encode qw(decode);
@@ -1070,13 +1071,25 @@ if [ -x "$SVC_FETCH" ]; then
         (CC_STATUSLINE_SVC_CACHE="$SVC_CACHE" "$SVC_FETCH" >/dev/null 2>/dev/null &)
     fi
 fi
+# OSC 8 hyperlinks on the status glyphs (Cmd/Ctrl+click -> the status page).
+# On by default; opt OUT with STATUSLINE_HYPERLINKS=0. Only fixed glyphs get
+# wrapped, never truncation-ladder text, so a slice can never cut mid-escape;
+# measure_cols strips the OSC 8 wrapper so the link stays zero-width. Terminals
+# without OSC 8 support swallow the sequence (icon shows as plain text). The
+# open/close are literal \033/\a like the rest of the script (final printf '%b'
+# and measure_cols both expand them); empty when disabled.
+GH_LINK_OPEN="" GH_LINK_CLOSE="" SVC_LINK_OPEN="" SVC_LINK_CLOSE=""
+if [ "${STATUSLINE_HYPERLINKS:-1}" != "0" ]; then
+    GH_LINK_OPEN='\033]8;;https://www.githubstatus.com\a';  GH_LINK_CLOSE='\033]8;;\a'
+    SVC_LINK_OPEN='\033]8;;https://status.claude.com\a';    SVC_LINK_CLOSE='\033]8;;\a'
+fi
 SVC_SEG=""
 if [ -f "$SVC_CACHE" ]; then
     case "$(head -1 "$SVC_CACHE" 2>/dev/null)" in
-        operational)                     SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;100;200;120m✓${B2}" ;;
-        incident:*)                      SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;150;100m⚠${B2}" ;;
-        degraded_performance:*)          SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;215;195;125m~${B2}" ;;
-        partial_outage:*|major_outage:*) SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;100;100m✗${B2}" ;;
+        operational)                     SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;100;200;120m${SVC_LINK_OPEN}✓${SVC_LINK_CLOSE}${B2}" ;;
+        incident:*)                      SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;150;100m${SVC_LINK_OPEN}⚠${SVC_LINK_CLOSE}${B2}" ;;
+        degraded_performance:*)          SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;215;195;125m${SVC_LINK_OPEN}~${SVC_LINK_CLOSE}${B2}" ;;
+        partial_outage:*|major_outage:*) SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;100;100m${SVC_LINK_OPEN}✗${SVC_LINK_CLOSE}${B2}" ;;
     esac
 fi
 
@@ -1117,10 +1130,10 @@ if [ "${STATUSLINE_GITHUB_STATUS:-1}" != "0" ]; then
         fi
         if [ -f "$GH_CACHE" ]; then
             case "$(head -1 "$GH_CACHE" 2>/dev/null)" in
-                operational)                     GH_SEG=" ${SEP}${B} \033[38;2;100;200;120m✓${B}" ;;
-                incident:*)                      GH_SEG=" ${SEP}${B} \033[38;2;225;150;100m⚠${B}" ;;
-                degraded_performance:*)          GH_SEG=" ${SEP}${B} \033[38;2;215;195;125m~${B}" ;;
-                partial_outage:*|major_outage:*) GH_SEG=" ${SEP}${B} \033[38;2;225;100;100m✗${B}" ;;
+                operational)                     GH_SEG=" ${SEP}${B} \033[38;2;100;200;120m${GH_LINK_OPEN}✓${GH_LINK_CLOSE}${B}" ;;
+                incident:*)                      GH_SEG=" ${SEP}${B} \033[38;2;225;150;100m${GH_LINK_OPEN}⚠${GH_LINK_CLOSE}${B}" ;;
+                degraded_performance:*)          GH_SEG=" ${SEP}${B} \033[38;2;215;195;125m${GH_LINK_OPEN}~${GH_LINK_CLOSE}${B}" ;;
+                partial_outage:*|major_outage:*) GH_SEG=" ${SEP}${B} \033[38;2;225;100;100m${GH_LINK_OPEN}✗${GH_LINK_CLOSE}${B}" ;;
             esac
         fi
     fi

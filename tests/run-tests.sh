@@ -86,6 +86,7 @@ vis_cols() {
     perl -e '
         use Encode qw(decode);
         my $s = do { local $/; <STDIN> };
+        $s =~ s/\e\]8;;.*?(?:\a|\e\\)//g;   # OSC 8 hyperlink open/close (zero width)
         $s =~ s/\e\[[0-9;]*m//g;
         $s =~ s/\n+$//;
         my $decoded = decode("UTF-8", $s, Encode::FB_DEFAULT);
@@ -178,7 +179,7 @@ run_one() {
 # holds afterward. Run in-harness so test-c-locale exercises them in both
 # locales too. Times are pinned via CC_STATUSLINE_NOW (exported above) so the
 # reset countdowns are deterministic.
-_strip_ansi() { perl -pe 's/\e\[[0-9;]*m//g' 2>/dev/null; }
+_strip_ansi() { perl -pe 's/\e\]8;;.*?(?:\a|\e\\)//g; s/\e\[[0-9;]*m//g' 2>/dev/null; }
 _rl_l2() { sed -n '2p' "$1" | _strip_ansi; }
 _has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
@@ -1045,6 +1046,37 @@ github_status_tests() {
     l1=$(_gh_l1 "$out")
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif _has "$l1" "✗"; then _rl_fail "$name" "non-github repo showed the icon: $l1"
+    else _rl_pass "$name"; fi
+
+    # E. OSC 8 hyperlink on the glyph: on by default, wraps the icon in an
+    #    \e]8;; ... link to githubstatus.com; STATUSLINE_HYPERLINKS=0 drops the
+    #    escape while keeping the glyph. Asserts against the RAW line 1 (not
+    #    _strip_ansi, which now strips OSC 8), and confirms the glyph survives.
+    local raw1
+    printf 'operational\n' > "$SCRATCH/gh-seam-cache"
+    name="gh-hyperlink-default-on"; out="$SCRATCH/ghl.out"; err="$SCRATCH/ghl.err"
+    ( cd "$SCRATCH" && _gh_json "$SCRATCH" \
+        | env STATUSLINE_GITHUB_STATUS=1 CC_STATUSLINE_GH_CACHE="$SCRATCH/gh-seam-cache" \
+              CC_STATUSLINE_GH_FETCH="$nofetch" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/ghl.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    raw1=$(sed -n '1p' "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$raw1" "8;;https://www.githubstatus.com"; then
+        _rl_fail "$name" "line 1 has no OSC 8 link to githubstatus.com"
+    elif ! _has "$(_gh_l1 "$out")" "✓"; then
+        _rl_fail "$name" "glyph missing under the hyperlink"
+    else _rl_pass "$name"; fi
+
+    name="gh-hyperlink-opt-out"; out="$SCRATCH/ghlo.out"; err="$SCRATCH/ghlo.err"
+    ( cd "$SCRATCH" && _gh_json "$SCRATCH" \
+        | env STATUSLINE_GITHUB_STATUS=1 STATUSLINE_HYPERLINKS=0 \
+              CC_STATUSLINE_GH_CACHE="$SCRATCH/gh-seam-cache" \
+              CC_STATUSLINE_GH_FETCH="$nofetch" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+              CC_STATUSLINE_RL_CACHE="$SCRATCH/ghlo.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    raw1=$(sed -n '1p' "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$raw1" "8;;"; then _rl_fail "$name" "OSC 8 emitted while opted out (=0)"
+    elif ! _has "$(_gh_l1 "$out")" "✓"; then _rl_fail "$name" "glyph dropped when hyperlinks off"
     else _rl_pass "$name"; fi
 }
 

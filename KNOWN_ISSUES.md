@@ -96,3 +96,27 @@ when the script has a controlling terminal. Under tmux, screen, and most CI
 runners it silently no-ops (since v2.0.1, without leaking stderr). The title text
 is sanitized of control bytes first, so a crafted session title cannot inject a
 spoofed terminal title.
+
+## OSC 8 hyperlinks on the status icons are terminal-dependent
+
+The service-status icons are wrapped in OSC 8 hyperlinks (GitHub icon to
+`githubstatus.com`, Claude icon to `status.claude.com`) so they are clickable;
+`STATUSLINE_HYPERLINKS=0` turns this off. Caveats:
+
+- **It is Cmd+click (macOS) / Ctrl+click, not a plain single click.** The
+  terminal handles the click, not Claude Code; there is no statusline API for a
+  single-click action, and none for triggering an in-app change (e.g. altering
+  effort) from a click.
+- **Terminal support varies.** Ghostty, iTerm2, Kitty, and WezTerm render OSC 8;
+  Terminal.app and many others do not. Unsupported terminals generally swallow
+  the escape and show the glyph as plain text, but a few may show it literally,
+  in which case `FORCE_HYPERLINK=1` (a Claude Code env var) can help. tmux and
+  screen strip OSC sequences unless passthrough is configured.
+- **`/tui` fullscreen makes no difference.** Statusline hyperlinks behave the
+  same in normal and fullscreen mode; fullscreen's mouse support applies to
+  menus and lists, not the statusline.
+- **Only fixed glyphs are ever wrapped.** The truncation ladder must never slice
+  a hyperlinked segment (that would cut mid-escape), so links stay on the status
+  glyphs, which are never truncated. `measure_cols` (and the test harness's
+  `vis_cols`/`_strip_ansi`) strip the OSC 8 wrapper, so it is zero-width for
+  layout, matching what a terminal actually renders.
