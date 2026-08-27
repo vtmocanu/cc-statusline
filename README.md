@@ -19,6 +19,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Session metrics**: model name, effort level (low/medium/high/max), elapsed time, session cost in USD (from Claude Code's `cost.total_cost_usd`; hide with `STATUSLINE_COST=0`)
 - **Context window**: colored bar and percentage
 - **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); off by default, enable with `STATUSLINE_CACHE=1` (hidden anyway before the first call and after `/compact`)
+- **Context fill on phone**: the phone/slim layout shows `ctx NN%` (context-window usage, same color thresholds as the rate limits) before the 5h/7d windows; on by default, hide with `STATUSLINE_CTX=0`. The wide layout already shows context as `NN% of NNNk`.
 - **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width; shared across your sessions via a small per-user cache, so an idle session never shows numbers staler than your account's latest known state
 - **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
@@ -153,6 +154,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
 | `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
 | `STATUSLINE_CACHE` | `0` | Set to `1` to show the prompt-cache hit-rate readout (`⚡ NN%`) on line 2 (off by default). |
+| `STATUSLINE_CTX` | `1` | Set to `0` to hide the context-fill segment (`ctx NN%`) on the phone/slim layout's line 2. Shown before the rate limits with the same color thresholds; the first line-2 segment to shed as the viewport tightens. The wide layout's context readout is unaffected. |
 | `STATUSLINE_SESSION_NAME` | `1` | Set to `0` to hide the `@handle` (the addressable session name peers message, read from Claude Code's per-session registry) at the start of line 1. |
 | `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
@@ -189,15 +191,17 @@ The phone layout:
 
 ```
  󰉋 phone │  devmetaminds/phone !1 ?1
- wxs │ 5h 77%↑ ↻2h28m │ 7d 81%↑ ↻4d8h │ ✓
+ wxs │ ctx 46% │ 5h 77%↑ ↻2h28m │ 7d 81%↑ ↻4d8h │ ✓
 ```
 
 Line 1 keeps the folder, branch and dirty markers; line 2 keeps the account badge,
-both rate-limit windows with their pace arrows, and the reset countdowns (`↻`).
-The session name and title, model, effort, elapsed, cost, context and cache are
-dropped: at 50 columns they cost more room than they earn. As the viewport narrows further, each line
-sheds independently. Line 2 drops the 7d countdown, then the 5h countdown, then
-falls back to bare percentages. Line 1 collapses the folder to its leaf, trims
+the context fill (`ctx NN%`), and both rate-limit windows with their pace arrows and
+reset countdowns (`↻`). The session name and title, model, effort, elapsed, cost and
+cache are dropped: at 50 columns they cost more room than they earn. As the viewport
+narrows further, each line sheds independently. Line 2 drops the reset countdowns
+first (keeping `ctx` and the bare percentages), then drops `ctx` so the rate limits
+themselves always survive (`STATUSLINE_CTX=0` removes `ctx` entirely). Line 1
+collapses the folder to its leaf, trims
 the branch (keeping its tail, since worktree branches share long prefixes), drops
 the dirty markers, trims the folder, and at the very narrowest drops the branch
 entirely so the leaf folder survives: at that width, which session this is

@@ -1167,17 +1167,39 @@ _apply_phone_l2() {
     fi
     CACHE_SEG=""
     if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
-        # Full: both reset countdowns.
-        RATE_FULL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-        [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-        RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-        [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
-        # Compact: 5h countdown only (the one you act on).
-        RATE_COMPACT="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-        [ -n "${FIVE_TIME:-}" ] && RATE_COMPACT+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-        RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-        # Minimal: percentages and arrows.
-        RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        # Context-window fill, shown BEFORE the rate limits as "ctx <pct>%" in the
+        # same label + colored-% grammar as 5h/7d (color from CTX_CLR, same pct
+        # thresholds). On by default; STATUSLINE_CTX=0 restores the old tiers
+        # verbatim. It rides the tier ladder as the FIRST thing to shed: FULL keeps
+        # ctx + both reset countdowns, COMPACT keeps ctx + bare percentages, and
+        # MINIMAL drops ctx so the rate limits (this line's whole reason to exist)
+        # survive the narrowest phone.
+        local CTX_PH=""
+        [ "${STATUSLINE_CTX:-1}" != "0" ] && CTX_PH="${PH_SEP} ${L2_TXT}ctx ${CTX_CLR}${PCT}%${B2}"
+        if [ -n "$CTX_PH" ]; then
+            # ctx now holds the badge separator, so 5h leads with its own "│".
+            RATE_FULL="${CTX_PH} ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+            [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+            RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
+            # Compact: ctx + bare percentages (countdowns are the first extra to go).
+            RATE_COMPACT="${CTX_PH} ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            # Minimal: rate percentages only; ctx is dropped so the limits survive.
+            RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        else
+            # STATUSLINE_CTX=0: the original tiers, byte-for-byte unchanged.
+            # Full: both reset countdowns.
+            RATE_FULL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+            [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+            RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
+            # Compact: 5h countdown only (the one you act on).
+            RATE_COMPACT="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+            [ -n "${FIVE_TIME:-}" ] && RATE_COMPACT+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+            RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            # Minimal: percentages and arrows.
+            RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        fi
     else
         # No rate limits at all (fresh session, limit-less account, or the
         # no-rate-limits fixture): fall back to the context percentage so line 2

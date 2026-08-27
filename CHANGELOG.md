@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.2.0] - 2026-08-27
+
+### Added
+- Context-window fill on the phone/slim layout: line 2 now shows `ctx NN%` before the 5h/7d rate limits, in the same label + colored-percentage grammar (green/gold/coral on the same thresholds). It reuses the context percentage the wide layout already renders as `NN% of NNNk`, so it costs no extra work. On by default; `STATUSLINE_CTX=0` restores the previous phone tiers verbatim. It rides the line-2 tier ladder as the first segment to shed: the widest tier keeps `ctx` plus both reset countdowns, the middle tier keeps `ctx` plus bare percentages, and the narrowest drops `ctx` so the rate limits (the phone line's reason to exist) always survive.
+
 ## [v3.1.0] - 2026-08-20
 
 ### Added
@@ -293,6 +298,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v3.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.1.0...v3.2.0
 [v3.1.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.0.0...v3.1.0
 [v3.0.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.15.0...v3.0.0
 [v2.15.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.14.2...v2.15.0
