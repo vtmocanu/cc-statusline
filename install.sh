@@ -106,7 +106,7 @@ if ! git -C "$REPO_DIR" archive --format=tar "$REF" | tar -x -C "$STAGE_DIR"; th
 fi
 
 # Sanity-check required files in the staged tree
-for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh; do
+for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh cc-statusline-update-fetch.sh; do
     if [ ! -f "$STAGE_DIR/$f" ]; then
         err "staged tree missing required file: $f"
         exit 1
@@ -118,6 +118,7 @@ mkdir -p "$INSTALL_DIR"
 install -m 0755 "$STAGE_DIR/statusline.sh"          "$INSTALL_DIR/statusline.sh"
 install -m 0755 "$STAGE_DIR/claude-status-fetch.sh" "$INSTALL_DIR/claude-status-fetch.sh"
 install -m 0755 "$STAGE_DIR/claude-usage-fetch.sh"  "$INSTALL_DIR/claude-usage-fetch.sh"
+install -m 0755 "$STAGE_DIR/cc-statusline-update-fetch.sh" "$INSTALL_DIR/cc-statusline-update-fetch.sh"
 # VERSION is the human semver used in the scripts' User-Agent. Absent in tags
 # that predate it (the scripts then fall back to "dev"), so guard the copy.
 [ -f "$STAGE_DIR/VERSION" ] && install -m 0644 "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"

@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.3.0] - 2026-09-02
+
+### Added
+- Update indicator for cc-statusline itself: when a newer release exists, line 1 ends with a gold `⇡ X.Y.Z` at its right edge, hyperlinked (OSC 8) to that release's GitHub page. Nothing is shown while you are current. A new background helper, `cc-statusline-update-fetch.sh` (shipped by `install.sh` and the Homebrew formula), polls GitHub's "latest release" endpoint at most once an hour per user (unauthenticated, no credential) and caches the tag, which the statusline compares numerically against its installed `VERSION`. The segment is placed in the padding line 1 already has under a wider line 2, so it normally costs no columns; when line 1 is the wider line and appending it would breach the width budget it is dropped for that render, never truncated. Both the fetcher and the statusline accept only a plain `v?MAJOR.MINOR.PATCH` tag, so a malformed or tampered response can never reach the terminal escape. On by default; disable with `STATUSLINE_UPDATE_CHECK=0` (`STATUSLINE_HYPERLINKS=0` keeps the text and drops the link).
+
 ## [v3.2.0] - 2026-08-27
 
 ### Added
@@ -298,6 +303,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v3.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.2.0...v3.3.0
 [v3.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.1.0...v3.2.0
 [v3.1.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.0.0...v3.1.0
 [v3.0.0]: https://github.com/vtmocanu/cc-statusline/compare/v2.15.0...v3.0.0

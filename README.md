@@ -25,6 +25,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Claude service status**: auto-refreshed every 60s from `status.claude.com`
 - **GitHub service status**: line-1 icon (same glyphs/colors as the Claude one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
 - **Clickable status icons**: both service-status icons are OSC 8 hyperlinks (GitHub icon to `githubstatus.com`, Claude icon to `status.claude.com`), so Cmd+click (macOS) / Ctrl+click opens the status page in a supporting terminal; on by default, disable with `STATUSLINE_HYPERLINKS=0`
+- **Update indicator**: a gold `⇡ X.Y.Z` at the right edge of line 1 when a newer cc-statusline release exists (checked hourly against GitHub, hyperlinked to the release page); hidden entirely when you are current, disable with `STATUSLINE_UPDATE_CHECK=0`
 - **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
 - **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
 - **Tab title**: sets the terminal tab title from the session title or directory
@@ -159,6 +160,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
 | `STATUSLINE_HYPERLINKS` | `1` | Set to `0` to disable the OSC 8 hyperlinks on the service-status icons (GitHub icon to `githubstatus.com`, Claude icon to `status.claude.com`). Needs a terminal that supports OSC 8 (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the escape is swallowed and the icon shows as plain text. |
+| `STATUSLINE_UPDATE_CHECK` | `1` | Set to `0` to disable the update indicator (the gold `⇡ X.Y.Z` right-aligned on line 1 when a newer cc-statusline release exists). Polls the GitHub "latest release" endpoint once an hour in the background; shown only when the release is newer than the installed `VERSION`, never when current. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
 | `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
@@ -248,6 +250,12 @@ Earlier versions synthesized the title with an opt-in `UserPromptSubmit` hook th
 
 If the usage endpoint refuses a credential (it answers 429 to `CLAUDE_CODE_OAUTH_TOKEN` credentials that the Messages API accepts), the fetcher falls back to a minimal Messages request (haiku, `max_tokens: 1`) and reads the account's limits off the `anthropic-ratelimit-unified-*` response headers. That probe costs a token or two of the account's quota; `STATUSLINE_RL_PROBE=0` turns it off, and after a failure with no usable fallback the account backs off for `STATUSLINE_RL_BACKOFF` seconds.
 
+### Update indicator
+
+When a newer cc-statusline release is available, line 1 ends with a gold `⇡ X.Y.Z` at its right edge, Cmd/Ctrl+clickable (OSC 8) to that release's GitHub page. Nothing is shown while you are current, so a fresh install looks exactly as before. Upgrade with `brew upgrade cc-statusline` (Homebrew) or `./install.sh --version vX.Y.Z` (installer), and the indicator disappears on the next render.
+
+`cc-statusline-update-fetch.sh` runs in the background at most once an hour per user (spawned by the statusline, throttled across all your sessions) and asks GitHub's "latest release" endpoint (`api.github.com/repos/vtmocanu/cc-statusline/releases/latest`, unauthenticated, no credential involved) for the newest tag, which it compares against the `VERSION` file installed next to the script. The indicator is placed in the padding line 1 already has under a wider line 2, so on a typical render it costs no columns; when line 1 is the wider line and appending it would breach the width budget, it is dropped for that render rather than truncated. Only a plain `vMAJOR.MINOR.PATCH` tag is accepted (checked in both the fetcher and the statusline), so a malformed or tampered response can never reach the terminal. Disable with `STATUSLINE_UPDATE_CHECK=0`.
+
 ## Versioning
 
 Releases are tagged with semantic version tags (`v2.0.0`, `v2.0.1`, `v2.1.0`, ...). The `main` branch is always the latest tested state. The `2.x` line is continuous with the script's pre-public history (it lived in a private dotfiles repo as `statusline-modern.sh`); see [CHANGELOG.md](CHANGELOG.md) for details.
@@ -285,6 +293,7 @@ CI runs the same harness on every push and pull request via `.github/workflows/c
 | Statusline not showing at all | Script crash; `set -uo pipefail` exits silently | Run `STATUSLINE_DEBUG=1 bash statusline.sh < /tmp/test.json` and check `/tmp/statusline-debug.log` |
 | Wrong project color | Color hash collision or stale override | Add the project root to `~/.claude/statusline-color-overrides.json` |
 | Service status icon missing | `claude-status-fetch.sh` not yet run, or `curl` failed | Wait 60s, or run the fetcher manually: `bash claude-status-fetch.sh` |
+| Update indicator never shows / stale | `cc-statusline-update-fetch.sh` not yet run (hourly), `curl` failed, or the per-user cache is stale | Run it manually: `bash cc-statusline-update-fetch.sh`; it writes `update-check` in the state dir (`$XDG_RUNTIME_DIR` or `$TMPDIR`, `cc-statusline-<uid>/`) |
 | Session title empty | Claude Code hasn't named the session yet (brand-new session), or you're on a Claude Code without `.session_name` | Send a few prompts so a title is generated, or set one with `/rename`; upgrade Claude Code if the field is absent |
 | `@handle` missing | Registry file absent (older Claude Code), or its shape changed | Upgrade Claude Code; the handle reads `~/.claude/sessions/*.json` best-effort |
 | Boxes/squares instead of icons | Terminal font is not a Nerd Font | Install one from [nerdfonts.com](https://www.nerdfonts.com/) and configure your terminal |

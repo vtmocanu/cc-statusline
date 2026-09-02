@@ -1093,6 +1093,71 @@ if [ -f "$SVC_CACHE" ]; then
     esac
 fi
 
+# ── Update indicator (cc-statusline itself; line 1, right-aligned) ──────────
+# On by default; opt OUT with STATUSLINE_UPDATE_CHECK=0. Shows a gold
+# "⇡ X.Y.Z" (hyperlinked to that release's page) at the RIGHT edge of line 1
+# when the latest GitHub release is newer than the VERSION file installed next
+# to this script, and nothing at all otherwise: a current install renders
+# exactly as before. cc-statusline-update-fetch.sh refreshes the per-user cache
+# in the background at most once an hour (the .fetching marker also throttles
+# retries while offline, so a dead network costs one curl per hour, not one
+# per render). Placement happens in the padding pass at the bottom: the
+# segment is dropped into line 1's padding zone (the columns line 2 already
+# occupies), so it costs nothing on a typical render and is simply omitted
+# when line 1 is the wider line and appending it would breach TARGET. It is a
+# fixed, non-sliceable segment, so wrapping it in OSC 8 is safe (see the
+# hyperlink invariants above). Both version strings are shape-checked before
+# use: the cached tag comes off the network and ends up inside a terminal
+# escape, so anything but a bare v?MAJOR.MINOR.PATCH hides the indicator.
+# Test seams: CC_STATUSLINE_UPDATE_CACHE (cache path), CC_STATUSLINE_UPDATE_FETCH
+# (fetcher path; a non-executable path disables spawning).
+UPD_SEG=""
+_ver_gt() {  # true when MAJOR.MINOR.PATCH $1 is newer than $2 (bare, no "v")
+    local a1 a2 a3 b1 b2 b3
+    IFS=. read -r a1 a2 a3 <<<"$1"
+    IFS=. read -r b1 b2 b3 <<<"$2"
+    [ "$((10#$a1))" -ne "$((10#$b1))" ] && { [ "$((10#$a1))" -gt "$((10#$b1))" ]; return; }
+    [ "$((10#$a2))" -ne "$((10#$b2))" ] && { [ "$((10#$a2))" -gt "$((10#$b2))" ]; return; }
+    [ "$((10#$a3))" -gt "$((10#$b3))" ]
+}
+if [ "${STATUSLINE_UPDATE_CHECK:-1}" != "0" ]; then
+    UPD_CACHE="${CC_STATUSLINE_UPDATE_CACHE:-$(_state_dir)/update-check}"
+    UPD_FETCH="${CC_STATUSLINE_UPDATE_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/cc-statusline-update-fetch.sh}"
+    UPD_INTERVAL=3600
+    if [ -x "$UPD_FETCH" ]; then
+        UPD_NOW=$(date +%s)
+        UPD_AGE=9999
+        [ -f "$UPD_CACHE" ] && UPD_AGE=$((UPD_NOW - $(_file_mtime "$UPD_CACHE")))
+        if [ "$UPD_AGE" -ge "$UPD_INTERVAL" ] || [ "$UPD_AGE" -lt 0 ]; then
+            # The marker is touched BEFORE spawning, so concurrent sessions
+            # and failed attempts (cache untouched) share one attempt per hour.
+            UPD_MARK="$UPD_CACHE.fetching"
+            UPD_MARK_AGE=9999
+            [ -f "$UPD_MARK" ] && UPD_MARK_AGE=$((UPD_NOW - $(_file_mtime "$UPD_MARK")))
+            if [ "$UPD_MARK_AGE" -ge "$UPD_INTERVAL" ] || [ "$UPD_MARK_AGE" -lt 0 ]; then
+                touch "$UPD_MARK" 2>/dev/null || true
+                (CC_STATUSLINE_UPDATE_CACHE="$UPD_CACHE" "$UPD_FETCH" >/dev/null 2>/dev/null &)
+            fi
+        fi
+    fi
+    # Installed version: the VERSION file next to this script (brew libexec,
+    # install.sh prefix and the dev tree all ship it as a sibling), with the
+    # parent dir as a fallback to match the fetchers' lookup.
+    UPD_LOCAL=$({ cat "${SCRIPT_DIR:-.}/VERSION" "${SCRIPT_DIR:-.}/../VERSION"; } 2>/dev/null | head -1)
+    UPD_LATEST=""
+    [ -f "$UPD_CACHE" ] && UPD_LATEST=$(head -1 "$UPD_CACHE" 2>/dev/null || true)
+    UPD_VER_RE='^v?[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$'
+    if [[ "$UPD_LATEST" =~ $UPD_VER_RE ]] && [[ "$UPD_LOCAL" =~ $UPD_VER_RE ]] \
+       && _ver_gt "${UPD_LATEST#v}" "${UPD_LOCAL#v}"; then
+        UPD_LINK_OPEN="" UPD_LINK_CLOSE=""
+        if [ "${STATUSLINE_HYPERLINKS:-1}" != "0" ]; then
+            UPD_LINK_OPEN="\033]8;;https://github.com/vtmocanu/cc-statusline/releases/tag/v${UPD_LATEST#v}\a"
+            UPD_LINK_CLOSE='\033]8;;\a'
+        fi
+        UPD_SEG="${SEP}${B} ${CLR_GOLD}${UPD_LINK_OPEN}⇡ ${UPD_LATEST#v}${UPD_LINK_CLOSE}${B} "
+    fi
+fi
+
 # ── GitHub service status (line 1, after the branch; repo-scoped) ───────────
 # On by default; opt OUT with STATUSLINE_GITHUB_STATUS=0. Uses the SAME status
 # glyphs and colors as the Claude icon above (green ✓ / gold ~ / orange ⚠ /
@@ -1364,14 +1429,26 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 { printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
 
 # ── Pad shorter line to match longer ────────────────────────────────────────
+# The update indicator (UPD_SEG, empty when current) is placed here rather than
+# in assemble_l1: right-aligned into line 1's padding zone. It is shown when it
+# fits in the gap below line 2's width, or when appending it keeps line 1
+# within TARGET (line 2 then pads to match); otherwise it is dropped, never
+# truncated, so it can neither widen a line past the budget nor be sliced
+# mid-escape.
 {
-    # Single perl invocation for both line measurements
-    read -r L1_COLS L2_COLS < <(
-        measure_cols "$L1C" "$L2C" | tr '\n' ' '
+    # Single perl invocation for both line measurements plus the indicator
+    read -r L1_COLS L2_COLS UPD_W < <(
+        measure_cols "$L1C" "$L2C" "$UPD_SEG" | tr '\n' ' '
     )
-    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}
+    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}
     SYNC_W=$L2_COLS
     [ "$L1_COLS" -gt "$SYNC_W" ] 2>/dev/null && SYNC_W=$L1_COLS
+    if [ -n "$UPD_SEG" ] && [ "$UPD_W" -gt 0 ] 2>/dev/null && [ "$L1_COLS" -gt 10 ] 2>/dev/null \
+       && { [ "$((L1_COLS + UPD_W))" -le "$SYNC_W" ] || [ "$((L1_COLS + UPD_W))" -le "$TARGET" ]; } 2>/dev/null; then
+        [ "$((L1_COLS + UPD_W))" -gt "$SYNC_W" ] && SYNC_W=$((L1_COLS + UPD_W))
+        L1C+="${BG1}$(printf '%*s' "$((SYNC_W - L1_COLS - UPD_W))" '')${UPD_SEG}"
+        L1_COLS=$SYNC_W
+    fi
     if [ "$L1_COLS" -gt 10 ] 2>/dev/null && [ "$L1_COLS" -lt "$SYNC_W" ] 2>/dev/null; then
         L1C+="${BG1}$(printf '%*s' "$((SYNC_W - L1_COLS))" '')"
     fi

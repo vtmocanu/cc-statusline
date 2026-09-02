@@ -310,6 +310,50 @@ else
     printf '  PASS  usage: malformed probe headers fail closed\n'; PASS=$((PASS + 1))
 fi
 
+# ── Update fetcher (cc-statusline-update-fetch.sh) ─────────────────────────
+# Drives the release check with crafted api.github.com bodies (via the
+# CC_STATUSLINE_UPDATE_DATA seam) and asserts the single tag line it writes.
+# Fail-closed and shape-strict: only a bare v?MAJOR.MINOR.PATCH string may reach
+# the cache, because the statusline puts it inside an OSC 8 hyperlink.
+PFETCH="$REPO_DIR/cc-statusline-update-fetch.sh"
+pcache="$SCRATCH/upd-cache"; pdata="$SCRATCH/upd-data.json"
+pseed="v0.0.9"
+run_pcase() {  # run_pcase NAME JSON EXPECTED  (fresh cache)
+    local name="$1" json="$2" expected="$3" got=""
+    printf '%s' "$json" > "$pdata"; rm -f "$pcache"
+    CC_STATUSLINE_UPDATE_DATA="$pdata" CC_STATUSLINE_UPDATE_CACHE="$pcache" bash "$PFETCH"
+    [ -f "$pcache" ] && got=$(head -1 "$pcache" 2>/dev/null)
+    if [ "$got" = "$expected" ]; then printf '  PASS  update: %s\n' "$name"; PASS=$((PASS + 1))
+    else printf '  FAIL  update: %s\n        want: [%s]\n        got:  [%s]\n' "$name" "$expected" "$got"; FAIL=$((FAIL + 1)); fi
+}
+run_puntouched() {  # run_puntouched NAME JSON  (seeded cache must survive)
+    local name="$1" json="$2" got
+    printf '%s' "$json" > "$pdata"; printf '%s\n' "$pseed" > "$pcache"
+    CC_STATUSLINE_UPDATE_DATA="$pdata" CC_STATUSLINE_UPDATE_CACHE="$pcache" bash "$PFETCH"
+    got=$(head -1 "$pcache" 2>/dev/null)
+    if [ "$got" = "$pseed" ] && [ ! -f "$pcache.tmp" ]; then printf '  PASS  update: %s\n' "$name"; PASS=$((PASS + 1))
+    else printf '  FAIL  update: %s (cache clobbered)\n        want: [%s]\n        got:  [%s]\n' "$name" "$pseed" "$got"; FAIL=$((FAIL + 1)); fi
+}
+echo
+echo "update fetcher tests"
+echo "------------------------------------------------------------"
+run_pcase "plain release tag"            '{"tag_name":"v9.9.9","name":"v9.9.9: title","draft":false}' "v9.9.9"
+run_pcase "tag without v prefix"         '{"tag_name":"9.9.9"}' "9.9.9"
+run_pcase "other fields ignored"         '{"tag_name":"v3.10.0","html_url":"https://x","assets":[]}' "v3.10.0"
+run_puntouched "rate-limit error body"   '{"message":"API rate limit exceeded for 1.2.3.4.","documentation_url":"https://docs.github.com"}'
+run_puntouched "not found body"          '{"message":"Not Found","status":"404"}'
+run_puntouched "non-JSON (HTML outage page)" '<html><body>503</body></html>'
+run_puntouched "empty body"              ''
+run_puntouched "null tag"                '{"tag_name":null}'
+run_puntouched "array tag"               '{"tag_name":["v9.9.9"]}'
+run_puntouched "numeric tag"             '{"tag_name":9}'
+run_puntouched "pre-release suffix"      '{"tag_name":"v9.9.9-rc1"}'
+run_puntouched "two-component tag"       '{"tag_name":"v9.9"}'
+run_puntouched "escape injection in tag" '{"tag_name":"v9.9.9]8;;https://evil"}'
+run_puntouched "shell text in tag"       '{"tag_name":"v9.9.9; rm -rf /"}'
+run_puntouched "trailing space in tag"   '{"tag_name":"v9.9.9 "}'
+run_puntouched "oversized component"     '{"tag_name":"v9.99999.9"}'
+
 echo "------------------------------------------------------------"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

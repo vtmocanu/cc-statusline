@@ -57,6 +57,11 @@ export CC_STATUSLINE_SVC_FETCH="$SCRATCH/no-such-fetcher.sh"
 # Same isolation for the per-account usage fetcher: a non-executable path so a
 # render can never hit /api/oauth/usage with real credentials during tests.
 export CC_STATUSLINE_RL_FETCH="$SCRATCH/no-such-usage-fetcher.sh"
+# Same for the update check: a scratch cache (absent unless a test seeds it, so
+# no fixture ever shows the indicator) and a non-executable fetcher path so a
+# render never hits api.github.com during tests.
+export CC_STATUSLINE_UPDATE_CACHE="$SCRATCH/update-cache"
+export CC_STATUSLINE_UPDATE_FETCH="$SCRATCH/no-such-update-fetcher.sh"
 
 # Pin the clock so rate-limit reset countdowns and pace arrows are
 # deterministic across runs and locales. Fixtures with future resets_at are
@@ -519,6 +524,170 @@ rate_limit_cache_tests() {
         _rl_fail "$name" "stdin shown for keyed session with no fetched line: $l2"
     elif [ -e "$sd16/rate-limits-acct16" ]; then
         _rl_fail "$name" "keyed cache seeded from stdin: $(cat "$sd16/rate-limits-acct16" 2>/dev/null)"
+    else _rl_pass "$name"; fi
+}
+
+# ── Update-indicator tests ─────────────────────────────────────────────────
+# The line-1 right-aligned "⇡ X.Y.Z" (STATUSLINE_UPDATE_CHECK, default on).
+# Seeds the cache through the CC_STATUSLINE_UPDATE_CACHE seam and asserts when
+# the indicator shows (only a strictly newer tag), that it never breaks the
+# width budget (dropped, not truncated, when line 1 has no room), that it is
+# hyperlinked to the release page, and that a malformed cache line can never
+# reach the terminal.
+update_check_tests() {
+    printf '\n'
+    printf 'update-indicator tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local name out err l1 raw1 w1 w2 cache local_ver bad
+    local_ver=$(head -1 "$REPO_DIR/VERSION" 2>/dev/null)
+    cache="$SCRATCH/upd-seam-cache"
+
+    _upd_run() {  # _upd_run <out> <err> <env...> -- render 18-session-name
+        local o="$1" e="$2"; shift 2
+        ( cd "$SCRATCH" && env "$@" CC_STATUSLINE_RL_CACHE="$SCRATCH/upd.cache" \
+            bash "$STATUSLINE" <"$FIXTURES/18-session-name.json" ) >"$o" 2>"$e"
+    }
+    _upd_l1() { sed -n '1p' "$1" | _strip_ansi; }
+    _w() { sed -n "$2p" "$1" | vis_cols; }
+
+    # 1. Newer tag -> gold "⇡ 99.0.0" on line 1, both lines the same width and
+    #    inside the budget, and the raw line carries the OSC 8 release link.
+    name="upd-newer-shows"; out="$SCRATCH/upd1.out"; err="$SCRATCH/upd1.err"
+    printf 'v99.0.0\n' > "$cache"
+    _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$cache"
+    l1=$(_upd_l1 "$out"); raw1=$(sed -n '1p' "$out"); w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "⇡ 99.0.0"; then _rl_fail "$name" "line 1 missing '⇡ 99.0.0': $l1"
+    elif [ "$w1" -ne "$w2" ]; then _rl_fail "$name" "line widths differ after placement: $w1 vs $w2"
+    elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then _rl_fail "$name" "line 1 width $w1 exceeds budget"
+    elif ! _has "$raw1" "releases/tag/v99.0.0"; then _rl_fail "$name" "release hyperlink missing from raw line 1"
+    else _rl_pass "$name"; fi
+
+    # 2. Right-aligned: the indicator is the LAST visible text on line 1 (one
+    #    trailing space, then the top-right corner glyph U+E0B8; no padding run
+    #    after it).
+    name="upd-right-aligned"
+    case "$l1" in
+        *"⇡ 99.0.0 "$'\xee\x82\xb8') _rl_pass "$name" ;;
+        *) _rl_fail "$name" "indicator not at the right edge: [$l1]" ;;
+    esac
+
+    # 3. Same version as the installed VERSION file -> hidden.
+    name="upd-same-hidden"; out="$SCRATCH/upd3.out"; err="$SCRATCH/upd3.err"
+    printf 'v%s\n' "$local_ver" > "$cache"
+    _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$cache"
+    l1=$(_upd_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "⇡"; then _rl_fail "$name" "indicator shown for the installed version $local_ver: $l1"
+    else _rl_pass "$name"; fi
+
+    # 4. Older tag (a rollback, or a stale cache after a local upgrade) -> hidden.
+    name="upd-older-hidden"; out="$SCRATCH/upd4.out"; err="$SCRATCH/upd4.err"
+    printf 'v0.0.1\n' > "$cache"
+    _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$cache"
+    l1=$(_upd_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "⇡"; then _rl_fail "$name" "indicator shown for an older tag: $l1"
+    else _rl_pass "$name"; fi
+
+    # 5. Numeric, not lexical: MAJOR.1000.0 beats MAJOR.9.x even though "1" sorts
+    #    before "9" as text; a bare tag without the "v" is accepted too.
+    name="upd-numeric-compare"; out="$SCRATCH/upd5.out"; err="$SCRATCH/upd5.err"
+    printf '%s\n' "${local_ver%%.*}.1000.0" > "$cache"
+    _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$cache"
+    l1=$(_upd_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "⇡ ${local_ver%%.*}.1000.0"; then _rl_fail "$name" "minor 1000 not treated as newer: $l1"
+    else _rl_pass "$name"; fi
+
+    # 6. Malformed cache lines (escape injection, shell text, pre-release
+    #    suffix, junk) never render, and none of their bytes reach line 1.
+    #    The first entry embeds a real ESC and BEL (an OSC 8 open sequence).
+    for bad in "v1.2.3$(printf '\033')]8;;https://evil$(printf '\a')" 'v1.2.3-rc1' \
+               'v99.0.0; rm -rf /' '99' 'latest' 'v99.0.0 extra'; do
+        name="upd-bad-cache-hidden"; out="$SCRATCH/upd6.out"; err="$SCRATCH/upd6.err"
+        printf '%s\n' "$bad" > "$cache"
+        _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$cache"
+        l1=$(_upd_l1 "$out"); raw1=$(sed -n '1p' "$out")
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr for [${bad//[^[:print:]]/?}]: $(head -1 "$err")"
+        elif _has "$l1" "⇡"; then _rl_fail "$name" "indicator shown for malformed [${bad//[^[:print:]]/?}]: $l1"
+        elif _has "$raw1" "evil" || _has "$raw1" "rm -rf"; then _rl_fail "$name" "cache bytes leaked into line 1 for [${bad//[^[:print:]]/?}]"
+        else _rl_pass "$name [${bad//[^[:print:]]/?}]"; fi
+    done
+
+    # 7. Opt-OUT: STATUSLINE_UPDATE_CHECK=0 hides it even with a newer tag.
+    name="upd-opt-out"; out="$SCRATCH/upd7.out"; err="$SCRATCH/upd7.err"
+    printf 'v99.0.0\n' > "$cache"
+    _upd_run "$out" "$err" STATUSLINE_UPDATE_CHECK=0 CC_STATUSLINE_UPDATE_CACHE="$cache"
+    l1=$(_upd_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "⇡"; then _rl_fail "$name" "indicator shown while opted out (=0): $l1"
+    else _rl_pass "$name"; fi
+
+    # 8. STATUSLINE_HYPERLINKS=0 keeps the text but drops the OSC 8 wrapper.
+    name="upd-hyperlinks-off"; out="$SCRATCH/upd8.out"; err="$SCRATCH/upd8.err"
+    _upd_run "$out" "$err" STATUSLINE_HYPERLINKS=0 CC_STATUSLINE_UPDATE_CACHE="$cache"
+    l1=$(_upd_l1 "$out"); raw1=$(sed -n '1p' "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "⇡ 99.0.0"; then _rl_fail "$name" "indicator missing with hyperlinks off: $l1"
+    elif _has "$raw1" "releases/tag"; then _rl_fail "$name" "OSC 8 link emitted with STATUSLINE_HYPERLINKS=0"
+    else _rl_pass "$name"; fi
+
+    # 9. No room: a line 1 that already fills the budget (long title + long dir
+    #    trimmed to TARGET) DROPS the indicator instead of overflowing.
+    name="upd-no-room-dropped"; out="$SCRATCH/upd9.out"; err="$SCRATCH/upd9.err"
+    local longdir="$SCRATCH/upd-long/aaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbb/ccccccccccccccccccccccccc"
+    mkdir -p "$longdir"
+    { printf '{"model":{"display_name":"Claude Opus 4.6","id":"opus"},"cwd":"%s",' "$longdir"
+      printf '"session_name":"a very long descriptive session title that fills",'
+      printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000},'
+      printf '"cost":{"total_duration_ms":300000},"session_id":"upd9"}'; } \
+      | ( cd "$SCRATCH" && env CC_STATUSLINE_UPDATE_CACHE="$cache" \
+            CC_STATUSLINE_RL_CACHE="$SCRATCH/upd9.cache" bash "$STATUSLINE" ) >"$out" 2>"$err"
+    l1=$(_upd_l1 "$out"); w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ] || [ "$w2" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then
+        _rl_fail "$name" "widths $w1/$w2 exceed budget with the indicator: $l1"
+    elif [ "$w1" -ne "$w2" ]; then _rl_fail "$name" "line widths differ: $w1 vs $w2"
+    elif _has "$l1" "⇡" && [ "$w1" -gt "$((SAFE_WIDTH - 3))" ]; then
+        _rl_fail "$name" "indicator kept past TARGET: $l1"
+    else _rl_pass "$name"; fi
+
+    # 10. Default cache path: with the seam blank, the state dir's update-check
+    #     file (via XDG_RUNTIME_DIR) is read, exactly where the fetcher writes.
+    name="upd-default-path"; out="$SCRATCH/upd10.out"; err="$SCRATCH/upd10.err"
+    local statedir; statedir="$SCRATCH/upd-state/cc-statusline-$(id -u)"
+    mkdir -p "$statedir"; printf 'v99.0.0\n' > "$statedir/update-check"
+    _upd_run "$out" "$err" XDG_RUNTIME_DIR="$SCRATCH/upd-state" CC_STATUSLINE_UPDATE_CACHE=""
+    l1=$(_upd_l1 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "⇡ 99.0.0"; then _rl_fail "$name" "default state-dir cache not read: $l1"
+    else _rl_pass "$name"; fi
+
+    # 11. Spawn throttle: an executable fake fetcher is spawned once when the
+    #     cache is stale, and NOT again while the .fetching marker is fresh.
+    name="upd-spawn-throttle"; out="$SCRATCH/upd11.out"; err="$SCRATCH/upd11.err"
+    local fake="$SCRATCH/fake-update-fetch.sh" hits="$SCRATCH/upd11.hits" c11="$SCRATCH/upd11.cache"
+    printf '#!/usr/bin/env bash\nprintf x >> "%s"\n' "$hits" > "$fake"; chmod +x "$fake"
+    rm -f "$hits" "$c11" "$c11.fetching"
+    _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$c11" CC_STATUSLINE_UPDATE_FETCH="$fake"
+    _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$c11" CC_STATUSLINE_UPDATE_FETCH="$fake"
+    sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ ! -f "$c11.fetching" ]; then _rl_fail "$name" ".fetching marker not written"
+    elif [ "$(wc -c <"$hits" 2>/dev/null | tr -d ' ')" != "1" ]; then
+        _rl_fail "$name" "expected exactly 1 spawn across 2 renders, got $(wc -c <"$hits" 2>/dev/null | tr -d ' ')"
+    else _rl_pass "$name"; fi
+
+    # 12. Phone layout: same placement rule; a narrow viewport never overflows.
+    name="upd-phone-width"; out="$SCRATCH/upd12.out"; err="$SCRATCH/upd12.err"
+    printf 'v99.0.0\n' > "$cache"
+    _upd_run "$out" "$err" COLUMNS=46 CC_STATUSLINE_UPDATE_CACHE="$cache"
+    w1=$(_w "$out" 1); w2=$(_w "$out" 2)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w1" -gt 45 ] || [ "$w2" -gt 45 ]; then _rl_fail "$name" "widths $w1/$w2 exceed COLUMNS-1 (45)"
+    elif [ "$w1" -ne "$w2" ]; then _rl_fail "$name" "line widths differ: $w1 vs $w2"
     else _rl_pass "$name"; fi
 }
 
@@ -1394,6 +1563,7 @@ phone_gap_tests
 github_status_tests
 session_name_tests
 env_hardening_tests
+update_check_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

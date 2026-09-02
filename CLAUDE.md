@@ -28,6 +28,7 @@ cc-statusline/
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
 ├── claude-status-fetch.sh            Background helper, polls an Atlassian Statuspage summary.json every 60s, writes a per-user service-status cache. Defaults to status.claude.com; the statusline also spawns it with CC_STATUSLINE_SVC_URL=githubstatus.com for the optional line-1 GitHub icon (STATUSLINE_GITHUB_STATUS, on by default, shown only on github.com remotes)
 ├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
+├── cc-statusline-update-fetch.sh     Background helper, polls the GitHub "latest release" endpoint at most hourly, writes the per-user update-check cache (one line: the tag). Drives the line-1 right-aligned "⇡ X.Y.Z" update indicator (STATUSLINE_UPDATE_CHECK, on by default, shown only when the tag is newer than VERSION)
 ├── install.sh                        Installer for public users (--version vX.Y.Z, --uninstall, --help)
 ├── Formula.rb.tmpl                   Homebrew formula template (@@URL@@/@@SHA256@@ placeholders); rendered and pushed to vtmocanu/homebrew-tap by release.yml on each v* tag
 ├── examples/
@@ -35,7 +36,7 @@ cc-statusline/
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
 │   └── fixtures/*.json               5 mock JSON inputs (happy path, empty, no rate limits, near-full context, narrow width)
-├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, ci); used locally and by CI
+├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, test-fetch, ci); used locally and by CI
 ├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
 ├── .github/workflows/release.yml     On v* tags: renders the formula and pushes it to the tap (HOMEBREW_TAP_TOKEN secret); does NOT create the GitHub Release, that stays manual
 ├── images/screenshot.png             Hero image used by README
@@ -52,16 +53,17 @@ cc-statusline/
 The script lives where it runs. Edit `statusline.sh` directly; the maintainer's live statusline reflects changes on the next render.
 
 ### Validate
-**Always run all four checks before committing.** They live in `Taskfile.yml` (requires [go-task](https://taskfile.dev)); CI runs the exact same tasks:
+**Always run all five checks before committing.** They live in `Taskfile.yml` (requires [go-task](https://taskfile.dev)); CI runs the exact same tasks:
 
 ```bash
-task ci              # all four checks in order
+task ci              # all five checks in order
 
 # or individually:
 task shell:syntax    # 1. bash -n on all scripts
 task shell:lint      # 2. shellcheck -x -S warning (matches CI)
 task test            # 3. test harness (tests/run-tests.sh)
 task test-c-locale   # 4. test harness under LC_ALL=C (catches wc-m / bash-string-length issues)
+task test-fetch      # 5. fetcher tests (status, usage, update check), in both locales
 ```
 
 The `shell:` tasks come from the reusable `shell.yml` in [github.com/vtmocanu/task](https://github.com/vtmocanu/task): the local checkout at `~/stuff/gitrepos/gh/vtmocanu/task` when developing, the public raw URL in CI (with `TASK_X_REMOTE_TASKFILES=1` and `task --yes`).
@@ -147,7 +149,7 @@ The statusline normally writes the service-status cache under a per-user mode-70
 - Pollute the real service-status cache on the maintainer's machine (and fight with their real Claude Code statusline)
 - Cause cross-fixture contamination (test 01 spawns the fetcher, test 03 then sees the cache)
 
-The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env vars (added in v2.1.2) to override both paths. The test harness sets them to scratch-dir paths, so the real fetcher never runs.
+The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env vars (added in v2.1.2) to override both paths. The test harness sets them to scratch-dir paths, so the real fetcher never runs. The same pair exists for the update check (`CC_STATUSLINE_UPDATE_CACHE` / `CC_STATUSLINE_UPDATE_FETCH`, plus `CC_STATUSLINE_UPDATE_DATA` for the fetcher itself) and the harness isolates them the same way; the update-indicator tests seed that cache to render the `⇡ X.Y.Z` segment on demand.
 
 ### Adding a new fixture
 1. Create `tests/fixtures/0N-name.json` with a JSON shape that exercises the case you care about
@@ -157,7 +159,7 @@ The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env var
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and PR. One job, four steps, each calling the matching Taskfile task (`shell:syntax`, `shell:lint`, `test`, `test-c-locale`); the `LC_ALL=C` run guards the v2.1.3 locale regression. `task` itself is installed via `arduino/setup-task` (SHA-pinned), and the `shell:` tasks are fetched from the public raw URL of github.com/vtmocanu/task (`TASK_X_REMOTE_TASKFILES=1` + `task --yes`).
+`.github/workflows/ci.yml` runs on every push and PR. One job, five steps, each calling the matching Taskfile task (`shell:syntax`, `shell:lint`, `test`, `test-c-locale`, `test-fetch`); the `LC_ALL=C` run guards the v2.1.3 locale regression. `task` itself is installed via `arduino/setup-task` (SHA-pinned), and the `shell:` tasks are fetched from the public raw URL of github.com/vtmocanu/task (`TASK_X_REMOTE_TASKFILES=1` + `task --yes`).
 
 House CI baseline (keep these when editing the workflow):
 - Top-level `permissions: contents: read` (least privilege)
