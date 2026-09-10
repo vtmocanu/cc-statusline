@@ -52,7 +52,7 @@ _cc_version() {
 VERSION="$(_cc_version)"; VERSION="${VERSION:-dev}"
 
 CACHE_FILE="${CC_STATUSLINE_SVC_CACHE:-$(_state_dir)/service-status}"
-TMP_FILE="${CACHE_FILE}.tmp"
+TMP_FILE="${CACHE_FILE}.tmp.$$"
 
 # Clean up tmp file on any exit (crash, signal, normal)
 trap 'rm -f "$TMP_FILE"' EXIT

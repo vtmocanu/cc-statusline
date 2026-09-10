@@ -206,7 +206,7 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     TS_MODEL_ID=${TS_MODEL_ID%'"'}
     if [ -n "$MODEL_ID" ] && [ -n "$TS_MODEL_ID" ] \
         && [ "${#TS_MODEL_ID}" -le 64 ] \
-        && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._-]+$ ]] \
+        && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._:-]+$ ]] \
         && [ "$TS_MODEL_ID" != "$MODEL_ID" ]; then
         EFFECTIVE_MODEL_ID="$TS_MODEL_ID"
     fi
@@ -294,67 +294,50 @@ _rl_write() {
     fi
     RL_TMP=""
 }
+# Resolve the account key independently from Claude rate-limit processing: the
+# profile badge still needs the token-derived key in a GPT session, even though
+# that session must skip every Anthropic cache/compare/fetch operation below.
+_rl_token() {
+    local tok="${CLAUDE_CODE_OAUTH_TOKEN:-}" pid=$$ i
+    if [ -z "$tok" ]; then
+        for i in 1 2 3 4 5 6; do
+            pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || break
+            [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || break
+            if [ -r "/proc/$pid/environ" ]; then
+                tok=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+                      | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' 2>/dev/null | head -n 1)
+            else
+                # A token never contains spaces, so splitting the process env
+                # cannot corrupt it; other variables are ignored by sed.
+                tok=$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
+                      | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' 2>/dev/null | head -n 1)
+            fi
+            [ -n "$tok" ] && break
+        done
+    fi
+    printf '%s' "$tok"
+}
+RL_TOK=""; RL_KEY=""
+if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
+    if [ -n "${CC_STATUSLINE_RL_CACHE:-}" ]; then
+        # Explicit path override wins outright; skip the key scan.
+        RL_CACHE="$CC_STATUSLINE_RL_CACHE"
+    elif [ -n "${CC_STATUSLINE_RL_KEY+x}" ]; then
+        RL_KEY="${CC_STATUSLINE_RL_KEY//[^A-Za-z0-9._-]/}"
+        RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
+    else
+        RL_TOK="$(_rl_token)"
+        [ -n "$RL_TOK" ] && RL_KEY="$(printf '%s' "$RL_TOK" | cksum | cut -d' ' -f1 || echo 0)"
+        RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
+    fi
+fi
+
 if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; then
     # Reap a tmp left by an interrupted write, while still emitting the crash
     # newline the top-of-file EXIT trap guarantees. RL_TMP is "" outside a write,
     # so this is a no-op on a clean crash; disarmed at the normal output path.
     RL_TMP=""
     trap 'rm -f "$RL_TMP" 2>/dev/null; printf "\n"' EXIT
-    # Rate limits are per ACCOUNT, and a session launched with
-    # CLAUDE_CODE_OAUTH_TOKEN=... claude talks to a different account than the
-    # default keychain login. Key the cache file by a short hash of that token
-    # (never the token itself) so each account only shares snapshots with its
-    # own sessions; token-less sessions keep the unsuffixed path.
-    #
-    # Claude Code CONSUMES the var (its child processes, this script included,
-    # never see it), but the kernel keeps every process's EXEC-TIME environment
-    # readable by its owner (/proc/PID/environ on Linux, ps eww on macOS/BSD),
-    # so _rl_key walks the ancestor chain (statusline -> sh -> claude -> user
-    # shell) and reads the token from the first ancestor that has it. A session
-    # launched without a token scans a few levels, finds nothing, and keeps the
-    # unsuffixed shared cache exactly as before.
-    #
-    # CC_STATUSLINE_RL_KEY (set, possibly empty) short-circuits everything and
-    # is used verbatim after filename sanitizing: the test seam, and a manual
-    # per-account label for setups the scan can't see through.
-    _rl_token() {
-        local tok="${CLAUDE_CODE_OAUTH_TOKEN:-}" pid=$$ i
-        if [ -z "$tok" ]; then
-            for i in 1 2 3 4 5 6; do
-                pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || break
-                [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || break
-                if [ -r "/proc/$pid/environ" ]; then
-                    tok=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
-                          | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' 2>/dev/null | head -n 1)
-                else
-                    # A token never contains spaces, so word-splitting the env
-                    # dump cannot corrupt it (other vars' values may split;
-                    # they are not what sed matches).
-                    tok=$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
-                          | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' 2>/dev/null | head -n 1)
-                fi
-                [ -n "$tok" ] && break
-            done
-        fi
-        printf '%s' "$tok"
-    }
-    RL_TOK=""
-    if [ -n "${CC_STATUSLINE_RL_CACHE:-}" ]; then
-        # Explicit path override wins outright; skip the (ps-spawning) key scan.
-        RL_CACHE="$CC_STATUSLINE_RL_CACHE"
-    elif [ -n "${CC_STATUSLINE_RL_KEY+x}" ]; then
-        # Manual account label / test seam, used verbatim after filename
-        # sanitizing (empty = the shared unsuffixed cache). Skips the scan.
-        RL_KEY="${CC_STATUSLINE_RL_KEY//[^A-Za-z0-9._-]/}"
-        RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
-    else
-        # RL_TOK stays in this process only; the one thing that ever reaches a
-        # filename is its short one-way cksum hash.
-        RL_TOK="$(_rl_token)"
-        RL_KEY=""
-        [ -n "$RL_TOK" ] && RL_KEY="$(printf '%s' "$RL_TOK" | cksum | cut -d' ' -f1 || echo 0)"
-        RL_CACHE="$(_state_dir)/rate-limits${RL_KEY:+-$RL_KEY}"
-    fi
     # Normalize stdin reset timestamps to integers (missing/non-numeric -> 0, a
     # same-window tie that then compares on used%). The same 12-digit cap as the
     # cache guard keeps them inside intmax, so _rl_cmp's arithmetic can never
@@ -1151,11 +1134,11 @@ esac
 # only Claude dollars; STATUSLINE_GPT_CREDITS controls GPT credits.
 COST_SEG=""
 if [ "$GPT_ACTIVE" != "1" ] && [ "${STATUSLINE_COST:-1}" != "0" ] \
-    && [ "$(awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
-    COST_FMT=$(awk -v c="$COST_USD" 'BEGIN{ if (c>0 && c<0.005) printf "<0.01"; else printf "%.2f", c }' 2>/dev/null)
+    && [ "$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
+    COST_FMT=$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{ if (c>0 && c<0.005) printf "<0.01"; else printf "%.2f", c }' 2>/dev/null)
     COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}\$${COST_FMT}${B2}"
 elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
-    CREDITS_FMT=$(awk -v u="$GPT_CREDITS_UNITS" 'BEGIN {
+    CREDITS_FMT=$(LC_ALL=C awk -v u="$GPT_CREDITS_UNITS" 'BEGIN {
         if      (u >= 999995000000000000) printf "%.2fT", u / 1000000000000000000
         else if (u >= 999995000000000)    printf "%.2fB", u / 1000000000000000
         else if (u >= 999995000000)       printf "%.2fM", u / 1000000000000
@@ -1236,7 +1219,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 GENERIC_SVC_FETCH="${CC_STATUSLINE_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
 if [ "$GPT_ACTIVE" = "1" ]; then
     SVC_CACHE="${CC_STATUSLINE_CODEX_SVC_CACHE:-$(_state_dir)/codex-status}"
-    SVC_FETCH="${CC_STATUSLINE_CODEX_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
+    SVC_FETCH="${CC_STATUSLINE_CODEX_SVC_FETCH:-$GENERIC_SVC_FETCH}"
     SVC_PAGE_URL="https://status.openai.com/"
     if [ -x "$SVC_FETCH" ]; then
         SVC_AGE=9999

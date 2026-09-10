@@ -547,7 +547,7 @@ gpt_rate_limit_tests() {
     printf 'GPT/Codex integration tests\n'
     printf '%s\n' "------------------------------------------------------------"
 
-    local cache ccache out err l2 raw name id n csvc clsvc crcache crstate crdir crkey otherkey w fake hits
+    local cache ccache out err l2 raw name id n csvc clsvc crcache crstate crdir crkey otherkey w fake hits phome token tokhash state statedir generic dedicated
     cache="$SCRATCH/gpt.cache"; ccache="$SCRATCH/gpt-claude.cache"
     out="$SCRATCH/gpt.out"; err="$SCRATCH/gpt.err"
 
@@ -710,7 +710,7 @@ gpt_rate_limit_tests() {
     # stdin still reports the Claude parent model.
     name="gpt-transcript-effective-model"; printf '|||65|1700361000|604800|1699999990\n' >"$cache"
     rm -f "$ccache" "$ccache.fetching"
-    printf '%s\n' '{"type":"assistant","message":{"model":"gpt-5.6-sol","content":[]}}' >"$SCRATCH/gpt-transcript.jsonl"
+    printf '%s\n' '{"type":"assistant","message":{"model":"clodex:openai-oauth:gpt-5.6-sol","content":[]}}' >"$SCRATCH/gpt-transcript.jsonl"
     printf '%s' '{"model":{"display_name":"Claude Opus 5","id":"claude-opus-5"},"cwd":"/home/test/gpt","transcript_path":"' >"$SCRATCH/gpt-transcript.json"
     printf '%s' "$SCRATCH/gpt-transcript.jsonl" >>"$SCRATCH/gpt-transcript.json"
     printf '%s' '","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"gpt-pane","rate_limits":{"five_hour":{"used_percentage":99,"resets_at":1700009660},"seven_day":{"used_percentage":98,"resets_at":1700361000}}}' >>"$SCRATCH/gpt-transcript.json"
@@ -722,6 +722,47 @@ gpt_rate_limit_tests() {
         _rl_fail "$name" "transcript GPT model did not replace Claude limits: $l2"
     elif [ -e "$ccache" ] || [ -e "$ccache.fetching" ]; then
         _rl_fail "$name" "transcript-only GPT detection touched the Claude rate cache"
+    else _rl_pass "$name"; fi
+
+    # Colon is allowed only as another safe model-id character. The OAuth route
+    # switches providers, while an API-key route remains excluded.
+    name="gpt-transcript-api-key-excluded"
+    printf '%s\n' '{"type":"assistant","message":{"model":"clodex:openai:gpt-5.6-sol","content":[]}}' >"$SCRATCH/gpt-api-key-transcript.jsonl"
+    printf '%s' '{"model":{"display_name":"Claude Opus 5","id":"claude-opus-5"},"cwd":"/home/test/gpt","transcript_path":"' >"$SCRATCH/gpt-api-key-transcript.json"
+    printf '%s' "$SCRATCH/gpt-api-key-transcript.jsonl" >>"$SCRATCH/gpt-api-key-transcript.json"
+    printf '%s' '","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"gpt-api-key-pane","rate_limits":{"five_hour":{"used_percentage":99,"resets_at":1700009660},"seven_day":{"used_percentage":98,"resets_at":1700361000}}}' >>"$SCRATCH/gpt-api-key-transcript.json"
+    rm -f "$ccache"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-api-key-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "99%" || ! _has "$l2" "98%" || _has "$l2" "65%"; then
+        _rl_fail "$name" "transcript API-key route used ChatGPT limits: $l2"
+    else _rl_pass "$name"; fi
+
+    # Token-derived profile labels still work in a transcript-only GPT pane, but
+    # the separated account-key resolution must not run any Claude limit fetch.
+    name="gpt-token-profile-without-claude-fetch"
+    phome="$SCRATCH/gpt-profile-home"; state="$SCRATCH/gpt-profile-state"
+    mkdir -p "$phome/.claude" "$state"
+    token="sk-ant-oat01-gpt-profile"; tokhash=$(printf '%s' "$token" | cksum | cut -d' ' -f1)
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"11111111-2222-3333-4444-555555555555"}}' >"$phome/.claude.json"
+    printf '{"enabled":true,"profiles":{"%s":{"label":"GPTTOK","color":"blue"},"11111111-2222-3333-4444-555555555555":{"label":"CLAUDE","color":"red"}}}\n' "$tokhash" >"$phome/.claude/profile-labels.json"
+    fake="$SCRATCH/fake-claude-usage-fetch.sh"; hits="$SCRATCH/gpt-profile-claude-fetch"
+    printf '#!/usr/bin/env bash\nprintf x > "%s"\n' "$hits" >"$fake"; chmod +x "$fake"
+    rm -f "$hits"
+    statedir="$state/cc-statusline-$(id -u)"
+    (cd "$SCRATCH" && env -u CC_STATUSLINE_RL_KEY HOME="$phome" XDG_RUNTIME_DIR="$state" STATUSLINE_PROFILE=1 \
+        CLAUDE_CODE_OAUTH_TOKEN="$token" STATUSLINE_GPT_LIMITS=1 \
+        CC_STATUSLINE_GPT_CACHE="$cache" CC_STATUSLINE_RL_CACHE="" \
+        CC_STATUSLINE_RL_FETCH="$fake" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "GPTTOK" || _has "$l2" "CLAUDE"; then
+        _rl_fail "$name" "GPT token profile key was not preserved: $l2"
+    elif [ -e "$hits" ] || [ -e "$statedir/rate-limits-$tokhash" ] \
+        || [ -e "$statedir/rate-limits-$tokhash.fetching" ]; then
+        _rl_fail "$name" "GPT profile resolution triggered Claude rate-limit work"
     else _rl_pass "$name"; fi
 
     # Fresh transcript-derived units render as a compact, rounded ChatGPT credit
@@ -930,6 +971,44 @@ EOF
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif _has "$l2" "✓" || _has "$raw" "status.claude.com"; then
         _rl_fail "$name" "missing Codex status fell back to Claude: $l2"
+    else _rl_pass "$name"; fi
+
+    # With no dedicated override, GPT status inherits the generic service
+    # fetcher override. A dedicated override still has first precedence.
+    generic="$SCRATCH/fake-generic-svc.sh"; dedicated="$SCRATCH/fake-codex-svc.sh"
+    hits="$SCRATCH/gpt-svc-fetch-hit"
+    cat >"$generic" <<'EOF'
+#!/usr/bin/env bash
+printf 'generic|%s|%s' "${CC_STATUSLINE_SVC_COMPONENT:-}" "${CC_STATUSLINE_SVC_URL:-}" >"$TEST_HIT"
+EOF
+    cat >"$dedicated" <<'EOF'
+#!/usr/bin/env bash
+printf 'dedicated|%s|%s' "${CC_STATUSLINE_SVC_COMPONENT:-}" "${CC_STATUSLINE_SVC_URL:-}" >"$TEST_HIT"
+EOF
+    chmod +x "$generic" "$dedicated"
+
+    name="gpt-service-generic-fetch-fallback"; rm -f "$csvc" "$hits"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | TEST_HIT="$hits" STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_CODEX_SVC_FETCH="" \
+          CC_STATUSLINE_SVC_FETCH="$generic" CC_STATUSLINE_RL_CACHE="$ccache" \
+          bash "$STATUSLINE") >"$out" 2>"$err"
+    sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$(head -1 "$hits" 2>/dev/null)" != "generic|Codex API|https://status.openai.com/api/v2/components.json" ]; then
+        _rl_fail "$name" "generic service override was not used for GPT"
+    else _rl_pass "$name"; fi
+
+    name="gpt-service-dedicated-fetch-precedence"; rm -f "$csvc" "$hits"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | TEST_HIT="$hits" STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_CODEX_SVC_FETCH="$dedicated" \
+          CC_STATUSLINE_SVC_FETCH="$generic" CC_STATUSLINE_RL_CACHE="$ccache" \
+          bash "$STATUSLINE") >"$out" 2>"$err"
+    sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$(head -1 "$hits" 2>/dev/null)" != "dedicated|Codex API|https://status.openai.com/api/v2/components.json" ]; then
+        _rl_fail "$name" "dedicated Codex service override did not win"
     else _rl_pass "$name"; fi
 
     # Claude sessions still ignore the Codex cache and link.

@@ -175,6 +175,46 @@ run_untouched "malformed components payload fails closed" \
     '{"components":{"name":"Codex API","status":"operational"}}' \
     CC_STATUSLINE_SVC_COMPONENT="Codex API"
 
+# Two overlapping publishers must use distinct temp files. A fake mv barrier
+# holds both at publication long enough to inspect their source paths, making
+# the concurrency assertion deterministic rather than timing-dependent.
+race_dir="$SCRATCH/service-race"; race_bin="$race_dir/bin"
+race_cache="$race_dir/cache"; race_sources="$race_dir/mv-sources"
+mkdir -p "$race_bin"
+printf '%s' '{"components":[{"name":"Codex API","status":"operational"}]}' >"$race_dir/one.json"
+printf '%s' '{"components":[{"name":"Codex API","status":"degraded_performance"}]}' >"$race_dir/two.json"
+real_mv=$(command -v mv)
+cat >"$race_bin/mv" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"$TEST_MV_SOURCES"
+i=0
+while [ "$(wc -l <"$TEST_MV_SOURCES" | tr -d ' ')" -lt 2 ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+done
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$race_bin/mv"
+PATH="$race_bin:$PATH" REAL_MV="$real_mv" TEST_MV_SOURCES="$race_sources" \
+    CC_STATUSLINE_SVC_DATA="$race_dir/one.json" CC_STATUSLINE_SVC_CACHE="$race_cache" \
+    CC_STATUSLINE_SVC_COMPONENT="Codex API" timeout 5 bash "$FETCH" & race_p1=$!
+PATH="$race_bin:$PATH" REAL_MV="$real_mv" TEST_MV_SOURCES="$race_sources" \
+    CC_STATUSLINE_SVC_DATA="$race_dir/two.json" CC_STATUSLINE_SVC_CACHE="$race_cache" \
+    CC_STATUSLINE_SVC_COMPONENT="Codex API" timeout 5 bash "$FETCH" & race_p2=$!
+wait "$race_p1"; race_rc1=$?; wait "$race_p2"; race_rc2=$?
+shopt -s nullglob; race_tmp=("$race_cache".tmp.*); shopt -u nullglob
+race_unique=$(sort -u "$race_sources" 2>/dev/null | wc -l | tr -d ' ')
+race_got=$(head -1 "$race_cache" 2>/dev/null)
+if [ "$race_rc1" -eq 0 ] && [ "$race_rc2" -eq 0 ] && [ "$race_unique" = 2 ] \
+    && [ "${#race_tmp[@]}" -eq 0 ] \
+    && { [ "$race_got" = operational ] || [ "$race_got" = "degraded_performance:Codex API:Codex API" ]; }; then
+    printf '  PASS  concurrent service publication uses PID-scoped temp files\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  concurrent service publication race (rc=%s/%s unique=%s tmp=%s got=%s)\n' \
+        "$race_rc1" "$race_rc2" "$race_unique" "${#race_tmp[@]}" "$race_got"
+    FAIL=$((FAIL + 1))
+fi
+
 # ═══ Per-account usage fetcher (claude-usage-fetch.sh) ═════════════════════
 # Drives the /api/oauth/usage fetcher through the CC_STATUSLINE_USAGE_DATA seam
 # and asserts the 5-field authoritative cache line it writes. A dummy token is
