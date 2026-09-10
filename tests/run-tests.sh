@@ -210,6 +210,15 @@ _stays_absent() {  # one or more paths, observed for the same bounded interval
     done
     return 0
 }
+_stays_content() {  # path exact-content, observed for the same bounded interval
+    local path="$1" expected="$2" got
+    for _ in {1..50}; do
+        got=""; [ -f "$path" ] && got=$(head -1 "$path" 2>/dev/null)
+        [ "$got" = "$expected" ] || return 1
+        sleep 0.05
+    done
+    return 0
+}
 
 # Emit a stdin JSON payload with the given rate limits (short cwd, no git).
 _rl_json() {
@@ -1186,10 +1195,9 @@ update_check_tests() {
     rm -f "$hits" "$c11" "$c11.fetching"
     _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$c11" CC_STATUSLINE_UPDATE_FETCH="$fake"
     _upd_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$c11" CC_STATUSLINE_UPDATE_FETCH="$fake"
-    sleep 0.3
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif [ ! -f "$c11.fetching" ]; then _rl_fail "$name" ".fetching marker not written"
-    elif [ "$(wc -c <"$hits" 2>/dev/null | tr -d ' ')" != "1" ]; then
+    elif ! _wait_for_content "$hits" "x" || ! _stays_content "$hits" "x"; then
         _rl_fail "$name" "expected exactly 1 spawn across 2 renders, got $(wc -c <"$hits" 2>/dev/null | tr -d ' ')"
     else _rl_pass "$name"; fi
 
