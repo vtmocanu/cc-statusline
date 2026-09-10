@@ -54,9 +54,13 @@ unset CLAUDE_CODE_OAUTH_TOKEN
 # spawning a real curl in the background during tests.
 export CC_STATUSLINE_SVC_CACHE="$SCRATCH/svc-cache"
 export CC_STATUSLINE_SVC_FETCH="$SCRATCH/no-such-fetcher.sh"
-# Same isolation for the per-account usage fetcher: a non-executable path so a
-# render can never hit /api/oauth/usage with real credentials during tests.
+export CC_STATUSLINE_CODEX_SVC_CACHE="$SCRATCH/codex-svc-cache"
+export CC_STATUSLINE_CODEX_SVC_FETCH="$SCRATCH/no-such-codex-status-fetcher.sh"
+# Same isolation for the usage fetchers: non-executable paths ensure a render
+# can never hit Anthropic or launch the real Codex app server during tests.
 export CC_STATUSLINE_RL_FETCH="$SCRATCH/no-such-usage-fetcher.sh"
+export CC_STATUSLINE_GPT_FETCH="$SCRATCH/no-such-codex-fetcher.sh"
+export CC_STATUSLINE_GPT_CREDITS_FETCH="$SCRATCH/no-such-credit-fetcher.sh"
 # Same for the update check: a scratch cache (absent unless a test seeds it, so
 # no fixture ever shows the indicator) and a non-executable fetcher path so a
 # render never hits api.github.com during tests.
@@ -524,6 +528,422 @@ rate_limit_cache_tests() {
         _rl_fail "$name" "stdin shown for keyed session with no fetched line: $l2"
     elif [ -e "$sd16/rate-limits-acct16" ]; then
         _rl_fail "$name" "keyed cache seeded from stdin: $(cat "$sd16/rate-limits-acct16" 2>/dev/null)"
+    else _rl_pass "$name"; fi
+}
+
+# ── GPT/Codex integration tests ─────────────────────────────────────────────
+_gpt_json() {
+    printf '{"model":{"display_name":"GPT Test","id":"%s"},' "$1"
+    printf '"cwd":"/home/test/gpt","context_window":{"remaining_percentage":50,'
+    printf '"context_window_size":1000000},"cost":{"total_duration_ms":300000'
+    [ -n "${2:-}" ] && printf ',"total_cost_usd":%s' "$2"
+    printf '},"session_id":"gpt-test","rate_limits":{'
+    printf '"five_hour":{"used_percentage":99,"resets_at":1700009660},'
+    printf '"seven_day":{"used_percentage":98,"resets_at":1700361000}}}'
+}
+
+gpt_rate_limit_tests() {
+    printf '\n'
+    printf 'GPT/Codex integration tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local cache ccache out err l2 raw name id n csvc clsvc crcache crstate crdir crkey otherkey w fake hits
+    cache="$SCRATCH/gpt.cache"; ccache="$SCRATCH/gpt-claude.cache"
+    out="$SCRATCH/gpt.out"; err="$SCRATCH/gpt.err"
+
+    # All provider-explicit IDs route to the Codex cache. The fake 99%/98%
+    # Claude payload must never leak into a GPT render.
+    n=0
+    for id in gpt-5.6-sol 'gpt-5.6-sol[1m]' claude-ocx-native--gpt-5.6-sol \
+              clodex:openai-oauth:gpt-5.6-sol anthropic-openai-oauth__gpt-5.6-sol; do
+        n=$((n + 1)); name="gpt-id-$n"
+        printf '|||65|1700361000|604800|1699999990\n' >"$cache"; rm -f "$ccache"
+        (cd "$SCRATCH" && _gpt_json "$id" \
+            | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+              CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+        l2=$(_rl_l2 "$out")
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif ! _has "$l2" "7d" || ! _has "$l2" "65%"; then
+            _rl_fail "$name" "weekly Codex limit missing for $id: $l2"
+        elif _has "$l2" "5h" || _has "$l2" "99%" || _has "$l2" "98%"; then
+            _rl_fail "$name" "Claude limits leaked for $id: $l2"
+        elif [ -e "$ccache" ]; then _rl_fail "$name" "GPT render wrote Claude cache"
+        else _rl_pass "$name"; fi
+    done
+
+    # A single 5h window is valid too.
+    name="gpt-five-only"; printf '42|1700009660|18000||||1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "5h" || ! _has "$l2" "42%" || _has "$l2" "7d"; then
+        _rl_fail "$name" "5h-only cache rendered incorrectly: $l2"
+    else _rl_pass "$name"; fi
+
+    # GPT pace uses each Codex window's reported duration. At the pinned clock,
+    # 60% halfway through 5h is ahead, while 50% halfway through 7d is on pace.
+    name="gpt-pace-ahead-and-on"
+    printf '60|1700009000|18000|50|1700302400|604800|1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "60%↑" || ! _has "$l2" "50%→"; then
+        _rl_fail "$name" "GPT pace projections wrong: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-pace-safe"
+    printf '20|1700009000|18000|20|1700302400|604800|1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "↑" || _has "$l2" "→"; then _rl_fail "$name" "safe GPT pace showed an arrow: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-pace-zero-suppressed"
+    printf '0|1700009000|18000|0|1700302400|604800|1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "↑" || _has "$l2" "→"; then _rl_fail "$name" "zero GPT window showed an arrow: $l2"
+    else _rl_pass "$name"; fi
+
+    # A 315-minute reported duration produces on-pace here; a hardcoded 300
+    # minutes would incorrectly classify the same snapshot as ahead.
+    name="gpt-pace-reported-duration"
+    printf '85|1700004900|18900||||1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "85%→" || _has "$l2" "85%↑"; then
+        _rl_fail "$name" "reported GPT duration was not used: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-pace-phone-width"
+    printf '60|1700009000|18000|50|1700302400|604800|1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | env COLUMNS=46 STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+              CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); w=$(sed -n '2p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "60%↑" || ! _has "$l2" "50%→"; then
+        _rl_fail "$name" "phone GPT pace detail missing: $l2"
+    elif [ "$w" -gt 45 ]; then _rl_fail "$name" "phone GPT pace width $w exceeds 45"
+    else _rl_pass "$name"; fi
+
+    # Claude keeps its historical both-window contract. A partial Anthropic
+    # payload is treated as no rates, even though GPT explicitly supports one.
+    name="claude-partial-stays-hidden"
+    printf '%s' '{"model":{"display_name":"Claude Opus 5","id":"claude-opus-5"},"cwd":"/home/test/rl","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"claude-partial","rate_limits":{"five_hour":{"used_percentage":42,"resets_at":1700009660}}}' >"$SCRATCH/claude-partial.json"
+    (cd "$SCRATCH" && STATUSLINE_RL_SHARE=0 bash "$STATUSLINE" <"$SCRATCH/claude-partial.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "5h" || _has "$l2" "42%"; then
+        _rl_fail "$name" "partial Claude payload became visible: $l2"
+    else _rl_pass "$name"; fi
+
+    # API-key routes are not ChatGPT plan accounts and must retain Claude input.
+    name="gpt-api-key-excluded"; printf '|||65|1700361000|604800|1699999990\n' >"$cache"
+    rm -f "$ccache"
+    (cd "$SCRATCH" && _gpt_json clodex:openai:gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "99%" || ! _has "$l2" "98%" || _has "$l2" "65%"; then
+        _rl_fail "$name" "API-key route used ChatGPT cache: $l2"
+    else _rl_pass "$name"; fi
+
+    # The feature is default-off even for an obvious gpt-* model.
+    name="gpt-default-off"; rm -f "$ccache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | CC_STATUSLINE_GPT_CACHE="$cache" CC_STATUSLINE_RL_CACHE="$ccache" \
+          bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "99%" || ! _has "$l2" "98%" || _has "$l2" "65%"; then
+        _rl_fail "$name" "default-off toggle changed Claude limits: $l2"
+    else _rl_pass "$name"; fi
+
+    # Claude Code applies Claude prices to GPT tokens, so the resulting native
+    # dollar value is invalid and hidden. Claude's own cost behavior is unchanged.
+    name="gpt-native-cost-hidden"; printf '|||65|1700361000|604800|1699999990\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol 108.4706675 \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" '$108.47' || _has "$l2" '$'; then
+        _rl_fail "$name" "invalid native GPT dollar cost was displayed: $l2"
+    else _rl_pass "$name"; fi
+
+    name="claude-native-cost-unchanged"; rm -f "$ccache"
+    (cd "$SCRATCH" && _rl_json_rich \
+        | CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" '$12.34'; then
+        _rl_fail "$name" "Claude native cost disappeared: $l2"
+    else _rl_pass "$name"; fi
+
+    # A stale Codex snapshot blanks rates rather than falling back to Claude.
+    name="gpt-stale-no-claude-fallback"; printf '|||65|1700361000|604800|1699999000\n' >"$cache"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "65%" || _has "$l2" "99%" || _has "$l2" "98%"; then
+        _rl_fail "$name" "stale GPT cache fell back to wrong limits: $l2"
+    else _rl_pass "$name"; fi
+
+    # Agent-pane transcript correction changes the effective provider even when
+    # stdin still reports the Claude parent model.
+    name="gpt-transcript-effective-model"; printf '|||65|1700361000|604800|1699999990\n' >"$cache"
+    rm -f "$ccache" "$ccache.fetching"
+    printf '%s\n' '{"type":"assistant","message":{"model":"gpt-5.6-sol","content":[]}}' >"$SCRATCH/gpt-transcript.jsonl"
+    printf '%s' '{"model":{"display_name":"Claude Opus 5","id":"claude-opus-5"},"cwd":"/home/test/gpt","transcript_path":"' >"$SCRATCH/gpt-transcript.json"
+    printf '%s' "$SCRATCH/gpt-transcript.jsonl" >>"$SCRATCH/gpt-transcript.json"
+    printf '%s' '","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"gpt-pane","rate_limits":{"five_hour":{"used_percentage":99,"resets_at":1700009660},"seven_day":{"used_percentage":98,"resets_at":1700361000}}}' >>"$SCRATCH/gpt-transcript.json"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "65%" || _has "$l2" "99%" || _has "$l2" "98%"; then
+        _rl_fail "$name" "transcript GPT model did not replace Claude limits: $l2"
+    elif [ -e "$ccache" ] || [ -e "$ccache.fetching" ]; then
+        _rl_fail "$name" "transcript-only GPT detection touched the Claude rate cache"
+    else _rl_pass "$name"; fi
+
+    # Fresh transcript-derived units render as a compact, rounded ChatGPT credit
+    # estimate in the former dollar-cost position.
+    crcache="$SCRATCH/gpt-credits.cache"
+    printf 'ok|2074808840|1699999990\n' >"$crcache"
+    name="gpt-credit-render"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); w=$(sed -n '2p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "2.07k cr" || _has "$l2" '$'; then
+        _rl_fail "$name" "credit estimate rendered incorrectly: $l2"
+    elif [ "$w" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then
+        _rl_fail "$name" "credit segment widened line 2 to $w columns"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-below-1000"; printf 'ok|211289540|1699999990\n' >"$crcache"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "211.29 cr"; then _rl_fail "$name" "sub-1000 credits rendered incorrectly: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-zero-hidden"; printf 'ok|0|1699999990\n' >"$crcache"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "0.00 cr" || _has "$l2" " cr"; then
+        _rl_fail "$name" "fresh zero-usage session showed credits: $l2"
+    else _rl_pass "$name"; fi
+
+    # Restore a positive cache for the width-tier checks below.
+    printf 'ok|211289540|1699999990\n' >"$crcache"
+    name="gpt-credit-phone-tier"
+    (cd "$SCRATCH" && env COLUMNS=46 STATUSLINE_GPT_LIMITS=1 \
+        CC_STATUSLINE_GPT_CACHE="$cache" CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); w=$(sed -n '2p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" " cr"; then _rl_fail "$name" "phone tier kept credit segment: $l2"
+    elif [ "$w" -gt 45 ]; then _rl_fail "$name" "phone credit render exceeded 45 columns: $w"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-opt-out"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 STATUSLINE_GPT_CREDITS=0 \
+        CC_STATUSLINE_GPT_CACHE="$cache" CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" " cr"; then _rl_fail "$name" "STATUSLINE_GPT_CREDITS=0 still showed credits: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-stale-hidden"; printf 'ok|2074808840|1699999000\n' >"$crcache"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" " cr"; then _rl_fail "$name" "stale credit cache stayed visible: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-unavailable-hidden"; printf 'unavailable||1699999990\n' >"$crcache"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" " cr"; then _rl_fail "$name" "unavailable credit cache became visible: $l2"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-malformed-cache-hidden"; printf 'ok|not-a-number|1699999990\n' >"$crcache"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" " cr"; then _rl_fail "$name" "malformed credit cache became visible: $l2"
+    else _rl_pass "$name"; fi
+
+    # Full transcript scans are throttled to 60s. The fake helper also records
+    # the pinned clock it receives from the statusline.
+    fake="$SCRATCH/fake-credit-fetch.sh"
+    cat >"$fake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "${CC_STATUSLINE_NOW:-}" >"${CC_STATUSLINE_GPT_CREDITS_CACHE}.hit"
+EOF
+    chmod +x "$fake"
+    name="gpt-credit-refresh-waits-60s"
+    printf 'ok|211289540|1699999970\n' >"$crcache"
+    rm -f "$crcache.hit" "$crcache.fetching"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_GPT_CREDITS_FETCH="$fake" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ -e "$crcache.hit" ] || [ -e "$crcache.fetching" ]; then
+        _rl_fail "$name" "30-second cache triggered a full transcript scan"
+    else _rl_pass "$name"; fi
+
+    name="gpt-credit-refresh-at-60s"
+    printf 'ok|211289540|1699999940\n' >"$crcache"
+    rm -f "$crcache.hit" "$crcache.fetching"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_GPT_CREDITS_FETCH="$fake" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$(head -1 "$crcache.hit" 2>/dev/null)" != "1700000000" ]; then
+        _rl_fail "$name" "60-second refresh did not run with pinned clock"
+    elif [ ! -e "$crcache.fetching" ]; then _rl_fail "$name" "credit refresh marker missing"
+    else _rl_pass "$name"; fi
+
+    # Codex usage snapshots receive the same pinned clock as transcript credits.
+    fake="$SCRATCH/fake-codex-usage-fetch.sh"
+    cat >"$fake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "${CC_STATUSLINE_NOW:-}" >"${CC_STATUSLINE_GPT_CACHE}.now"
+EOF
+    chmod +x "$fake"
+    name="gpt-limit-fetch-receives-clock"
+    rm -f "$cache" "$cache.fetching" "$cache.now"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_GPT_FETCH="$fake" CC_STATUSLINE_RL_CACHE="$ccache" \
+          bash "$STATUSLINE") >"$out" 2>"$err"
+    sleep 0.3
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$(head -1 "$cache.now" 2>/dev/null)" != "1700000000" ]; then
+        _rl_fail "$name" "Codex usage helper did not receive pinned clock"
+    else _rl_pass "$name"; fi
+    printf '|||65|1700361000|604800|1699999990\n' >"$cache"
+
+    # A cache keyed for another transcript must never appear in this session.
+    name="gpt-credit-session-isolation"; crstate="$SCRATCH/gpt-credit-state"
+    crdir="$crstate/cc-statusline-$(id -u)"; mkdir -p "$crdir"
+    otherkey=$(printf '%s' "$SCRATCH/other-session.jsonl" | cksum | cut -d' ' -f1)
+    printf 'ok|999999999|1699999990\n' >"$crdir/gpt-credits-$otherkey"
+    crkey=$(printf '%s' "$SCRATCH/gpt-transcript.jsonl" | cksum | cut -d' ' -f1)
+    rm -f "$crdir/gpt-credits-$crkey"
+    (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 XDG_RUNTIME_DIR="$crstate" \
+        CC_STATUSLINE_GPT_CACHE="$cache" CC_STATUSLINE_GPT_CREDITS_CACHE="" \
+        CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" " cr"; then _rl_fail "$name" "another session's credits leaked: $l2"
+    else _rl_pass "$name"; fi
+
+    # Weekly-only also survives the phone tier and keeps the context fallback
+    # from replacing a real rate window.
+    name="gpt-phone-weekly-only"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | env COLUMNS=46 STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+              CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "7d" || ! _has "$l2" "65%" || _has "$l2" "5h"; then
+        _rl_fail "$name" "phone weekly-only limit rendered incorrectly: $l2"
+    else _rl_pass "$name"; fi
+
+    # GPT selects only its dedicated Codex component cache and OpenAI link, even
+    # when the Claude cache contains a conflicting status.
+    csvc="$SCRATCH/gpt-codex-svc"; clsvc="$SCRATCH/gpt-claude-svc"
+    printf '|||65|1700361000|604800|1699999990\n' >"$cache"
+    printf 'operational\n' >"$csvc"; printf 'incident:Claude outage\n' >"$clsvc"
+    name="gpt-service-source-and-link"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_SVC_CACHE="$clsvc" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); raw=$(sed -n '2p' "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "✓" || _has "$l2" "⚠"; then
+        _rl_fail "$name" "GPT selected Claude status: $l2"
+    elif ! _has "$raw" "https://status.openai.com/" || _has "$raw" "https://status.claude.com"; then
+        _rl_fail "$name" "GPT service hyperlink selected the wrong provider"
+    elif [ "$(head -1 "$csvc")" != operational ] || [ "$(head -1 "$clsvc")" != "incident:Claude outage" ]; then
+        _rl_fail "$name" "provider service caches were cross-written"
+    else _rl_pass "$name"; fi
+
+    name="gpt-service-degraded"
+    printf 'degraded_performance:Codex API:Codex API\n' >"$csvc"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_SVC_CACHE="$clsvc" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "~" || _has "$l2" "⚠"; then
+        _rl_fail "$name" "Codex degraded status rendered incorrectly: $l2"
+    else _rl_pass "$name"; fi
+
+    # A missing Codex cache must not fall back to the available Claude cache.
+    name="gpt-service-missing-no-claude-fallback"; rm -f "$csvc"
+    printf 'operational\n' >"$clsvc"
+    (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+        | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
+          CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_SVC_CACHE="$clsvc" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); raw=$(sed -n '2p' "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l2" "✓" || _has "$raw" "status.claude.com"; then
+        _rl_fail "$name" "missing Codex status fell back to Claude: $l2"
+    else _rl_pass "$name"; fi
+
+    # Claude sessions still ignore the Codex cache and link.
+    name="claude-service-source-unchanged"; printf 'major_outage:Codex API:Codex API\n' >"$csvc"
+    printf 'operational\n' >"$clsvc"
+    (cd "$SCRATCH" && _rl_json 15 1700009660 2 1700361000 \
+        | CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_SVC_CACHE="$clsvc" \
+          CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE") >"$out" 2>"$err"
+    l2=$(_rl_l2 "$out"); raw=$(sed -n '2p' "$out")
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l2" "✓" || _has "$l2" "✗"; then
+        _rl_fail "$name" "Claude selected Codex status: $l2"
+    elif ! _has "$raw" "https://status.claude.com" || _has "$raw" "status.openai.com"; then
+        _rl_fail "$name" "Claude service hyperlink changed provider"
     else _rl_pass "$name"; fi
 }
 
@@ -1425,6 +1845,48 @@ env_hardening_tests() {
         else _rl_pass "$name"; fi
     done
 
+    # GPT cache TTLs reach the same arithmetic sinks, but only inside a detected
+    # GPT render with a valid fetched line and backoff marker.
+    for v in STATUSLINE_GPT_AUTH_TTL STATUSLINE_GPT_BACKOFF; do
+        name="env-exec-$v"; marker="$payload_dir/$v"
+        out="$SCRATCH/env-$v.out"; err="$SCRATCH/env-$v.err"
+        rm -f "$marker"
+        printf '|||65|1700361000|604800|1699999990\n' >"$SCRATCH/env-gpt.cache"
+        : >"$SCRATCH/env-gpt.cache.backoff"
+        touch -t 202311010000 "$SCRATCH/env-gpt.cache.backoff" 2>/dev/null
+        (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+            | env "$v=PCT[\$(touch $marker)]" STATUSLINE_GPT_LIMITS=1 \
+                  CC_STATUSLINE_GPT_CACHE="$SCRATCH/env-gpt.cache" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/env-gpt-claude.cache" \
+                  bash "$STATUSLINE") >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -e "$marker" ]; then
+            _rl_fail "$name" "COMMAND EXECUTION: payload in \$$v ran (marker created)"
+        elif [ -s "$err" ]; then
+            _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then
+            _rl_fail "$name" "expected 2 lines with a hostile \$$v, got $lines"
+        else _rl_pass "$name"; fi
+    done
+
+    name="env-exec-STATUSLINE_GPT_CREDITS_TTL"
+    marker="$payload_dir/STATUSLINE_GPT_CREDITS_TTL"
+    out="$SCRATCH/env-STATUSLINE_GPT_CREDITS_TTL.out"; err="$SCRATCH/env-STATUSLINE_GPT_CREDITS_TTL.err"
+    rm -f "$marker"
+    printf '|||65|1700361000|604800|1699999990\n' >"$SCRATCH/env-credit-rate.cache"
+    printf 'ok|2074808840|1699999990\n' >"$SCRATCH/env-credit.cache"
+    (cd "$SCRATCH" && env "STATUSLINE_GPT_CREDITS_TTL=PCT[\$(touch $marker)]" \
+        STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$SCRATCH/env-credit-rate.cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$SCRATCH/env-credit.cache" \
+        CC_STATUSLINE_RL_CACHE="$SCRATCH/env-credit-claude.cache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    lines=$(wc -l <"$out" | tr -d ' ')
+    if [ -e "$marker" ]; then
+        _rl_fail "$name" "COMMAND EXECUTION: payload in \$STATUSLINE_GPT_CREDITS_TTL ran"
+    elif [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$lines" -ne 2 ]; then _rl_fail "$name" "expected 2 lines, got $lines"
+    else _rl_pass "$name"; fi
+
     # Negative control: the same payload in a variable the script feeds to
     # arithmetic WITHOUT a gate does execute. If this stops executing, the probe
     # is broken and every pass above is meaningless.
@@ -1462,6 +1924,37 @@ env_hardening_tests() {
             _rl_fail "$name" "junk \$$v produced $lines lines (expected 2, i.e. the default was used)"
         else _rl_pass "$name"; fi
     done
+
+    for v in STATUSLINE_GPT_AUTH_TTL STATUSLINE_GPT_BACKOFF; do
+        name="env-junk-$v"; out="$SCRATCH/junk-$v.out"; err="$SCRATCH/junk-$v.err"
+        printf '|||65|1700361000|604800|1699999990\n' >"$SCRATCH/junk-gpt.cache"
+        : >"$SCRATCH/junk-gpt.cache.backoff"
+        touch -t 202311010000 "$SCRATCH/junk-gpt.cache.backoff" 2>/dev/null
+        (cd "$SCRATCH" && _gpt_json gpt-5.6-sol \
+            | env "$v=abc" STATUSLINE_GPT_LIMITS=1 \
+                  CC_STATUSLINE_GPT_CACHE="$SCRATCH/junk-gpt.cache" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/junk-gpt-claude.cache" \
+                  bash "$STATUSLINE") >"$out" 2>"$err"
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then
+            _rl_fail "$name" "junk \$$v produced $lines lines (expected 2)"
+        else _rl_pass "$name"; fi
+    done
+
+    name="env-junk-STATUSLINE_GPT_CREDITS_TTL"
+    out="$SCRATCH/junk-STATUSLINE_GPT_CREDITS_TTL.out"; err="$SCRATCH/junk-STATUSLINE_GPT_CREDITS_TTL.err"
+    printf '|||65|1700361000|604800|1699999990\n' >"$SCRATCH/junk-credit-rate.cache"
+    printf 'ok|2074808840|1699999990\n' >"$SCRATCH/junk-credit.cache"
+    (cd "$SCRATCH" && env STATUSLINE_GPT_CREDITS_TTL=abc STATUSLINE_GPT_LIMITS=1 \
+        CC_STATUSLINE_GPT_CACHE="$SCRATCH/junk-credit-rate.cache" \
+        CC_STATUSLINE_GPT_CREDITS_CACHE="$SCRATCH/junk-credit.cache" \
+        CC_STATUSLINE_RL_CACHE="$SCRATCH/junk-credit-claude.cache" \
+        bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
+    lines=$(wc -l <"$out" | tr -d ' ')
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$lines" -ne 2 ]; then _rl_fail "$name" "junk credit TTL produced $lines lines"
+    else _rl_pass "$name"; fi
 
     # A value too large for the shell's integer conversion must not reach a bare
     # `[`, and a zero-padded one must not be read as octal (060 is 60, not 48).
@@ -1557,6 +2050,7 @@ for f in "$FIXTURES"/*.json; do
 done
 
 rate_limit_cache_tests
+gpt_rate_limit_tests
 phone_layout_tests
 phone_truncation_tests
 phone_gap_tests

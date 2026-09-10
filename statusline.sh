@@ -119,6 +119,7 @@ CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
 DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
+EFFECTIVE_MODEL_ID="$MODEL_ID"
 SESSION_TITLE=${SESSION_TITLE:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
 # crafted value can't inject terminal escapes (defense in depth; the session
@@ -164,6 +165,9 @@ if [ "${STATUSLINE_SESSION_NAME:-1}" != "0" ]; then
 fi
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
 FIVE_RESET_TS=${FIVE_RESET_TS:-}; SEVEN_RESET_TS=${SEVEN_RESET_TS:-}
+# Claude's known fixed windows. GPT overrides these with each Codex snapshot's
+# reported duration after classifying it as 5h or weekly.
+FIVE_DURATION=18000; SEVEN_DURATION=604800
 CACHE_PCT=${CACHE_PCT:-}
 # COST_USD is numeric (jq guarantees a number or 0), so no control-byte strip
 # is needed; but reset any non-numeric value to 0 defensively (allow digits and
@@ -187,6 +191,43 @@ PCT=$(_clamp_pct "$PCT"); PCT=${PCT:-0}   # context % is mandatory; default 0
 FIVE_PCT=$(_clamp_pct "$FIVE_PCT")
 SEVEN_PCT=$(_clamp_pct "$SEVEN_PCT")
 CACHE_PCT=$(_clamp_pct "$CACHE_PCT")
+
+# Extract the effective serving model once, before any provider-specific cache
+# work. Agent panes can receive the parent model on stdin while their transcript
+# records the actual model. Keep every original correction gate: stdin must have
+# an id, the transcript id must differ, and untrusted transcript text is length-
+# and charset-bounded. The display correction later reuses this validated value.
+TS_MODEL_ID=""
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    TS_MODEL_ID=$(_reverse_file "$TRANSCRIPT_PATH" \
+        | grep -m1 '"type":"assistant"' \
+        | grep -oE '"model":"[^"]+"' | head -1 || true)
+    TS_MODEL_ID=${TS_MODEL_ID#'"model":"'}
+    TS_MODEL_ID=${TS_MODEL_ID%'"'}
+    if [ -n "$MODEL_ID" ] && [ -n "$TS_MODEL_ID" ] \
+        && [ "${#TS_MODEL_ID}" -le 64 ] \
+        && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._-]+$ ]] \
+        && [ "$TS_MODEL_ID" != "$MODEL_ID" ]; then
+        EFFECTIVE_MODEL_ID="$TS_MODEL_ID"
+    fi
+fi
+
+# GPT plan limits are opt-in and come from the official Codex CLI, not from
+# Claude Code's Anthropic rate_limits payload. Keep detection ID-based so a
+# future transport can replace Clodex without changing the usage source. The
+# explicit API-key route is intentionally absent: ChatGPT plan usage does not
+# describe an OpenAI API-key account.
+_is_gpt_model_id() {
+    local id="${1%%\[*}"
+    case "$id" in
+        gpt-*|claude-ocx-native--gpt-*|clodex:openai-oauth:gpt-*|anthropic-openai-oauth__gpt-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+GPT_EFFECTIVE_EARLY=0
+if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL_ID"; then
+    GPT_EFFECTIVE_EARLY=1
+fi
 
 # ── Shared per-user rate-limits cache ─────────────────────────────────────
 # Rate limits are account-wide, but Claude Code freezes the stdin rate_limits
@@ -253,7 +294,7 @@ _rl_write() {
     fi
     RL_TMP=""
 }
-if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ]; then
+if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; then
     # Reap a tmp left by an interrupted write, while still emitting the crash
     # newline the top-of-file EXIT trap guarantees. RL_TMP is "" outside a write,
     # so this is a no-op on a clean crash; disarmed at the normal output path.
@@ -531,11 +572,9 @@ EFFORT=${EFFORT:-medium}
 # subagent panes, so an agent served by a different model would otherwise show
 # the parent's name. The agent's own transcript records the true serving model
 # on every assistant entry: lines with "type":"assistant" contain
-# "message":{"model":"<id>",...}. Take the most recent such line (reverse-read,
-# grep -m1, the same cheap pattern the effort detection uses above). Other lines
-# also carry "model":"..." (e.g. Agent tool-call params), so anchor strictly to
-# "type":"assistant" lines; on such a line message.model precedes any tool-input
-# model, so the first match is the serving model.
+# "message":{"model":"<id>",...}. EFFECTIVE_MODEL_ID was extracted and
+# validated once above, before provider-specific rate-cache work, so this block
+# only formats the accepted value for display.
 #
 # Prettify a validated Claude model ID for display: strip the leading "claude-",
 # drop a trailing 8-digit date (e.g. -20251001), join the trailing numeric
@@ -583,26 +622,141 @@ _prettify_model_id() {
     printf '%s %s' "$out" "$nums_joined"
 }
 
-if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    TS_MODEL_ID=$(_reverse_file "$TRANSCRIPT_PATH" \
-        | grep -m1 '"type":"assistant"' \
-        | grep -oE '"model":"[^"]+"' | head -1 || true)
-    TS_MODEL_ID=${TS_MODEL_ID#'"model":"'}
-    TS_MODEL_ID=${TS_MODEL_ID%'"'}
-    # Only override when stdin actually reported an id to differ from: a missing
-    # stdin .model.id (MODEL_ID="") must NOT make the differ-gate always true and
-    # replace the display_name on every main-session render. Untrusted transcript
-    # content is length-capped (MODEL is not in the line-2 truncation priority
-    # list, so an oversized but charset-valid id would overflow the line) and
-    # accepted only on a strict model-ID charset (defense in depth, same
-    # philosophy as the control-byte strips above).
-    if [ -n "$MODEL_ID" ] && [ -n "$TS_MODEL_ID" ] \
-        && [ "${#TS_MODEL_ID}" -le 64 ] \
-        && [[ "$TS_MODEL_ID" =~ ^[a-zA-Z0-9._-]+$ ]] \
-        && [ "$TS_MODEL_ID" != "$MODEL_ID" ]; then
-        MODEL=$(_prettify_model_id "$TS_MODEL_ID")
-        # Same control-byte strip as the other JSON-sourced fields we print.
-        MODEL="${MODEL//[$'\001'-$'\037\177']/}"
+if [ "$EFFECTIVE_MODEL_ID" != "$MODEL_ID" ]; then
+    MODEL=$(_prettify_model_id "$EFFECTIVE_MODEL_ID")
+    # Same control-byte strip as the other JSON-sourced fields we print.
+    MODEL="${MODEL//[$'\001'-$'\037\177']/}"
+fi
+
+# ── GPT/Codex plan usage (opt-in) ───────────────────────────────────────────
+# The official Codex app server owns ChatGPT authentication and refreshes its
+# own OAuth token. codex-usage-fetch.sh asks its read-only
+# account/rateLimits/read method in the background and writes a separate cache;
+# no inference request or Clodex credential access is involved. A GPT session
+# never falls back to Claude's stdin/cache percentages: stale or missing Codex
+# data means no rate segment until a successful fetch lands.
+GPT_ACTIVE=0
+if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL_ID"; then
+    GPT_ACTIVE=1
+    FIVE_PCT=""; FIVE_RESET_TS=""
+    SEVEN_PCT=""; SEVEN_RESET_TS=""
+
+    GPT_CACHE="${CC_STATUSLINE_GPT_CACHE:-$(_state_dir)/rate-limits-gpt}"
+    GPT_FP=""; GPT_FR=""; GPT_FD=""; GPT_SP=""; GPT_SR=""; GPT_SD=""
+    GPT_AT=""; GPT_EXTRA=""; GPT_CACHE_OK=0; GPT_HAS_WINDOW=0
+    if [ -f "$GPT_CACHE" ]; then
+        IFS='|' read -r GPT_FP GPT_FR GPT_FD GPT_SP GPT_SR GPT_SD GPT_AT GPT_EXTRA <"$GPT_CACHE" 2>/dev/null || true
+        GPT_FIELDS_OK=1
+        if [ -n "$GPT_FP" ]; then
+            [[ "$GPT_FP" =~ ^[0-9]{1,3}$ ]] || GPT_FIELDS_OK=0
+            { [ -z "$GPT_FR" ] || [[ "$GPT_FR" =~ ^[0-9]{1,12}$ ]]; } || GPT_FIELDS_OK=0
+            if [[ "$GPT_FD" =~ ^[0-9]{1,9}$ ]]; then
+                [ "$GPT_FD" -ge 17100 ] && [ "$GPT_FD" -le 18900 ] 2>/dev/null || GPT_FIELDS_OK=0
+            else
+                GPT_FIELDS_OK=0
+            fi
+            GPT_HAS_WINDOW=1
+        elif [ -n "$GPT_FR" ] || [ -n "$GPT_FD" ]; then
+            GPT_FIELDS_OK=0
+        fi
+        if [ -n "$GPT_SP" ]; then
+            [[ "$GPT_SP" =~ ^[0-9]{1,3}$ ]] || GPT_FIELDS_OK=0
+            { [ -z "$GPT_SR" ] || [[ "$GPT_SR" =~ ^[0-9]{1,12}$ ]]; } || GPT_FIELDS_OK=0
+            if [[ "$GPT_SD" =~ ^[0-9]{1,9}$ ]]; then
+                [ "$GPT_SD" -ge 574560 ] && [ "$GPT_SD" -le 635040 ] 2>/dev/null || GPT_FIELDS_OK=0
+            else
+                GPT_FIELDS_OK=0
+            fi
+            GPT_HAS_WINDOW=1
+        elif [ -n "$GPT_SR" ] || [ -n "$GPT_SD" ]; then
+            GPT_FIELDS_OK=0
+        fi
+        [ -z "$GPT_EXTRA" ] || GPT_FIELDS_OK=0
+        [[ "$GPT_AT" =~ ^[0-9]{1,12}$ ]] || GPT_FIELDS_OK=0
+        [ "$GPT_FIELDS_OK" = "1" ] && [ "$GPT_HAS_WINDOW" = "1" ] && GPT_CACHE_OK=1
+    fi
+
+    GPT_AGE=9999
+    if [ "$GPT_CACHE_OK" = "1" ]; then
+        GPT_AGE=$((NOW - GPT_AT))
+        GPT_TTL=$(_gate_int "${STATUSLINE_GPT_AUTH_TTL:-300}" 300)
+        if [ "$GPT_AGE" -lt 0 ] 2>/dev/null; then
+            GPT_AGE=9999
+        elif [ "$GPT_AGE" -lt "$GPT_TTL" ] 2>/dev/null; then
+            FIVE_PCT=$(_clamp_pct "$GPT_FP"); FIVE_RESET_TS="$GPT_FR"; FIVE_DURATION="$GPT_FD"
+            SEVEN_PCT=$(_clamp_pct "$GPT_SP"); SEVEN_RESET_TS="$GPT_SR"; SEVEN_DURATION="$GPT_SD"
+        fi
+    fi
+
+    GPT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    GPT_FETCH="${CC_STATUSLINE_GPT_FETCH:-${GPT_SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/codex-usage-fetch.sh}"
+    GPT_BACK=0
+    if [ -f "$GPT_CACHE.backoff" ]; then
+        GPT_BACK_AGE=$((NOW - $(_file_mtime "$GPT_CACHE.backoff")))
+        GPT_BACK_TTL=$(_gate_int "${STATUSLINE_GPT_BACKOFF:-300}" 300)
+        [ "$GPT_BACK_AGE" -ge 0 ] && [ "$GPT_BACK_AGE" -lt "$GPT_BACK_TTL" ] 2>/dev/null && GPT_BACK=1
+    fi
+    if [ "${STATUSLINE_GPT_FETCH:-1}" != "0" ] && [ -x "$GPT_FETCH" ] \
+        && [ "$GPT_AGE" -ge 60 ] && [ "$GPT_BACK" = "0" ]; then
+        GPT_MARK="$GPT_CACHE.fetching"
+        GPT_MARK_AGE=9999
+        [ -f "$GPT_MARK" ] && GPT_MARK_AGE=$((NOW - $(_file_mtime "$GPT_MARK")))
+        if [ "$GPT_MARK_AGE" -ge 60 ] || [ "$GPT_MARK_AGE" -lt 0 ]; then
+            touch "$GPT_MARK" 2>/dev/null || true
+            (CC_STATUSLINE_GPT_CACHE="$GPT_CACHE" CC_STATUSLINE_NOW="$NOW" \
+             "$GPT_FETCH" >/dev/null 2>&1 &)
+        fi
+    fi
+fi
+
+# ── GPT-5.6 Sol credit-equivalent estimate (opt-in with GPT limits) ─────────
+# The helper streams this session's main transcript plus subagent JSONL files,
+# deduplicates repeated assistant response ids, and applies only the published
+# ChatGPT credit rates for recognized GPT-5.6 Sol identities. It runs in the
+# background; a render only reads this session-keyed private cache.
+GPT_CREDITS_UNITS=""
+if [ "$GPT_ACTIVE" = "1" ] && [ "${STATUSLINE_GPT_CREDITS:-1}" != "0" ] \
+    && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    if [ -n "${CC_STATUSLINE_GPT_CREDITS_CACHE:-}" ]; then
+        CREDITS_CACHE="$CC_STATUSLINE_GPT_CREDITS_CACHE"
+    else
+        CREDITS_KEY=$(printf '%s' "$TRANSCRIPT_PATH" | cksum | cut -d' ' -f1 || echo 0)
+        CREDITS_CACHE="$(_state_dir)/gpt-credits-$CREDITS_KEY"
+    fi
+    CR_STATE=""; CR_UNITS=""; CR_AT=""; CR_EXTRA=""; CR_CACHE_OK=0
+    if [ -f "$CREDITS_CACHE" ]; then
+        IFS='|' read -r CR_STATE CR_UNITS CR_AT CR_EXTRA <"$CREDITS_CACHE" 2>/dev/null || true
+        if [ -z "$CR_EXTRA" ] && [[ "$CR_AT" =~ ^[0-9]{1,12}$ ]]; then
+            case "$CR_STATE" in
+                ok) [[ "$CR_UNITS" =~ ^[0-9]{1,18}$ ]] && CR_CACHE_OK=1 ;;
+                unavailable) [ -z "$CR_UNITS" ] && CR_CACHE_OK=1 ;;
+            esac
+        fi
+    fi
+    CR_AGE=9999
+    if [ "$CR_CACHE_OK" = "1" ]; then
+        CR_AGE=$((NOW - CR_AT))
+        [ "$CR_AGE" -lt 0 ] 2>/dev/null && CR_AGE=9999
+        CR_TTL=$(_gate_int "${STATUSLINE_GPT_CREDITS_TTL:-300}" 300)
+        if [ "$CR_STATE" = "ok" ] && [[ "$CR_UNITS" =~ [1-9] ]] \
+            && [ "$CR_AGE" -lt "$CR_TTL" ] 2>/dev/null; then
+            GPT_CREDITS_UNITS="$CR_UNITS"
+        fi
+    fi
+
+    CREDITS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    CREDITS_FETCH="${CC_STATUSLINE_GPT_CREDITS_FETCH:-${CREDITS_SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/gpt-credits-fetch.sh}"
+    if [ -x "$CREDITS_FETCH" ] && [ "$CR_AGE" -ge 60 ]; then
+        CREDITS_MARK="$CREDITS_CACHE.fetching"
+        CREDITS_MARK_AGE=9999
+        [ -f "$CREDITS_MARK" ] && CREDITS_MARK_AGE=$((NOW - $(_file_mtime "$CREDITS_MARK")))
+        if [ "$CREDITS_MARK_AGE" -ge 60 ] || [ "$CREDITS_MARK_AGE" -lt 0 ]; then
+            touch "$CREDITS_MARK" 2>/dev/null || true
+            (CC_STATUSLINE_GPT_TRANSCRIPT="$TRANSCRIPT_PATH" \
+             CC_STATUSLINE_GPT_CREDITS_CACHE="$CREDITS_CACHE" \
+             CC_STATUSLINE_NOW="$NOW" \
+             "$CREDITS_FETCH" >/dev/null 2>&1 &)
+        fi
     fi
 fi
 
@@ -989,18 +1143,27 @@ case $EFFORT in
     *)              EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray: medium/unknown
 esac
 
-# ── Session cost segment (native, from cost.total_cost_usd) ────────────────
-# Sits next to the clock as "⏱ 5m · $0.01". Empty when disabled
-# (STATUSLINE_COST=0) or when there is no cost yet, so fresh sessions and the
-# no-cost fixtures show nothing, exactly like CACHE_SEG before the first API
-# call. Formatted as USD with 2 decimals; a sub-cent floor renders "<0.01" for
-# a real-but-tiny cost instead of a misleading "$0.00". Neutral color; built
-# here so it is inlined into the base line below and measure_cols captures its
-# width during tier selection.
+# ── Session usage value beside the clock ───────────────────────────────────
+# Claude keeps its native cost.total_cost_usd as "$N.NN". GPT never shows that
+# field because Claude Code prices GPT tokens with Claude rates; it shows the
+# transcript-derived "N.NN cr" estimate when available instead. Both forms are
+# built here so measure_cols includes their real width. STATUSLINE_COST controls
+# only Claude dollars; STATUSLINE_GPT_CREDITS controls GPT credits.
 COST_SEG=""
-if [ "${STATUSLINE_COST:-1}" != "0" ] && [ "$(awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
+if [ "$GPT_ACTIVE" != "1" ] && [ "${STATUSLINE_COST:-1}" != "0" ] \
+    && [ "$(awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
     COST_FMT=$(awk -v c="$COST_USD" 'BEGIN{ if (c>0 && c<0.005) printf "<0.01"; else printf "%.2f", c }' 2>/dev/null)
     COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}\$${COST_FMT}${B2}"
+elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
+    CREDITS_FMT=$(awk -v u="$GPT_CREDITS_UNITS" 'BEGIN {
+        if      (u >= 999995000000000000) printf "%.2fT", u / 1000000000000000000
+        else if (u >= 999995000000000)    printf "%.2fB", u / 1000000000000000
+        else if (u >= 999995000000)       printf "%.2fM", u / 1000000000000
+        else if (u >= 999995000)          printf "%.2fk", u / 1000000000
+        else                              printf "%.2f",  u / 1000000
+    }' 2>/dev/null)
+    [[ "$CREDITS_FMT" =~ ^[0-9]+\.[0-9]{2}[kMBT]?$ ]] \
+        && COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}${CREDITS_FMT} cr${B2}"
 fi
 
 L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2}"
@@ -1013,33 +1176,45 @@ L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2}${COST_SEG}
 # fixed reserve that could not see 3-digit percentages, long reset countdowns,
 # or the trailing service icon, which let line 2 overflow and get dropped.
 PACE_ON=1; [ "${STATUSLINE_PACE:-1}" = "0" ] && PACE_ON=0
+# Claude uses its known durations; GPT uses the exact duration carried in the
+# Codex snapshot after the window is classified as 5h or weekly.
 RATE_FULL=""; RATE_COMPACT=""; RATE_MINIMAL=""
-if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
-    FIVE_CLR=$(pct_color "$FIVE_PCT")
-    SEVEN_CLR=$(pct_color "$SEVEN_PCT")
-
-    # Pace arrows: where current usage is heading by reset (empty unless we
-    # have a real future resets_at, so test fixtures with resets_at=0 are
-    # unaffected). 5h window = 18000s, 7d = 604800s.
-    FIVE_ARROW=""; SEVEN_ARROW=""
-    if [ "$PACE_ON" = "1" ]; then
-        FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" 18000 "$NOW")
-        SEVEN_ARROW=$(pace_arrow "$SEVEN_PCT" "$SEVEN_RESET_TS" 604800 "$NOW")
+FIVE_CLR=""; FIVE_ARROW=""; FIVE_BAR=""; FIVE_TIME=""
+SEVEN_CLR=""; SEVEN_ARROW=""; SEVEN_BAR=""; SEVEN_TIME=""
+RATE_READY=0
+if [ "$GPT_ACTIVE" = "1" ]; then
+    { [ -n "${FIVE_PCT:-}" ] || [ -n "${SEVEN_PCT:-}" ]; } && RATE_READY=1
+else
+    [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ] && RATE_READY=1
+fi
+if [ "$RATE_READY" = "1" ]; then
+    # Each Codex window is optional. Claude's normal two-window path assembles
+    # exactly the same strings as before, while a weekly-only GPT snapshot still
+    # gets a useful rate segment.
+    if [ -n "${FIVE_PCT:-}" ]; then
+        FIVE_CLR=$(pct_color "$FIVE_PCT")
+        [ "$PACE_ON" = "1" ] && FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" "$FIVE_DURATION" "$NOW")
+        FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
+        FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
+        RATE_FULL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_TXT}${FIVE_TIME}${B2}"
+        RATE_COMPACT=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
     fi
-    FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
-    SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
-    FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
-    SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
-
-    # Full: bars + pct + pace arrow + reset countdowns
-    RATE_FULL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-    [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_TXT}${FIVE_TIME}${B2}"
-    RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-    [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_TXT}${SEVEN_TIME}${B2}"
-    # Compact: bars + pct + pace arrow, no reset countdowns
-    RATE_COMPACT=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-    # Minimal: percentages + pace arrow only
-    RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+    if [ -n "${SEVEN_PCT:-}" ]; then
+        SEVEN_CLR=$(pct_color "$SEVEN_PCT")
+        [ "$PACE_ON" = "1" ] && SEVEN_ARROW=$(pace_arrow "$SEVEN_PCT" "$SEVEN_RESET_TS" "$SEVEN_DURATION" "$NOW")
+        SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
+        SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
+        RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_TXT}${SEVEN_TIME}${B2}"
+        RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        if [ -n "${FIVE_PCT:-}" ]; then
+            RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        else
+            RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        fi
+    fi
 fi
 
 # ── Cache hit-rate candidate (lowest-priority line-2 element) ──────────────
@@ -1053,22 +1228,37 @@ if [ "${STATUSLINE_CACHE:-0}" = "1" ] && [ -n "${CACHE_PCT:-}" ]; then
     CACHE_SEG=" ${L2_TXT}${NF_CACHE} ${CACHE_CLR}${CACHE_PCT}%${B2}"
 fi
 
-# ── Claude service status (read now so its exact width can be reserved) ─────
-# Both paths are env-overridable so tests can isolate from a real cache file or
-# disable the background fetcher. The default cache lives in the per-user state
-# dir (mode 700), not a predictable /tmp path; it auto-refreshes every 60s in
-# the background. The icon is appended to line 2 below, and SVC_W reserves
-# exactly its width during tier selection (0 when no status is shown), so the
-# rate detail is only downgraded when the icon genuinely needs the room.
-SVC_CACHE="${CC_STATUSLINE_SVC_CACHE:-$(_state_dir)/service-status}"
+# ── Provider service status (read before width reservation) ─────────────────
+# Claude sessions keep their existing summary source. Opt-in GPT sessions use
+# only OpenAI's exact "Codex API" component, with a separate cache and test
+# seams, so a GPT render can never inherit Claude's icon or overall page state.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-SVC_FETCH="${CC_STATUSLINE_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
-if [ -x "$SVC_FETCH" ]; then
-    SVC_AGE=9999
-    [ -f "$SVC_CACHE" ] && SVC_AGE=$(($(date +%s) - $(_file_mtime "$SVC_CACHE")))
-    if [ "$SVC_AGE" -ge 60 ]; then
-        # Pass the resolved cache path so the fetcher writes exactly where we read.
-        (CC_STATUSLINE_SVC_CACHE="$SVC_CACHE" "$SVC_FETCH" >/dev/null 2>/dev/null &)
+GENERIC_SVC_FETCH="${CC_STATUSLINE_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
+if [ "$GPT_ACTIVE" = "1" ]; then
+    SVC_CACHE="${CC_STATUSLINE_CODEX_SVC_CACHE:-$(_state_dir)/codex-status}"
+    SVC_FETCH="${CC_STATUSLINE_CODEX_SVC_FETCH:-${SCRIPT_DIR:-$HOME/.local/share/cc-statusline}/claude-status-fetch.sh}"
+    SVC_PAGE_URL="https://status.openai.com/"
+    if [ -x "$SVC_FETCH" ]; then
+        SVC_AGE=9999
+        [ -f "$SVC_CACHE" ] && SVC_AGE=$(($(date +%s) - $(_file_mtime "$SVC_CACHE")))
+        if [ "$SVC_AGE" -ge 60 ]; then
+            (CC_STATUSLINE_SVC_CACHE="$SVC_CACHE" \
+             CC_STATUSLINE_SVC_URL="https://status.openai.com/api/v2/components.json" \
+             CC_STATUSLINE_SVC_COMPONENT="Codex API" \
+             "$SVC_FETCH" >/dev/null 2>/dev/null &)
+        fi
+    fi
+else
+    SVC_CACHE="${CC_STATUSLINE_SVC_CACHE:-$(_state_dir)/service-status}"
+    SVC_FETCH="$GENERIC_SVC_FETCH"
+    SVC_PAGE_URL="https://status.claude.com"
+    if [ -x "$SVC_FETCH" ]; then
+        SVC_AGE=9999
+        [ -f "$SVC_CACHE" ] && SVC_AGE=$(($(date +%s) - $(_file_mtime "$SVC_CACHE")))
+        if [ "$SVC_AGE" -ge 60 ]; then
+            # Pass the resolved cache path so the fetcher writes exactly where we read.
+            (CC_STATUSLINE_SVC_CACHE="$SVC_CACHE" "$SVC_FETCH" >/dev/null 2>/dev/null &)
+        fi
     fi
 fi
 # OSC 8 hyperlinks on the status glyphs (Cmd/Ctrl+click -> the status page).
@@ -1081,7 +1271,7 @@ fi
 GH_LINK_OPEN="" GH_LINK_CLOSE="" SVC_LINK_OPEN="" SVC_LINK_CLOSE=""
 if [ "${STATUSLINE_HYPERLINKS:-1}" != "0" ]; then
     GH_LINK_OPEN='\033]8;;https://www.githubstatus.com\a';  GH_LINK_CLOSE='\033]8;;\a'
-    SVC_LINK_OPEN='\033]8;;https://status.claude.com\a';    SVC_LINK_CLOSE='\033]8;;\a'
+    SVC_LINK_OPEN="\033]8;;${SVC_PAGE_URL}\a";             SVC_LINK_CLOSE='\033]8;;\a'
 fi
 SVC_SEG=""
 if [ -f "$SVC_CACHE" ]; then
@@ -1182,7 +1372,7 @@ if [ "${STATUSLINE_GITHUB_STATUS:-1}" != "0" ]; then
     fi
     if [ "$GH_ON" = "1" ]; then
         GH_CACHE="${CC_STATUSLINE_GH_CACHE:-$(_state_dir)/github-status}"
-        GH_FETCH="${CC_STATUSLINE_GH_FETCH:-$SVC_FETCH}"
+        GH_FETCH="${CC_STATUSLINE_GH_FETCH:-$GENERIC_SVC_FETCH}"
         if [ -x "$GH_FETCH" ]; then
             GH_AGE=9999
             [ -f "$GH_CACHE" ] && GH_AGE=$(($(date +%s) - $(_file_mtime "$GH_CACHE")))
@@ -1206,7 +1396,7 @@ fi
 
 # ── Phone layout: line 2 override ──────────────────────────────────────────
 # Same palette, corners, bands and tier machinery as the wide render, fewer
-# segments: "<account> │ 5h <pct><arrow> ↻<reset> │ 7d <pct><arrow> ↻<reset>".
+# segments: account, optional context, and whichever 5h/7d windows are present.
 # The tiers below feed the SAME widest-that-fits selection used for the wide
 # render, so the countdowns drop before the percentages and the pace arrows
 # survive longest (they are the alert). Model, effort, elapsed, cost, context
@@ -1231,39 +1421,54 @@ _apply_phone_l2() {
         PH_SEP=" ${L2_DIM}│${B2}"
     fi
     CACHE_SEG=""
-    if [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ]; then
-        # Context-window fill, shown BEFORE the rate limits as "ctx <pct>%" in the
-        # same label + colored-% grammar as 5h/7d (color from CTX_CLR, same pct
-        # thresholds). On by default; STATUSLINE_CTX=0 restores the old tiers
-        # verbatim. It rides the tier ladder as the FIRST thing to shed: FULL keeps
-        # ctx + both reset countdowns, COMPACT keeps ctx + bare percentages, and
-        # MINIMAL drops ctx so the rate limits (this line's whole reason to exist)
-        # survive the narrowest phone.
+    if [ "$RATE_READY" = "1" ]; then
+        # Context is the first optional segment to shed. Each limit window is
+        # independent so GPT accounts that currently expose only weekly usage
+        # still retain their one useful percentage at every rate tier.
         local CTX_PH=""
         [ "${STATUSLINE_CTX:-1}" != "0" ] && CTX_PH="${PH_SEP} ${L2_TXT}ctx ${CTX_CLR}${PCT}%${B2}"
         if [ -n "$CTX_PH" ]; then
-            # ctx now holds the badge separator, so 5h leads with its own "│".
-            RATE_FULL="${CTX_PH} ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-            [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-            RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-            [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
-            # Compact: ctx + bare percentages (countdowns are the first extra to go).
-            RATE_COMPACT="${CTX_PH} ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-            # Minimal: rate percentages only; ctx is dropped so the limits survive.
-            RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            RATE_FULL="$CTX_PH"; RATE_COMPACT="$CTX_PH"; RATE_MINIMAL=""
+            if [ -n "${FIVE_PCT:-}" ]; then
+                RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+                RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+            fi
+            if [ -n "${SEVEN_PCT:-}" ]; then
+                RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
+                RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                if [ -n "${FIVE_PCT:-}" ]; then
+                    RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                else
+                    RATE_MINIMAL="${PH_SEP} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                fi
+            fi
         else
-            # STATUSLINE_CTX=0: the original tiers, byte-for-byte unchanged.
-            # Full: both reset countdowns.
-            RATE_FULL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-            [ -n "${FIVE_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-            RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-            [ -n "${SEVEN_TIME:-}" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
-            # Compact: 5h countdown only (the one you act on).
-            RATE_COMPACT="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-            [ -n "${FIVE_TIME:-}" ] && RATE_COMPACT+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-            RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-            # Minimal: percentages and arrows.
-            RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            RATE_FULL=""; RATE_COMPACT=""; RATE_MINIMAL=""
+            if [ -n "${FIVE_PCT:-}" ]; then
+                RATE_FULL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+                RATE_COMPACT="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                [ -n "$FIVE_TIME" ] && RATE_COMPACT+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
+                RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+            fi
+            if [ -n "${SEVEN_PCT:-}" ]; then
+                if [ -n "$RATE_FULL" ]; then
+                    RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                    RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                else
+                    RATE_FULL="${PH_SEP} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                    RATE_COMPACT="$RATE_FULL"
+                fi
+                [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
+                if [ -n "${FIVE_PCT:-}" ]; then
+                    RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                else
+                    RATE_MINIMAL="${PH_SEP} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                fi
+            fi
         fi
     else
         # No rate limits at all (fresh session, limit-less account, or the

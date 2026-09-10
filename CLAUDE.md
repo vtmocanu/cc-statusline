@@ -8,7 +8,7 @@ The repo lives on GitHub: **github.com/vtmocanu/cc-statusline**. Use the `gh` CL
 
 A two-line ANSI statusline for [Claude Code](https://claude.com/claude-code). It's a small bash-based tool, but the codebase has accumulated real lessons about portable shell, ANSI rendering, terminal width estimation, and Claude Code's undocumented statusline renderer behaviors. **Read `KNOWN_ISSUES.md` and the comments in `statusline.sh` before changing any width-related logic.**
 
-The primary maintainer's machine runs the brew-installed copy day-to-day (`statusLine.command` is `STATUSLINE_WIDTH=130 cc-statusline`). For development, the brew wrapper's dev override points at the working tree. **The dev-dir file lives under `$XDG_CONFIG_HOME`, not a hardcoded `~/.config`** — the wrapper resolves it as `"${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/dev-dir"`. Always check where `XDG_CONFIG_HOME` actually points before writing it (on the maintainer's machine it is remapped to `~/stuff/gitrepos/wxs/mackup/.config`, so writing to a literal `~/.config/cc-statusline/dev-dir` is a silent no-op — the wrapper never reads it):
+The primary maintainer's machine runs the brew-installed copy day-to-day (`statusLine.command` is `STATUSLINE_WIDTH=130 STATUSLINE_GPT_LIMITS=1 cc-statusline`). For development, the brew wrapper's dev override points at the working tree. **The dev-dir file lives under `$XDG_CONFIG_HOME`, not a hardcoded `~/.config`**. The wrapper resolves it as `"${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/dev-dir"`. Always check where `XDG_CONFIG_HOME` actually points before writing it (on the maintainer's machine it is remapped to `~/stuff/gitrepos/wxs/mackup/.config`, so writing to a literal `~/.config/cc-statusline/dev-dir` is a silent no-op because the wrapper never reads it):
 
 ```bash
 D="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline"
@@ -26,8 +26,10 @@ Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 ```
 cc-statusline/
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
-├── claude-status-fetch.sh            Background helper, polls an Atlassian Statuspage summary.json every 60s, writes a per-user service-status cache. Defaults to status.claude.com; the statusline also spawns it with CC_STATUSLINE_SVC_URL=githubstatus.com for the optional line-1 GitHub icon (STATUSLINE_GITHUB_STATUS, on by default, shown only on github.com remotes)
+├── claude-status-fetch.sh            Background helper for Statuspage-compatible JSON. Defaults to Claude's summary; also reads GitHub's summary and, for opt-in GPT sessions, the exact OpenAI `Codex API` component into separate caches
 ├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
+├── codex-usage-fetch.sh              Opt-in background helper, reads ChatGPT plan limits through the official Codex app server and writes the separate GPT rate-limits cache (one or both windows)
+├── gpt-credits-fetch.sh              Opt-in transcript-streaming GPT-5.6 Sol ChatGPT credit-equivalent estimator; scans main + subagents, deduplicates response IDs, writes a private session-keyed cache
 ├── cc-statusline-update-fetch.sh     Background helper, polls the GitHub "latest release" endpoint at most hourly, writes the per-user update-check cache (one line: the tag). Drives the line-1 right-aligned "⇡ X.Y.Z" update indicator (STATUSLINE_UPDATE_CHECK, on by default, shown only when the tag is newer than VERSION)
 ├── install.sh                        Installer for public users (--version vX.Y.Z, --uninstall, --help)
 ├── Formula.rb.tmpl                   Homebrew formula template (@@URL@@/@@SHA256@@ placeholders); rendered and pushed to vtmocanu/homebrew-tap by release.yml on each v* tag
@@ -35,14 +37,14 @@ cc-statusline/
 │   └── statusline-color-overrides.json  Template for ~/.claude/statusline-color-overrides.json
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
-│   └── fixtures/*.json               5 mock JSON inputs (happy path, empty, no rate limits, near-full context, narrow width)
+│   └── fixtures/*.json               Mock JSON inputs for normal, edge-case, width, model, and session-name renders
 ├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, test-fetch, ci); used locally and by CI
 ├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
 ├── .github/workflows/release.yml     On v* tags: renders the formula and pushes it to the tap (HOMEBREW_TAP_TOKEN secret); does NOT create the GitHub Release, that stays manual
 ├── images/screenshot.png             Hero image used by README
 ├── README.md                         Public-facing docs
 ├── CHANGELOG.md                      Keep-a-Changelog format, one section per tag
-├── KNOWN_ISSUES.md                   Wide-glyph width margin, perl dependency, /dev/tty no-op contexts
+├── KNOWN_ISSUES.md                   Wide-glyph width margin, account-source caveats, dependencies, and terminal-specific behavior
 ├── LICENSE                           MIT
 └── CLAUDE.md                         This file
 ```
@@ -63,7 +65,7 @@ task shell:syntax    # 1. bash -n on all scripts
 task shell:lint      # 2. shellcheck -x -S warning (matches CI)
 task test            # 3. test harness (tests/run-tests.sh)
 task test-c-locale   # 4. test harness under LC_ALL=C (catches wc-m / bash-string-length issues)
-task test-fetch      # 5. fetcher tests (status, usage, update check), in both locales
+task test-fetch      # 5. fetcher tests (status, usage, GPT credits, update check), in both locales
 ```
 
 The `shell:` tasks come from the reusable `shell.yml` in [github.com/vtmocanu/task](https://github.com/vtmocanu/task): the local checkout at `~/stuff/gitrepos/gh/vtmocanu/task` when developing, the public raw URL in CI (with `TASK_X_REMOTE_TASKFILES=1` and `task --yes`).
@@ -144,12 +146,13 @@ For each fixture in `tests/fixtures/`:
 ### Why `WIDTH_SLOP=0`
 Width measurement was rebuilt around a single ANSI-aware `measure_cols` (perl) pass: the script truncates against the exact same codepoint count the harness measures, so it never exceeds `SAFE_WIDTH` and the slop is gone. The script still keeps a small real-terminal cushion via `WIDE_GLYPH_MARGIN` (truncating to `SAFE_WIDTH - 3`), but that is invisible to the harness (it only makes lines shorter). See `KNOWN_ISSUES.md`. `WIDTH_SLOP` stays overridable for debugging.
 
-### Why tests use `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH`
-The statusline normally writes the service-status cache under a per-user mode-700 runtime dir (`$XDG_RUNTIME_DIR`/`$TMPDIR`, uid-scoped) and spawns `claude-status-fetch.sh` in the background when the cache is stale. In tests this would:
-- Pollute the real service-status cache on the maintainer's machine (and fight with their real Claude Code statusline)
-- Cause cross-fixture contamination (test 01 spawns the fetcher, test 03 then sees the cache)
+### Why tests override every cache and fetcher
+The statusline normally writes its caches under a per-user mode-700 runtime dir (`$XDG_RUNTIME_DIR`/`$TMPDIR`, uid-scoped) and spawns background helpers when they are stale. In tests this would:
+- Pollute the maintainer's real caches and fight with the live statusline
+- Cause cross-fixture contamination
+- Launch network reads or the logged-in Codex app server
 
-The script reads `CC_STATUSLINE_SVC_CACHE` and `CC_STATUSLINE_SVC_FETCH` env vars (added in v2.1.2) to override both paths. The test harness sets them to scratch-dir paths, so the real fetcher never runs. The same pair exists for the update check (`CC_STATUSLINE_UPDATE_CACHE` / `CC_STATUSLINE_UPDATE_FETCH`, plus `CC_STATUSLINE_UPDATE_DATA` for the fetcher itself) and the harness isolates them the same way; the update-indicator tests seed that cache to render the `⇡ X.Y.Z` segment on demand.
+The harness points every cache and helper seam at its scratch directory: `CC_STATUSLINE_SVC_*`, `CC_STATUSLINE_CODEX_SVC_*`, `CC_STATUSLINE_RL_*`, `CC_STATUSLINE_GPT_*`, and `CC_STATUSLINE_UPDATE_*`. Codex usage tests use `CC_STATUSLINE_CODEX_DATA` for response parsing and a fake `CC_STATUSLINE_CODEX_BIN` for the JSONL handshake, so they never touch the real Codex login. Credit tests build isolated main/subagent transcript trees under the harness scratch directory. Keep that isolation whenever a new fetcher or fixture is added.
 
 ### Adding a new fixture
 1. Create `tests/fixtures/0N-name.json` with a JSON shape that exercises the case you care about
@@ -214,6 +217,9 @@ Do NOT conflate the two: `.session_name` is the *title*, never the addressable h
 - **Don't use em dashes** in commit messages, code comments, or docs. Prefer commas, colons, or hyphens.
 - **Don't reintroduce a bash width *estimate*.** Width is now measured with `measure_cols` before truncation (the deliberate v2.4.0 rebuild). If you touch truncation, keep it measurement-driven, re-validate every path in both locales, and keep `WIDTH_SLOP=0`. Don't paper over an overflow by bumping `WIDTH_SLOP` or `WIDE_GLYPH_MARGIN`.
 - **Don't wrap truncation-ladder text in OSC 8 hyperlinks, and don't let `measure_cols` count them.** Since v3.1.0 the service-status glyphs are clickable via OSC 8 (`STATUSLINE_HYPERLINKS`, default on). Two invariants hold this together: (1) `measure_cols` (and the harness's `vis_cols`/`_strip_ansi`) strip the OSC 8 wrapper so a hyperlinked glyph stays zero-width, matching what a terminal renders. If you add a new escape family, teach both strippers or the width math will over-count by the URL length. (2) Only fixed glyphs (the status icons) are ever wrapped, never a component the truncation ladder can slice (`DIR`/`BRANCH`/`TOPIC`/`SESSION_HANDLE`/…) or `_head_cp`/`_tail_cp` would cut mid-escape and emit a broken link.
+- **Don't defer effective-model detection past the Claude rate-cache block.** A GPT agent pane can report the Claude parent on stdin and its real GPT model only in the transcript. Extract and validate that transcript model once before any Claude cache/token scan/fetch, then reuse it for display correction; otherwise GPT panes touch the Claude rate cache before switching providers.
+- **Don't read or duplicate GPT OAuth credentials.** GPT plan usage goes through the official Codex app server's read-only `account/rateLimits/read`; do not scrape Clodex/Keychain credentials, parse stale Codex rollout files, or spend an inference token to probe headers.
+- **Don't show Claude Code's native dollar cost for GPT.** Claude Code applies Claude list prices to GPT token counts, so `cost.total_cost_usd` is not valid OpenAI billing. The approved replacement is only the GPT-5.6 Sol ChatGPT credit-equivalent estimate from `gpt-credits-fetch.sh`: flat published ChatGPT rates, no API USD conversion or long-context multiplier, and fail closed on nonzero cache creation.
 - **Don't push directly to `main` without CI green.** The maintainer pushed v2.1.0/v2.1.1 in quick succession and burned several CI cycles diagnosing failures. Always verify the test harness passes locally (including `LC_ALL=C`) before tagging.
 - **Don't bypass `install.sh`'s `git archive` flow** by using `git checkout vX.Y.Z` again. v2.1.0's installer mutated the user's working tree; v2.1.0 → v2.1.0 (later commit) fixed it to use `git archive` so the working tree stays clean. Don't regress.
 - **Don't commit the `images/` PNG without first checking it's the current screenshot.** The maintainer's blog post and the README share the same image. If you're updating one, update both.

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# cc-statusline service-status fetcher tests
+# cc-statusline background-helper tests
 #
-# Drives claude-status-fetch.sh with crafted status.claude.com payloads (via the
-# CC_STATUSLINE_SVC_DATA seam) and asserts the single cache line it writes. These
-# guard the decision logic the statusline turns into an icon:
+# Drives the status, usage, credit, and update helpers through local fixtures
+# and asserts their cache contracts. The service-status section guards:
 #   - the mythos/fable suspension filter (and that REAL model incidents survive)
 #   - component severity ranking (major > partial > degraded)
 #   - fail-closed behaviour on unparseable input / bad regex (no false "operational")
@@ -155,6 +154,26 @@ run_case_env "github-shaped summary: worst component wins under empty ignore" \
     '{"status":{"indicator":"major","description":"Partial System Outage"},"incidents":[],"components":[{"name":"Git Operations","status":"operational"},{"name":"Actions","status":"degraded_performance"},{"name":"Copilot","status":"major_outage"}]}' \
     "major_outage:Partial System Outage:Actions, Copilot" \
     CC_STATUSLINE_IGNORE_INCIDENTS=""
+
+# ── Exact component mode (OpenAI Codex API) ────────────────────────────────
+run_case_env "exact Codex component operational" \
+    '{"components":[{"id":"other","name":"API","status":"major_outage"},{"id":"01KMP3KP5MGE23B80K1EK4S8PV","name":"Codex API","status":"operational"}]}' \
+    "operational" CC_STATUSLINE_SVC_COMPONENT="Codex API"
+run_case_env "exact Codex component degraded" \
+    '{"components":[{"id":"01KMP3KP5MGE23B80K1EK4S8PV","name":"Codex API","status":"degraded_performance"},{"name":"API","status":"operational"}]}' \
+    "degraded_performance:Codex API:Codex API" CC_STATUSLINE_SVC_COMPONENT="Codex API"
+run_untouched "missing exact component fails closed" \
+    '{"components":[{"name":"API","status":"operational"}]}' \
+    CC_STATUSLINE_SVC_COMPONENT="Codex API"
+run_untouched "duplicate exact component fails closed" \
+    '{"components":[{"name":"Codex API","status":"operational"},{"name":"Codex API","status":"degraded_performance"}]}' \
+    CC_STATUSLINE_SVC_COMPONENT="Codex API"
+run_untouched "malformed exact component status fails closed" \
+    '{"components":[{"name":"Codex API","status":"mystery"}]}' \
+    CC_STATUSLINE_SVC_COMPONENT="Codex API"
+run_untouched "malformed components payload fails closed" \
+    '{"components":{"name":"Codex API","status":"operational"}}' \
+    CC_STATUSLINE_SVC_COMPONENT="Codex API"
 
 # ═══ Per-account usage fetcher (claude-usage-fetch.sh) ═════════════════════
 # Drives the /api/oauth/usage fetcher through the CC_STATUSLINE_USAGE_DATA seam
@@ -308,6 +327,227 @@ elif [ ! -f "$ucache.backoff" ]; then
     printf '  FAIL  usage: malformed probe headers did not back off\n'; FAIL=$((FAIL + 1))
 else
     printf '  PASS  usage: malformed probe headers fail closed\n'; PASS=$((PASS + 1))
+fi
+
+# ═══ GPT/Codex usage fetcher (codex-usage-fetch.sh) ════════════════════════
+# Drives account/rateLimits/read response parsing through a fixture seam, then
+# uses a fake app server once to exercise the JSONL handshake without launching
+# the user's real Codex process or touching its credentials.
+GFETCH="$REPO_DIR/codex-usage-fetch.sh"
+GNOW=1700000000
+
+run_gcase() {  # run_gcase NAME JSON EXPECTED
+    local name="$1" json="$2" expected="$3"
+    local data="$SCRATCH/gdata.json" cache="$SCRATCH/gcache" got=""
+    printf '%s' "$json" >"$data"; rm -f "$cache" "$cache.backoff"
+    CC_STATUSLINE_CODEX_DATA="$data" CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_NOW="$GNOW" bash "$GFETCH"
+    [ -f "$cache" ] && got=$(head -1 "$cache" 2>/dev/null)
+    if [ "$got" = "$expected" ] && [ ! -f "$cache.backoff" ]; then
+        printf '  PASS  codex: %s\n' "$name"; PASS=$((PASS + 1))
+    else
+        printf '  FAIL  codex: %s\n        want: [%s]\n        got:  [%s]\n' "$name" "$expected" "$got"
+        FAIL=$((FAIL + 1))
+    fi
+}
+run_guntouched() {  # run_guntouched NAME JSON
+    local name="$1" json="$2" data="$SCRATCH/gdata.json" cache="$SCRATCH/gcache"
+    local sentinel="1|1700000001|18000|2|1700000002|604800|1699999999" got
+    printf '%s' "$json" >"$data"; printf '%s\n' "$sentinel" >"$cache"; rm -f "$cache.backoff"
+    CC_STATUSLINE_CODEX_DATA="$data" CC_STATUSLINE_GPT_CACHE="$cache" \
+        CC_STATUSLINE_NOW="$GNOW" bash "$GFETCH"
+    got=$(head -1 "$cache" 2>/dev/null)
+    if [ "$got" = "$sentinel" ] && [ -f "$cache.backoff" ]; then
+        printf '  PASS  codex: %s\n' "$name"; PASS=$((PASS + 1))
+    else
+        printf '  FAIL  codex: %s (cache/backoff contract failed)\n' "$name"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+echo
+echo "Codex usage fetcher tests"
+echo "------------------------------------------------------------"
+run_gcase "weekly-only live shape" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535},"secondary":null},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535},"secondary":null}}}}' \
+    "|||65|1789451535|604800|$GNOW"
+run_gcase "reversed 7d then 5h windows" \
+    '{"id":2,"result":{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535},"secondary":{"usedPercent":42,"windowDurationMins":300,"resetsAt":1789043778}}}}}' \
+    "42|1789043778|18000|65|1789451535|604800|$GNOW"
+run_gcase "reported durations preserved" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":42,"windowDurationMins":315,"resetsAt":1789043778},"secondary":{"usedPercent":65,"windowDurationMins":9576,"resetsAt":1789451535}}}}' \
+    "42|1789043778|18900|65|1789451535|574560|$GNOW"
+run_gcase "legacy single bucket 5h only" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1789043778},"secondary":null}}}' \
+    "7|1789043778|18000||||$GNOW"
+run_gcase "percentage clamp and null reset" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":999.9,"windowDurationMins":10080,"resetsAt":null}}}}' \
+    "|||100||604800|$GNOW"
+run_gcase "default bucket wins over named bucket" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535}},"codex_bengalfox":{"primary":{"usedPercent":1,"windowDurationMins":300,"resetsAt":1789043778}}}}}' \
+    "|||65|1789451535|604800|$GNOW"
+run_guntouched "unknown duration fails closed" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":50,"windowDurationMins":1440,"resetsAt":1789451535}}}}'
+run_guntouched "string percentage fails closed" \
+    '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":"65","windowDurationMins":10080,"resetsAt":1789451535}}}}'
+run_guntouched "JSON-RPC error fails closed" \
+    '{"id":2,"error":{"code":-32000,"message":"not logged in"}}'
+run_guntouched "malformed response fails closed" '<html>bad gateway</html>'
+
+# Fake app server: proves initialize -> initialized -> rateLimits/read ordering.
+gfake="$SCRATCH/fake-codex"
+cat >"$gfake" <<'EOF'
+#!/usr/bin/env bash
+while IFS= read -r line; do
+    case "$line" in
+        *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{"userAgent":"fake"}}' ;;
+        *'"method":"account/rateLimits/read"'*)
+            printf '%s\n' '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535}}}}'
+            exit 0 ;;
+    esac
+done
+EOF
+chmod 0755 "$gfake"
+gcache="$SCRATCH/gcache"; gruntime="$SCRATCH/g-runtime"; rm -f "$gcache" "$gcache.backoff"
+mkdir -p "$gruntime"
+XDG_RUNTIME_DIR="$gruntime" CC_STATUSLINE_CODEX_BIN="$gfake" \
+    CC_STATUSLINE_GPT_CACHE="$gcache" CC_STATUSLINE_NOW="$GNOW" bash "$GFETCH"
+if [ "$(head -1 "$gcache" 2>/dev/null)" = "|||65|1789451535|604800|$GNOW" ] \
+    && [ -z "$(ls "$gruntime/cc-statusline-$(id -u)" 2>/dev/null)" ]; then
+    printf '  PASS  codex: app-server JSONL handshake and cleanup\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  codex: app-server handshake or FIFO cleanup\n'; FAIL=$((FAIL + 1))
+fi
+
+# ═══ GPT credit-equivalent transcript counter (gpt-credits-fetch.sh) ═══════
+CRFETCH="$REPO_DIR/gpt-credits-fetch.sh"
+CRNOW=1700000000
+crroot="$SCRATCH/credits"
+mkdir -p "$crroot"
+
+_cr_row() {  # id model input created cached output
+    printf '{"type":"assistant","message":{"id":"%s","model":"%s","usage":{' "$1" "$2"
+    printf '"input_tokens":%s,"cache_creation_input_tokens":%s,' "$3" "$4"
+    printf '"cache_read_input_tokens":%s,"output_tokens":%s}}}\n' "$5" "$6"
+}
+_cr_begin() {
+    crname="$1"; crmain="$crroot/$crname.jsonl"; crcache="$crroot/$crname.cache"
+    : >"$crmain"; rm -f "$crcache" "$crcache".tmp.*
+}
+_cr_run() {
+    CC_STATUSLINE_GPT_TRANSCRIPT="$crmain" CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" \
+        CC_STATUSLINE_NOW="$CRNOW" bash "$CRFETCH"
+}
+_cr_expect() {
+    local expected="$1" got=""
+    [ -f "$crcache" ] && got=$(head -1 "$crcache" 2>/dev/null)
+    if [ "$got" = "$expected" ]; then
+        printf '  PASS  credits: %s\n' "$crname"; PASS=$((PASS + 1))
+    else
+        printf '  FAIL  credits: %s\n        want: [%s]\n        got:  [%s]\n' "$crname" "$expected" "$got"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+echo
+echo "GPT credit counter tests"
+echo "------------------------------------------------------------"
+_cr_begin "flat documented rates"
+_cr_row flat gpt-5.6-sol 1000000 0 1000000 1000000 >"$crmain"
+_cr_run; _cr_expect "ok|610000000|$CRNOW"
+
+_cr_begin "duplicate id keeps final snapshot once"
+_cr_row dup gpt-5.6-sol 0 0 0 0 >"$crmain"
+_cr_row dup gpt-5.6-sol 1000 0 200 300 >>"$crmain"
+_cr_row dup gpt-5.6-sol 1000 0 200 300 >>"$crmain"
+_cr_run; _cr_expect "ok|252000|$CRNOW"
+
+_cr_begin "main plus subagents deduplicated"
+_cr_row shared gpt-5.6-sol 1000 0 0 0 >"$crmain"
+mkdir -p "${crmain%.jsonl}/subagents"
+_cr_row agent gpt-5.6-sol 0 0 0 1000 >"${crmain%.jsonl}/subagents/agent-a.jsonl"
+_cr_row shared gpt-5.6-sol 1000 0 0 0 >>"${crmain%.jsonl}/subagents/agent-a.jsonl"
+_cr_run; _cr_expect "ok|600000|$CRNOW"
+
+_cr_begin "routed ids only"
+_cr_row r1 gpt-5.6-sol 1000000 0 0 0 >"$crmain"
+_cr_row r2 'gpt-5.6-sol[1m]' 1000000 0 0 0 >>"$crmain"
+_cr_row r3 claude-ocx-native--gpt-5.6-sol 1000000 0 0 0 >>"$crmain"
+_cr_row r4 clodex:openai-oauth:gpt-5.6-sol 1000000 0 0 0 >>"$crmain"
+_cr_row r5 anthropic-openai-oauth__gpt-5.6-sol 1000000 0 0 0 >>"$crmain"
+_cr_row skip-claude claude-opus-5 999999999 0 0 0 >>"$crmain"
+_cr_row skip-alias sol 999999999 0 0 0 >>"$crmain"
+_cr_row skip-other gpt-5.6-luna 999999999 0 0 0 >>"$crmain"
+_cr_run; _cr_expect "ok|500000000|$CRNOW"
+
+_cr_begin "long prompt stays flat rate"
+_cr_row long gpt-5.6-sol 300000 0 0 10000 >"$crmain"
+_cr_run; _cr_expect "ok|35000000|$CRNOW"
+
+_cr_begin "nonzero cache creation fails closed"
+_cr_row created gpt-5.6-sol 1000 1 0 100 >"$crmain"
+printf 'ok|999|1699999999\n' >"$crcache"
+_cr_run; _cr_expect "unavailable||$CRNOW"
+
+_cr_begin "malformed recognized usage fails closed"
+printf '%s\n' '{"type":"assistant","message":{"id":"bad","model":"gpt-5.6-sol","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}' >"$crmain"
+_cr_run; _cr_expect "unavailable||$CRNOW"
+
+_cr_begin "malformed JSON fails closed"
+printf '%s\n' '{not-json' >"$crmain"
+_cr_run; _cr_expect "unavailable||$CRNOW"
+
+_cr_begin "unknown models skipped without guessing"
+printf '%s\n' '{"type":"assistant","message":{"id":"unknown","model":"sol","usage":"malformed"}}' >"$crmain"
+_cr_row helper claude-haiku-4-5 999999 0 0 999999 >>"$crmain"
+_cr_run; _cr_expect "ok|0|$CRNOW"
+
+_cr_begin "negative token count fails closed"
+printf '%s\n' '{"type":"assistant","message":{"id":"negative","model":"gpt-5.6-sol","usage":{"input_tokens":-1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' >"$crmain"
+_cr_run; _cr_expect "unavailable||$CRNOW"
+
+_cr_begin "hostile clock cannot execute"
+_cr_row clock gpt-5.6-sol 1000 0 0 0 >"$crmain"
+crmarker="$crroot/clock-pwned"; rm -f "$crmarker"
+printf 'ok|999|1699999999\n' >"$crcache"
+CC_STATUSLINE_GPT_TRANSCRIPT="$crmain" CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" \
+    CC_STATUSLINE_NOW="PCT[\$(touch $crmarker)]" bash "$CRFETCH"
+if [ ! -e "$crmarker" ] && [ "$(head -1 "$crcache")" = "ok|999|1699999999" ]; then
+    printf '  PASS  credits: hostile clock cannot execute\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  credits: hostile clock executed or mutated cache\n'; FAIL=$((FAIL + 1))
+fi
+
+# Successful cache publication is private and leaves no temporary file.
+_cr_begin "private atomic cache"
+_cr_row private gpt-5.6-sol 1000 0 0 0 >"$crmain"
+_cr_run
+crmode=$(stat -f '%Lp' "$crcache" 2>/dev/null || stat -c '%a' "$crcache" 2>/dev/null || true)
+shopt -s nullglob; crtmp=("$crcache".tmp.*); shopt -u nullglob
+if [ "$(head -1 "$crcache" 2>/dev/null)" = "ok|100000|$CRNOW" ] \
+    && [ "$crmode" = 600 ] && [ "${#crtmp[@]}" -eq 0 ]; then
+    printf '  PASS  credits: private atomic cache\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  credits: private atomic cache mode/publication\n'; FAIL=$((FAIL + 1))
+fi
+
+# Default cache names are keyed by the main transcript path, so two sessions
+# cannot read or overwrite each other's estimate.
+crstate="$crroot/state"; mkdir -p "$crstate"
+crmain_a="$crroot/session-a.jsonl"; crmain_b="$crroot/session-b.jsonl"
+_cr_row a gpt-5.6-sol 1000 0 0 0 >"$crmain_a"
+_cr_row b gpt-5.6-sol 0 0 0 1000 >"$crmain_b"
+XDG_RUNTIME_DIR="$crstate" CC_STATUSLINE_GPT_TRANSCRIPT="$crmain_a" CC_STATUSLINE_NOW="$CRNOW" bash "$CRFETCH"
+XDG_RUNTIME_DIR="$crstate" CC_STATUSLINE_GPT_TRANSCRIPT="$crmain_b" CC_STATUSLINE_NOW="$CRNOW" bash "$CRFETCH"
+crkey_a=$(printf '%s' "$crmain_a" | cksum | cut -d' ' -f1)
+crkey_b=$(printf '%s' "$crmain_b" | cksum | cut -d' ' -f1)
+crdir="$crstate/cc-statusline-$(id -u)"
+if [ "$crkey_a" != "$crkey_b" ] \
+    && [ "$(head -1 "$crdir/gpt-credits-$crkey_a" 2>/dev/null)" = "ok|100000|$CRNOW" ] \
+    && [ "$(head -1 "$crdir/gpt-credits-$crkey_b" 2>/dev/null)" = "ok|500000|$CRNOW" ]; then
+    printf '  PASS  credits: session-keyed cache isolation\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  credits: session-keyed cache isolation\n'; FAIL=$((FAIL + 1))
 fi
 
 # ── Update fetcher (cc-statusline-update-fetch.sh) ─────────────────────────

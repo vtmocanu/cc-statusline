@@ -4,6 +4,16 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.4.0] - 2026-09-10
+
+### Added
+- Opt-in GPT/Codex plan limits with `STATUSLINE_GPT_LIMITS=1`. Detected GPT OAuth sessions read the official Codex CLI's `account/rateLimits/read` snapshot through the new background `codex-usage-fetch.sh`, so Codex retains ownership of ChatGPT credentials and token refresh and no inference request is spent. The separate private cache maps 5h and weekly windows by duration, supports either window independently, preserves each exact reported duration for pace arrows, and never falls back to Claude percentages when GPT data is missing or stale. The feature is off by default and excludes OpenAI API-key routes.
+- Provider-aware line-2 service status for opt-in GPT sessions. The existing Statuspage-compatible fetcher selects exactly one `Codex API` component from OpenAI's components endpoint, fails closed on missing, duplicate, or malformed matches, and writes a separate Codex-status cache. GPT renders never show Claude status, and their icon links to `status.openai.com`.
+- GPT-5.6 Sol ChatGPT credit-equivalent usage estimates through `gpt-credits-fetch.sh`. The helper streams the current main transcript plus subagents, deduplicates repeated response IDs, skips unrecognized models, and caches each session separately. It applies only the flat ChatGPT rates published on 2026-09-10 (100/M uncached input, 10/M cached input, 500/M output), with no API USD conversion or long-context multiplier. A nonzero cache-creation count makes the estimate unavailable because the ChatGPT table does not define that rate. Displays as `211.29 cr` or compact `2.07k cr`; disable with `STATUSLINE_GPT_CREDITS=0`.
+
+### Changed
+- GPT renders suppress Claude Code's native dollar-cost segment because it applies Claude list prices to GPT token counts and is not valid OpenAI billing. The scoped ChatGPT credit-equivalent estimate replaces that position when available; Claude dollar-cost behavior is unchanged.
+
 ## [v3.3.0] - 2026-09-02
 
 ### Added
@@ -303,6 +313,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v3.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.3.0...v3.4.0
 [v3.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.2.0...v3.3.0
 [v3.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.1.0...v3.2.0
 [v3.1.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.0.0...v3.1.0
