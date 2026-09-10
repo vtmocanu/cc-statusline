@@ -522,7 +522,15 @@ fi
 _cr_begin "private atomic cache"
 _cr_row private gpt-5.6-sol 1000 0 0 0 >"$crmain"
 _cr_run
-crmode=$(stat -f '%Lp' "$crcache" 2>/dev/null || stat -c '%a' "$crcache" 2>/dev/null || true)
+# BSD stat prints only the requested mode. GNU stat accepts -f with different
+# semantics and can print filesystem details for the valid second operand even
+# while returning failure for the literal %Lp operand, so an `a || b` command
+# substitution concatenates that output with GNU's mode. Validate the BSD
+# result before selecting the GNU form instead.
+crmode=$(stat -f '%Lp' "$crcache" 2>/dev/null || true)
+if ! [[ "$crmode" =~ ^[0-7]{3,4}$ ]]; then
+    crmode=$(stat -c '%a' "$crcache" 2>/dev/null || true)
+fi
 shopt -s nullglob; crtmp=("$crcache".tmp.*); shopt -u nullglob
 if [ "$(head -1 "$crcache" 2>/dev/null)" = "ok|100000|$CRNOW" ] \
     && [ "$crmode" = 600 ] && [ "${#crtmp[@]}" -eq 0 ]; then
