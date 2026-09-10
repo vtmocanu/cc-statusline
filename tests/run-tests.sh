@@ -191,6 +191,25 @@ run_one() {
 _strip_ansi() { perl -pe 's/\e\]8;;.*?(?:\a|\e\\)//g; s/\e\[[0-9;]*m//g' 2>/dev/null; }
 _rl_l2() { sed -n '2p' "$1" | _strip_ansi; }
 _has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+# Detached fetchers can start late on a loaded runner. Poll for at most 2.5s
+# instead of guessing that one fixed sleep is long enough.
+_wait_for_content() {  # path exact-content
+    local path="$1" expected="$2" got
+    for _ in {1..50}; do
+        got=""; [ -f "$path" ] && got=$(head -1 "$path" 2>/dev/null)
+        [ "$got" = "$expected" ] && return 0
+        sleep 0.05
+    done
+    return 1
+}
+_stays_absent() {  # one or more paths, observed for the same bounded interval
+    local path
+    for _ in {1..50}; do
+        for path in "$@"; do [ -e "$path" ] && return 1; done
+        sleep 0.05
+    done
+    return 0
+}
 
 # Emit a stdin JSON payload with the given rate limits (short cwd, no git).
 _rl_json() {
@@ -756,12 +775,12 @@ gpt_rate_limit_tests() {
         CLAUDE_CODE_OAUTH_TOKEN="$token" STATUSLINE_GPT_LIMITS=1 \
         CC_STATUSLINE_GPT_CACHE="$cache" CC_STATUSLINE_RL_CACHE="" \
         CC_STATUSLINE_RL_FETCH="$fake" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
-    l2=$(_rl_l2 "$out"); sleep 0.3
+    l2=$(_rl_l2 "$out")
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif ! _has "$l2" "GPTTOK" || _has "$l2" "CLAUDE"; then
         _rl_fail "$name" "GPT token profile key was not preserved: $l2"
-    elif [ -e "$hits" ] || [ -e "$statedir/rate-limits-$tokhash" ] \
-        || [ -e "$statedir/rate-limits-$tokhash.fetching" ]; then
+    elif ! _stays_absent "$hits" "$statedir/rate-limits-$tokhash" \
+        "$statedir/rate-limits-$tokhash.fetching"; then
         _rl_fail "$name" "GPT profile resolution triggered Claude rate-limit work"
     else _rl_pass "$name"; fi
 
@@ -862,9 +881,8 @@ EOF
     (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
         CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_GPT_CREDITS_FETCH="$fake" \
         CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
-    sleep 0.3
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif [ -e "$crcache.hit" ] || [ -e "$crcache.fetching" ]; then
+    elif ! _stays_absent "$crcache.hit" "$crcache.fetching"; then
         _rl_fail "$name" "30-second cache triggered a full transcript scan"
     else _rl_pass "$name"; fi
 
@@ -874,9 +892,8 @@ EOF
     (cd "$SCRATCH" && STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
         CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_GPT_CREDITS_FETCH="$fake" \
         CC_STATUSLINE_RL_CACHE="$ccache" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
-    sleep 0.3
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif [ "$(head -1 "$crcache.hit" 2>/dev/null)" != "1700000000" ]; then
+    elif ! _wait_for_content "$crcache.hit" "1700000000"; then
         _rl_fail "$name" "60-second refresh did not run with pinned clock"
     elif [ ! -e "$crcache.fetching" ]; then _rl_fail "$name" "credit refresh marker missing"
     else _rl_pass "$name"; fi
@@ -894,9 +911,8 @@ EOF
         | STATUSLINE_GPT_LIMITS=1 CC_STATUSLINE_GPT_CACHE="$cache" \
           CC_STATUSLINE_GPT_FETCH="$fake" CC_STATUSLINE_RL_CACHE="$ccache" \
           bash "$STATUSLINE") >"$out" 2>"$err"
-    sleep 0.3
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif [ "$(head -1 "$cache.now" 2>/dev/null)" != "1700000000" ]; then
+    elif ! _wait_for_content "$cache.now" "1700000000"; then
         _rl_fail "$name" "Codex usage helper did not receive pinned clock"
     else _rl_pass "$name"; fi
     printf '|||65|1700361000|604800|1699999990\n' >"$cache"
@@ -993,9 +1009,8 @@ EOF
           CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_CODEX_SVC_FETCH="" \
           CC_STATUSLINE_SVC_FETCH="$generic" CC_STATUSLINE_RL_CACHE="$ccache" \
           bash "$STATUSLINE") >"$out" 2>"$err"
-    sleep 0.3
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif [ "$(head -1 "$hits" 2>/dev/null)" != "generic|Codex API|https://status.openai.com/api/v2/components.json" ]; then
+    elif ! _wait_for_content "$hits" "generic|Codex API|https://status.openai.com/api/v2/components.json"; then
         _rl_fail "$name" "generic service override was not used for GPT"
     else _rl_pass "$name"; fi
 
@@ -1005,9 +1020,8 @@ EOF
           CC_STATUSLINE_CODEX_SVC_CACHE="$csvc" CC_STATUSLINE_CODEX_SVC_FETCH="$dedicated" \
           CC_STATUSLINE_SVC_FETCH="$generic" CC_STATUSLINE_RL_CACHE="$ccache" \
           bash "$STATUSLINE") >"$out" 2>"$err"
-    sleep 0.3
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif [ "$(head -1 "$hits" 2>/dev/null)" != "dedicated|Codex API|https://status.openai.com/api/v2/components.json" ]; then
+    elif ! _wait_for_content "$hits" "dedicated|Codex API|https://status.openai.com/api/v2/components.json"; then
         _rl_fail "$name" "dedicated Codex service override did not win"
     else _rl_pass "$name"; fi
 
