@@ -91,6 +91,43 @@ environment of the ancestor `claude` process: `/proc/PID/environ` on Linux,
 - `CC_STATUSLINE_RL_KEY=<label>` overrides detection entirely for setups the
   scan can't see through; empty forces the shared cache.
 
+## GPT limits follow the official Codex CLI login
+
+`STATUSLINE_GPT_LIMITS=1` reads `account/rateLimits/read` from the locally
+installed official Codex CLI. This keeps OAuth credentials out of cc-statusline
+and makes the usage source independent of the model-routing integration, but it
+also means the displayed account is the one from `codex login status`. A router
+logged into a different ChatGPT account cannot be correlated from Claude Code's
+statusline payload; leave the feature off in that setup.
+
+The backend may expose only one recognized duration. For example, the default
+`codex` bucket can carry a weekly window with no 5h window. The statusline shows
+the available window and does not invent or infer a missing one. Additional
+named metered buckets are not selected; this integration intentionally reads the
+default `codex` bucket. Opaque model aliases such as `sol` are not detected
+because the alias alone contains no provider or authentication information.
+GPT pace arrows use each Codex window's exact reported duration rather than a
+hardcoded 5h/7d value. Codex describes a rolling duration and reset timestamp, and
+an active weekly reset stayed fixed while live usage increased, but a reset-to-zero
+boundary has not been measured directly. The projection therefore assumes that an
+active window resets at that fixed boundary. Zero-percent uninitialized/sliding
+snapshots remain suppressed by `pace_arrow`.
+
+The GPT service icon follows the exact `Codex API` component name from OpenAI's
+components endpoint, not the overall page status. If OpenAI renames or duplicates
+that component, the fetch fails closed and preserves the last valid separate
+Codex cache instead of showing another component or Claude's status.
+
+Claude Code's native `cost.total_cost_usd` applies Claude model prices to GPT
+token counts, so GPT renders suppress it. The replacement `cr` value is a
+ChatGPT credit-equivalent usage estimate, not billed dollars and not proof that
+credits were deducted while plan usage remained included. It is scoped to the
+GPT-5.6 Sol rates published on 2026-09-10: 100/M uncached input, 10/M cached
+input, and 500/M output. Unknown models are skipped. Because the ChatGPT table
+does not define cache-write accounting, any recognized response with nonzero
+`cache_creation_input_tokens` makes the whole session estimate unavailable.
+No API long-context multiplier or USD conversion is applied.
+
 Setting the terminal tab title via `printf '\033]1;%s\007' > /dev/tty` only works
 when the script has a controlling terminal. Under tmux, screen, and most CI
 runners it silently no-ops (since v2.0.1, without leaking stderr). The title text
@@ -99,8 +136,8 @@ spoofed terminal title.
 
 ## OSC 8 hyperlinks on the status icons are terminal-dependent
 
-The service-status icons are wrapped in OSC 8 hyperlinks (GitHub icon to
-`githubstatus.com`, Claude icon to `status.claude.com`) so they are clickable;
+The service-status icons are wrapped in OSC 8 hyperlinks (GitHub plus the
+active Claude/OpenAI provider) so they are clickable;
 `STATUSLINE_HYPERLINKS=0` turns this off. Caveats:
 
 - **It is Cmd+click (macOS) / Ctrl+click, not a plain single click.** The

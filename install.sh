@@ -52,7 +52,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
         info "Nothing to remove at $INSTALL_DIR"
     fi
     info ""
-    info "Don't forget to remove the statusLine and hook entries from ~/.claude/settings.json"
+    info "Don't forget to remove the statusLine entry from ~/.claude/settings.json"
     exit 0
 fi
 
@@ -63,8 +63,8 @@ if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     exit 1
 fi
 
-# Sanity-check dependencies (statusline + hook). perl handles all ANSI/control
-# stripping now, so there is no gsed/gnu-sed requirement on macOS anymore.
+# Sanity-check required dependencies. perl handles all ANSI/control stripping,
+# so there is no gsed/gnu-sed requirement on macOS anymore. Codex is optional.
 missing=()
 for cmd in bash jq perl curl timeout; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
@@ -106,7 +106,7 @@ if ! git -C "$REPO_DIR" archive --format=tar "$REF" | tar -x -C "$STAGE_DIR"; th
 fi
 
 # Sanity-check required files in the staged tree
-for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh cc-statusline-update-fetch.sh; do
+for f in statusline.sh claude-status-fetch.sh claude-usage-fetch.sh codex-usage-fetch.sh gpt-credits-fetch.sh cc-statusline-update-fetch.sh; do
     if [ ! -f "$STAGE_DIR/$f" ]; then
         err "staged tree missing required file: $f"
         exit 1
@@ -118,6 +118,8 @@ mkdir -p "$INSTALL_DIR"
 install -m 0755 "$STAGE_DIR/statusline.sh"          "$INSTALL_DIR/statusline.sh"
 install -m 0755 "$STAGE_DIR/claude-status-fetch.sh" "$INSTALL_DIR/claude-status-fetch.sh"
 install -m 0755 "$STAGE_DIR/claude-usage-fetch.sh"  "$INSTALL_DIR/claude-usage-fetch.sh"
+install -m 0755 "$STAGE_DIR/codex-usage-fetch.sh"   "$INSTALL_DIR/codex-usage-fetch.sh"
+install -m 0755 "$STAGE_DIR/gpt-credits-fetch.sh"   "$INSTALL_DIR/gpt-credits-fetch.sh"
 install -m 0755 "$STAGE_DIR/cc-statusline-update-fetch.sh" "$INSTALL_DIR/cc-statusline-update-fetch.sh"
 # VERSION is the human semver used in the scripts' User-Agent. Absent in tags
 # that predate it (the scripts then fall back to "dev"), so guard the copy.

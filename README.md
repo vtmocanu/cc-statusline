@@ -16,15 +16,15 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Per-project background color** (12-color palette, hashed from session/cwd, manually overridable)
 - **Git info**: branch, staged/modified/untracked counts
 - **Kubernetes context**: current `kubectl` context (with timeout to avoid exec-auth hangs)
-- **Session metrics**: model name, effort level (low/medium/high/max), elapsed time, session cost in USD (from Claude Code's `cost.total_cost_usd`; hide with `STATUSLINE_COST=0`)
+- **Session metrics**: model name, effort level (low/medium/high/max), elapsed time, Claude session cost in USD, or a GPT-5.6 Sol ChatGPT credit-equivalent estimate (`211.29 cr`, compacted to `2.07k cr` at four digits)
 - **Context window**: colored bar and percentage
 - **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); off by default, enable with `STATUSLINE_CACHE=1` (hidden anyway before the first call and after `/compact`)
 - **Context fill on phone**: the phone/slim layout shows `ctx NN%` (context-window usage, same color thresholds as the rate limits) before the 5h/7d windows; on by default, hide with `STATUSLINE_CTX=0`. The wide layout already shows context as `NN% of NNNk`.
-- **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width; shared across your sessions via a small per-user cache, so an idle session never shows numbers staler than your account's latest known state
-- **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe)
-- **Claude service status**: auto-refreshed every 60s from `status.claude.com`
-- **GitHub service status**: line-1 icon (same glyphs/colors as the Claude one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
-- **Clickable status icons**: both service-status icons are OSC 8 hyperlinks (GitHub icon to `githubstatus.com`, Claude icon to `status.claude.com`), so Cmd+click (macOS) / Ctrl+click opens the status page in a supporting terminal; on by default, disable with `STATUSLINE_HYPERLINKS=0`
+- **Rate limits**: 5h and 7d bars with reset countdowns, progressively compacted to fit available width; Claude limits are shared across sessions, while opt-in GPT limits come from the official Codex CLI and can render a single available window
+- **Pace arrows**: optional `↑`/`→` after a rate-limit % projecting whether you'll exhaust the window before it resets (coral = will overshoot, gold = on pace, nothing = safe); GPT projections use each Codex window's reported duration
+- **Provider service status**: line 2 follows the active model, using Claude's status by default or the exact OpenAI `Codex API` component for opt-in GPT sessions; auto-refreshed every 60s into separate caches
+- **GitHub service status**: line-1 icon (same glyphs/colors as the provider one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
+- **Clickable status icons**: both service-status icons are OSC 8 hyperlinks (GitHub icon to `githubstatus.com`, provider icon to `status.claude.com` or `status.openai.com`), so Cmd+click (macOS) / Ctrl+click opens the status page in a supporting terminal; on by default, disable with `STATUSLINE_HYPERLINKS=0`
 - **Update indicator**: a gold `⇡ X.Y.Z` at the right edge of line 1 when a newer cc-statusline release exists (checked hourly against GitHub, hyperlinked to the release page); hidden entirely when you are current, disable with `STATUSLINE_UPDATE_CHECK=0`
 - **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
 - **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
@@ -34,11 +34,12 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 ## Requirements
 
 - macOS or Linux
-- `bash` 4 or newer
+- `bash` 3.2 or newer
 - `jq`
 - `perl` (for ANSI-aware width measurement)
 - `curl` (for service status)
 - GNU `timeout` (coreutils; not stock on macOS)
+- Optional: a recent official [`codex`](https://github.com/openai/codex) CLI logged in with ChatGPT for `STATUSLINE_GPT_LIMITS=1`
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal for the icons
 
 ### Per-OS dependency install
@@ -159,15 +160,21 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_SESSION_NAME` | `1` | Set to `0` to hide the `@handle` (the addressable session name peers message, read from Claude Code's per-session registry) at the start of line 1. |
 | `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
-| `STATUSLINE_HYPERLINKS` | `1` | Set to `0` to disable the OSC 8 hyperlinks on the service-status icons (GitHub icon to `githubstatus.com`, Claude icon to `status.claude.com`). Needs a terminal that supports OSC 8 (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the escape is swallowed and the icon shows as plain text. |
+| `STATUSLINE_HYPERLINKS` | `1` | Set to `0` to disable the OSC 8 hyperlinks on the service-status icons (GitHub plus the active Claude/OpenAI provider). Needs a terminal that supports OSC 8 (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the escape is swallowed and the icon shows as plain text. |
 | `STATUSLINE_UPDATE_CHECK` | `1` | Set to `0` to disable the update indicator (the gold `⇡ X.Y.Z` right-aligned on line 1 when a newer cc-statusline release exists). Polls the GitHub "latest release" endpoint once an hour in the background; shown only when the release is newer than the installed `VERSION`, never when current. |
 | `STATUSLINE_PACE` | `1` | Set to `0` to hide the rate-limit pace arrows (`↑`/`→`) on line 2. |
-| `STATUSLINE_COST` | `1` | Set to `0` to hide the session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`) on line 2, read from Claude Code's `cost.total_cost_usd`. |
+| `STATUSLINE_COST` | `1` | Set to `0` to hide the Claude session-cost readout (`· $N.NN`, sub-cent shown as `$<0.01`). It does not control GPT credits. |
+| `STATUSLINE_GPT_CREDITS` | `1` with GPT limits | Set to `0` to hide the transcript-derived GPT-5.6 Sol ChatGPT credit-equivalent estimate. The public feature remains off until `STATUSLINE_GPT_LIMITS=1`. |
+| `STATUSLINE_GPT_CREDITS_TTL` | `300` | Maximum age in seconds for a displayed GPT credit estimate; refresh attempts are throttled to 60 seconds per session. |
 | `STATUSLINE_RL_SHARE` | `1` | Set to `0` to disable the shared per-user rate-limits cache (no read, no write). |
 | `STATUSLINE_RL_FETCH` | `1` | Set to `0` to disable the background per-account usage fetcher (`claude-usage-fetch.sh`), which asks `api.anthropic.com/api/oauth/usage` with the session's own credential so multi-account machines show each account's true bars instead of Claude Code's shared (account-agnostic) numbers. |
 | `STATUSLINE_RL_AUTH_TTL` | `300` | Seconds a fetched usage snapshot stays authoritative (displayed over the stdin `rate_limits`). |
 | `STATUSLINE_RL_BACKOFF` | `300` | Seconds to stop fetching for an account after the usage endpoint returns an HTTP error (e.g. 429) with no usable fallback. |
 | `STATUSLINE_RL_PROBE` | `1` | Set to `0` to disable the Messages-API header probe used when the usage endpoint refuses the credential (the probe costs a token or two of quota). |
+| `STATUSLINE_GPT_LIMITS` | `0` | Set to `1` to replace Claude rate limits with the logged-in Codex CLI account's ChatGPT plan limits when the effective model ID identifies a GPT OAuth route. |
+| `STATUSLINE_GPT_FETCH` | `1` | Set to `0` to keep reading a fresh GPT cache without launching `codex-usage-fetch.sh`. Has no effect unless `STATUSLINE_GPT_LIMITS=1`. |
+| `STATUSLINE_GPT_AUTH_TTL` | `300` | Maximum age in seconds for displayed Codex usage. A stale snapshot is hidden rather than replaced with Claude limits. |
+| `STATUSLINE_GPT_BACKOFF` | `300` | Seconds to pause Codex usage reads after an app-server, login, or payload failure. |
 | `CC_STATUSLINE_RL_KEY` | auto | Override the rate-limits cache account key (a label like `work`). Normally auto-detected from the session's `CLAUDE_CODE_OAUTH_TOKEN` (hashed, read from the parent `claude` process's exec-time environment since Claude Code consumes the variable). Set empty to force the shared unsuffixed cache. |
 | `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
 | `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |
@@ -198,8 +205,8 @@ The phone layout:
 
 Line 1 keeps the folder, branch and dirty markers; line 2 keeps the account badge,
 the context fill (`ctx NN%`), and both rate-limit windows with their pace arrows and
-reset countdowns (`↻`). The session name and title, model, effort, elapsed, cost and
-cache are dropped: at 50 columns they cost more room than they earn. As the viewport
+reset countdowns (`↻`). The session name and title, model, effort, elapsed,
+cost/credit estimate and cache are dropped: at 50 columns they cost more room than they earn. As the viewport
 narrows further, each line sheds independently. Line 2 drops the reset countdowns
 first (keeping `ctx` and the bare percentages), then drops `ctx` so the rate limits
 themselves always survive (`STATUSLINE_CTX=0` removes `ctx` entirely). Line 1
@@ -249,6 +256,26 @@ Earlier versions synthesized the title with an opt-in `UserPromptSubmit` hook th
 `claude-usage-fetch.sh` runs in the background (spawned by the statusline, throttled to once a minute across all your sessions per account) and asks `api.anthropic.com/api/oauth/usage` for the account's true 5h/7d usage, authenticated as the session itself: the session's `CLAUDE_CODE_OAUTH_TOKEN` when it was launched with one, your stored login otherwise. This exists because Claude Code feeds every session the same cached rate-limit numbers regardless of which account the session bills (shared `~/.claude.json` state), so on multi-account machines the bars were whichever account fetched last. The credential is never logged, never put in argv/env, and is only sent to `api.anthropic.com` over HTTPS. Set `STATUSLINE_RL_FETCH=0` to disable (the statusline then falls back to whatever Claude Code reports).
 
 If the usage endpoint refuses a credential (it answers 429 to `CLAUDE_CODE_OAUTH_TOKEN` credentials that the Messages API accepts), the fetcher falls back to a minimal Messages request (haiku, `max_tokens: 1`) and reads the account's limits off the `anthropic-ratelimit-unified-*` response headers. That probe costs a token or two of the account's quota; `STATUSLINE_RL_PROBE=0` turns it off, and after a failure with no usable fallback the account backs off for `STATUSLINE_RL_BACKOFF` seconds.
+
+### GPT/Codex plan usage
+
+GPT limits are off by default. Set `STATUSLINE_GPT_LIMITS=1` in `statusLine.command` to use them when the effective model ID is `gpt-*` or a recognized OpenAI OAuth routed form:
+
+```json
+"command": "STATUSLINE_GPT_LIMITS=1 cc-statusline"
+```
+
+`codex-usage-fetch.sh` starts the official Codex app server in the background and calls its read-only `account/rateLimits/read` method. The Codex CLI handles its own ChatGPT login, account selection, credential storage, and token refresh; cc-statusline never reads or receives the OAuth token and makes no inference request. Run `codex login status` to verify that CLI is logged in.
+
+The response can contain only a weekly window, only a 5h window, or both. Windows are identified by duration rather than primary/secondary position, and the statusline renders whatever is available. The cache preserves each window's exact reported duration for `pace_arrow`. Codex reports a rolling duration and reset timestamp, and a live active reset stayed fixed while usage increased, but a reset-to-zero boundary has not been observed directly. The GPT arrow is therefore a projection heuristic for active windows. Zero-percent uninitialized/sliding snapshots produce no arrow. GPT data lives in a separate private cache and never enters the Claude cache. If the GPT snapshot is unavailable or older than `STATUSLINE_GPT_AUTH_TTL`, the rate segment is hidden rather than showing unrelated Claude percentages.
+
+The line-2 service icon also switches providers. GPT sessions read only the exact `Codex API` component from `status.openai.com/api/v2/components.json`, cache it separately from Claude status, and link the icon to `status.openai.com`. Missing, duplicate, or malformed component data leaves the last valid Codex status untouched; Claude page status is never substituted.
+
+GPT renders never show Claude Code's native `$...` cost because Claude Code applies Claude model prices to GPT token counts. Instead, `gpt-credits-fetch.sh` streams the current main transcript and its `subagents/*.jsonl`, deduplicates repeated assistant responses by message ID, and estimates GPT-5.6 Sol usage at the flat rates published by [ChatGPT Learn](https://learn.chatgpt.com/docs/pricing), verified 2026-09-10: 100 credits per million uncached input tokens, 10 per million cached input tokens, and 500 per million output tokens. Only recognized GPT-5.6 Sol routed IDs count; Claude, helper, opaque alias, and unknown model IDs are skipped.
+
+The display is a **ChatGPT credit-equivalent usage estimate**, not billed dollars and not proof that credits were deducted while Pro usage remained within its included limits. The published ChatGPT table does not specify cache-write accounting or an API-style long-context multiplier, so neither is inferred. Any recognized row with nonzero `cache_creation_input_tokens` makes the session estimate unavailable rather than knowingly undercounting. The private cache is keyed by transcript path and refreshes asynchronously at most once a minute. Zero usage stays hidden; positive estimates appear as `211.29 cr` below 1,000 or `2.07k cr` at four digits. Set `STATUSLINE_GPT_CREDITS=0` to hide it.
+
+Detection currently covers raw `gpt-*`, `claude-ocx-native--gpt-*`, `clodex:openai-oauth:gpt-*`, and `anthropic-openai-oauth__gpt-*` IDs, including a `[1m]` suffix. A short opaque alias such as `sol` cannot identify its provider by itself and is not detected. `clodex:openai:*` API-key routes are deliberately excluded because ChatGPT plan limits do not describe API-key usage.
 
 ### Update indicator
 

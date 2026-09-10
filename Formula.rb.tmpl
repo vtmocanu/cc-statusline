@@ -19,11 +19,12 @@ class CcStatusline < Formula
   uses_from_macos "perl"
 
   def install
-    # Keep the four scripts siblings in libexec: statusline.sh resolves the
-    # fetchers relative to its own (non-symlink-resolved) dirname, and the
-    # fetchers read the VERSION file from their dir or its parent for the
-    # User-Agent. A bare bin symlink would break both, hence the wrapper.
+    # Keep the six scripts siblings in libexec: statusline.sh resolves the
+    # helpers relative to its own (non-symlink-resolved) dirname, and network
+    # fetchers read VERSION from their dir or parent for the User-Agent. A bare
+    # bin symlink would break both, hence the wrapper.
     libexec.install "statusline.sh", "claude-status-fetch.sh", "claude-usage-fetch.sh",
+                    "codex-usage-fetch.sh", "gpt-credits-fetch.sh",
                     "cc-statusline-update-fetch.sh", "VERSION"
 
     (bin/"cc-statusline").write <<~SH

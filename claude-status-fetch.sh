@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Fetches a service's status from an Atlassian Statuspage summary.json and writes
-# a cache file. Defaults to Claude's page (status.claude.com); point it at any
-# other Statuspage-hosted service with CC_STATUSLINE_SVC_URL (the statusline uses
-# this to also poll githubstatus.com when STATUSLINE_GITHUB_STATUS=1).
+# Fetches a service status from a Statuspage-compatible JSON endpoint and writes
+# a cache file. Defaults to Claude's summary; point it at another endpoint with
+# CC_STATUSLINE_SVC_URL. CC_STATUSLINE_SVC_COMPONENT optionally selects exactly
+# one named component from components.json instead of using summary incidents.
 # Called by the statusline in the background when the cache is >60s old.
 # Output file: per-user state dir (see _state_dir / CC_STATUSLINE_SVC_CACHE).
 # Format: one line, one of:
@@ -52,7 +52,7 @@ _cc_version() {
 VERSION="$(_cc_version)"; VERSION="${VERSION:-dev}"
 
 CACHE_FILE="${CC_STATUSLINE_SVC_CACHE:-$(_state_dir)/service-status}"
-TMP_FILE="${CACHE_FILE}.tmp"
+TMP_FILE="${CACHE_FILE}.tmp.$$"
 
 # Clean up tmp file on any exit (crash, signal, normal)
 trap 'rm -f "$TMP_FILE"' EXIT
@@ -73,6 +73,37 @@ else
 fi
 
 [ -z "$data" ] && exit 0
+
+# Component mode is intentionally strict. A missing, duplicate, malformed, or
+# unknown-status match leaves the previous cache untouched rather than quietly
+# reporting the page-wide state for the wrong service.
+COMPONENT_NAME="${CC_STATUSLINE_SVC_COMPONENT:-}"
+if [ -n "$COMPONENT_NAME" ]; then
+    component=$(printf '%s' "$data" | jq -r --arg name "$COMPONENT_NAME" '
+        [.components[]? | select(type == "object" and .name == $name)] as $matches
+        | if ($matches | length) != 1 then error("component match must be unique") else $matches[0] end
+        | if (.status | type) != "string" then error("invalid component status") else . end
+        | select(.status == "operational"
+                 or .status == "degraded_performance"
+                 or .status == "partial_outage"
+                 or .status == "major_outage")
+        | [.status, .name] | @tsv
+    ' 2>/dev/null) || exit 0
+    [ -n "$component" ] || exit 0
+    IFS=$'\t' read -r component_status component_label extra <<EOF
+$component
+EOF
+    [ -z "${extra:-}" ] || exit 0
+    case "$component_status" in
+        operational) printf 'operational\n' >"$TMP_FILE" || exit 0 ;;
+        degraded_performance|partial_outage|major_outage)
+            printf '%s:%s:%s\n' "$component_status" "$component_label" "$component_label" >"$TMP_FILE" || exit 0 ;;
+        *) exit 0 ;;
+    esac
+    mv "$TMP_FILE" "$CACHE_FILE" 2>/dev/null || exit 0
+    trap - EXIT
+    exit 0
+fi
 
 # Incidents and components whose name matches this regex are ignored (see the
 # header comment). Default keys on the suspension sentence, not the bare model
