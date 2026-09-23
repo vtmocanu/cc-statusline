@@ -98,6 +98,7 @@ eval "$(echo "$DATA" | jq -r '
     @sh "COST_USD=\(.cost.total_cost_usd // 0)",
     @sh "AGENT=\(.agent.name // "")",
     @sh "MODE=\(.mode // "")",
+    @sh "EFFORT_IN=\(.effort.level | if type == "string" then . else "" end)",
     @sh "TRANSCRIPT_PATH=\(.transcript_path // "")",
     @sh "CWD_FULL=\(.cwd // "~")",
     @sh "SESSION_ID=\(.session_id // "")",
@@ -117,7 +118,7 @@ MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
 PCT=${PCT:-0}; COST_USD=${COST_USD:-0}
 CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
 DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
-AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}
+AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}; EFFORT_IN=${EFFORT_IN:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
 EFFECTIVE_MODEL_ID="$MODEL_ID"
 SESSION_TITLE=${SESSION_TITLE:-}
@@ -537,9 +538,21 @@ NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$_NOW_REAL}" "$_NOW_REAL")
 
 TOPIC=""  # populated from the native session title (SESSION_TITLE) below
 
-# ── Effort level detection (transcript -> settings -> default) ──────────────
+# ── Effort level detection (stdin -> env -> transcript -> settings -> default)
+# Claude Code sends the live level as stdin .effort.level and exports it as
+# CLAUDE_EFFORT (verified on 2.1.278). Both reflect a --effort launch flag or
+# env override, which never reaches the transcript or settings.json, so they
+# win. Accept only a short lowercase word: an unknown future level still shows,
+# but nothing else can reach the terminal. The transcript and settings reads
+# remain the fallback for older Claude Code builds that send neither.
+_effort_word() { case "$1" in ''|*[!a-z]*) return 1 ;; *) [ "${#1}" -le 12 ] ;; esac; }
 EFFORT=""
-if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+if _effort_word "$EFFORT_IN"; then
+    EFFORT="$EFFORT_IN"
+elif _effort_word "${CLAUDE_EFFORT:-}"; then
+    EFFORT="$CLAUDE_EFFORT"
+fi
+if [ -z "$EFFORT" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Read from end of file for speed on large transcripts
     EFFORT=$(_reverse_file "$TRANSCRIPT_PATH" \
         | grep -m1 -E '"content":"<local-command-stdout>(Set model to.*effort|Set effort level to)' \

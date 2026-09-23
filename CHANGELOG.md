@@ -4,6 +4,11 @@ All notable changes to cc-statusline are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.4.1] - 2026-09-23
+
+### Fixed
+- The effort level now shows the live session value. Claude Code reports it as stdin `.effort.level` (and exports `CLAUDE_EFFORT`), which the statusline now reads first; it used to read only a `/model` or `/effort` confirmation in the transcript and then `effortLevel` in `~/.claude/settings.json`, so a session whose live effort differed from the saved default (for example set at launch) showed the stale default instead. Only a short lowercase word is accepted from either source; anything else falls back to the old transcript and settings lookup, which stays for older Claude Code builds.
+
 ## [v3.4.0] - 2026-09-10
 
 ### Added
@@ -313,6 +318,7 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
+[v3.4.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.0...v3.4.1
 [v3.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.3.0...v3.4.0
 [v3.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.2.0...v3.3.0
 [v3.2.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.1.0...v3.2.0

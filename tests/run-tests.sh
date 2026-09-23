@@ -83,6 +83,9 @@ export STATUSLINE_PROFILE=0
 # and fails in CI. Tests that need a real HOME set it themselves.
 export HOME="$SCRATCH/home"
 mkdir -p "$HOME/.claude"
+# Same leak through the env: Claude Code exports CLAUDE_EFFORT to every child,
+# so a suite run from inside a session would render that session's effort.
+unset CLAUDE_EFFORT
 
 pass=0
 fail=0
@@ -2137,6 +2140,50 @@ if [ ! -x "$STATUSLINE" ]; then
     exit 2
 fi
 
+# Effort source precedence. Claude Code sends the live level as stdin
+# .effort.level and exports CLAUDE_EFFORT; both must beat settings.json, which
+# only holds the saved default (a --effort launch flag never reaches it).
+effort_tests() {
+    printf '\n'
+    printf 'effort level tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local home="$SCRATCH/effort-home" esc
+    mkdir -p "$home/.claude"
+    printf '{"effortLevel":"xhigh"}\n' > "$home/.claude/settings.json"
+    esc="$(printf '\\')u001b"
+
+    _eff_json() {  # _eff_json [effort-json-value]
+        printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"/home/test/eff",'
+        printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000},'
+        printf '"cost":{"total_duration_ms":300000},"session_id":"eff"'
+        [ -n "${1:-}" ] && printf ',"effort":{"level":%s}' "$1"
+        printf '}'
+    }
+    _eff_case() {  # _eff_case <name> <want> <stdin-json> <env...>
+        local name="$1" want="$2" j="$3" out="$SCRATCH/eff.out" err="$SCRATCH/eff.err" l2
+        shift 3
+        ( cd "$SCRATCH" && printf '%s' "$j" \
+            | env HOME="$home" XDG_CONFIG_HOME="$SCRATCH/xdg-empty" \
+                  CC_STATUSLINE_RL_CACHE="$SCRATCH/eff.cache" "$@" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+        l2=$(sed -n '2p' "$out" | _strip_ansi)
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif ! _has "$l2" "Claude Opus 5 · $want "; then _rl_fail "$name" "want effort $want: $l2"
+        elif LC_ALL=C grep -q $'\033\\[[0-9;]*[^0-9;m]' "$out"; then _rl_fail "$name" "stray escape in output"
+        else _rl_pass "$name"; fi
+    }
+
+    _eff_case effort-settings-fallback xhigh "$(_eff_json)"
+    _eff_case effort-stdin-beats-settings low "$(_eff_json '"low"')"
+    _eff_case effort-env-beats-settings max "$(_eff_json)" CLAUDE_EFFORT=max
+    _eff_case effort-stdin-beats-env medium "$(_eff_json '"medium"')" CLAUDE_EFFORT=max
+    _eff_case effort-stdin-escape-rejected high "$(_eff_json "\"hi${esc}[31mgh\"")" CLAUDE_EFFORT=high
+    _eff_case effort-stdin-nonstring-ignored xhigh "$(_eff_json 3)"
+    _eff_case effort-stdin-uppercase-ignored xhigh "$(_eff_json '"HIGH"')"
+    _eff_case effort-env-malformed-ignored xhigh "$(_eff_json)" "CLAUDE_EFFORT=hi gh"
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2158,6 +2205,7 @@ phone_gap_tests
 github_status_tests
 session_name_tests
 env_hardening_tests
+effort_tests
 update_check_tests
 
 printf '%s\n' "------------------------------------------------------------"

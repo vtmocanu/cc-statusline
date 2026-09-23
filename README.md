@@ -16,7 +16,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Per-project background color** (12-color palette, hashed from session/cwd, manually overridable)
 - **Git info**: branch, staged/modified/untracked counts
 - **Kubernetes context**: current `kubectl` context (with timeout to avoid exec-auth hangs)
-- **Session metrics**: model name, effort level (low/medium/high/max), elapsed time, Claude session cost in USD, or a GPT-5.6 Sol ChatGPT credit-equivalent estimate (`211.29 cr`, compacted to `2.07k cr` at four digits)
+- **Session metrics**: model name, effort level (low/medium/high/xhigh/max, the live session value Claude Code reports), elapsed time, Claude session cost in USD, or a GPT-5.6 Sol ChatGPT credit-equivalent estimate (`211.29 cr`, compacted to `2.07k cr` at four digits)
 - **Context window**: colored bar and percentage
 - **Cache hit rate**: prompt-cache efficiency of the last API call (green when most of the context is cached, coral when cold); off by default, enable with `STATUSLINE_CACHE=1` (hidden anyway before the first call and after `/compact`)
 - **Context fill on phone**: the phone/slim layout shows `ctx NN%` (context-window usage, same color thresholds as the rate limits) before the 5h/7d windows; on by default, hide with `STATUSLINE_CTX=0`. The wide layout already shows context as `NN% of NNNk`.
