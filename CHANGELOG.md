@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v3.5.0] - 2026-09-30
+
 ### Added
 - Opt-in prompt-cache cooldown timer (`STATUSLINE_CACHE_TIMER=1`) on line 2, after the cache hit rate. While the main conversation's cache is warm it shows a fire icon and the minutes left, rounded up (`42m`, `<1m` in the final minute), colored by the share of the TTL remaining, with a fire-alert icon in the last 20% and a dim `·5m` tag for a 5-minute TTL. Once cold it shows a snowflake and the tokens the next message re-caches (`184k`, `1.2M`, or `cold` when unknown, e.g. after `/compact`). The data comes only from Claude Code's documented stdin `.prompt_cache` (v2.1.251+): no transcript scan. The timer is hidden when the object is absent, when caching is off, when `warm` is true but the TTL or expiry is invalid, and on OpenAI-backed panes (detected from the effective model, independent of `STATUSLINE_GPT_LIMITS`), because Claude Code stamps its own Anthropic TTL on those responses while OpenAI reports no expiry. When line 2 is short on room the timer is kept and the hit rate is dropped first.
 
@@ -323,7 +325,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.0...HEAD
+[v3.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.1...v3.5.0
 [v3.4.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.0...v3.4.1
 [v3.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.3.0...v3.4.0
 [v3.3.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.2.0...v3.3.0
