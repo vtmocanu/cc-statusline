@@ -2211,7 +2211,7 @@ cache_timer_tests() {
         shift 3
         for a in "$@"; do case "$a" in STATUSLINE_WIDTH=*) limit="${a#STATUSLINE_WIDTH=}" ;; esac; done
         ( cd "$SCRATCH" && printf '%s' "$j" \
-            | env CC_STATUSLINE_RL_CACHE="$SCRATCH/pc.cache" STATUSLINE_CACHE_TIMER=1 "$@" \
+            | env -u STATUSLINE_CACHE_TIMER CC_STATUSLINE_RL_CACHE="$SCRATCH/pc.cache" "$@" \
                   bash "$STATUSLINE" ) >"$out" 2>"$err"
         l2=$(sed -n '2p' "$out" | _strip_ansi)
         max=0

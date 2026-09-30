@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v3.5.1] - 2026-09-30
+
+### Changed
+- The prompt-cache cooldown timer is now on by default (`STATUSLINE_CACHE_TIMER` defaults to `1`; set it to `0` to hide it). It still hides itself on older Claude Code without `.prompt_cache`, when caching is off, and on GPT panes. The cache hit rate (`STATUSLINE_CACHE`) stays opt-in.
+
 ## [v3.5.0] - 2026-09-30
 
 ### Added
@@ -325,7 +330,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.1...HEAD
+[v3.5.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.0...v3.5.1
 [v3.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.1...v3.5.0
 [v3.4.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.0...v3.4.1
 [v3.4.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.3.0...v3.4.0
