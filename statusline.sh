@@ -103,6 +103,11 @@ eval "$(echo "$DATA" | jq -r '
     @sh "CWD_FULL=\(.cwd // "~")",
     @sh "SESSION_ID=\(.session_id // "")",
     @sh "SESSION_TITLE=\(.session_name // "")",
+    @sh "PC_OBS=\(.prompt_cache.caching_observed | if type == "boolean" then tostring else "" end)",
+    @sh "PC_WARM=\(.prompt_cache.warm | if type == "boolean" then tostring else "" end)",
+    @sh "PC_TTL=\(.prompt_cache.ttl | if . == "5m" or . == "1h" then . else "" end)",
+    @sh "PC_EXP=\(.prompt_cache.expires_at | if type == "number" and . > 0 and . < 1e12 then floor | tostring else "" end)",
+    @sh "PC_RECACHE=\(.prompt_cache.recache_tokens_if_cold | if type == "number" and . >= 0 and . < 1e15 then floor | tostring else "" end)",
     @sh "FIVE_PCT=\(.rate_limits.five_hour.used_percentage // "")",
     @sh "SEVEN_PCT=\(.rate_limits.seven_day.used_percentage // "")",
     @sh "FIVE_RESET_TS=\(.rate_limits.five_hour.resets_at // "")",
@@ -122,6 +127,8 @@ AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}; EFFORT_I
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
 EFFECTIVE_MODEL_ID="$MODEL_ID"
 SESSION_TITLE=${SESSION_TITLE:-}
+PC_OBS=${PC_OBS:-}; PC_WARM=${PC_WARM:-}; PC_TTL=${PC_TTL:-}
+PC_EXP=${PC_EXP:-}; PC_RECACHE=${PC_RECACHE:-}
 # Safety: strip control bytes from every JSON-sourced field we print, so a
 # crafted value can't inject terminal escapes (defense in depth; the session
 # title/handle and profile label are stripped the same way at their own sites).
@@ -865,6 +872,9 @@ NF_MODEL="󰚩"                # nf-md-robot (kept from v1)
 NF_K8S="󱃾"                  # nf-md-kubernetes (kept from v1)
 NF_CLOCK=$'\xef\x80\x97'     # U+F017 clock
 NF_CACHE=$'\xef\x83\xa7'     # U+F0E7 zap (prompt-cache hit rate)
+NF_CACHE_WARM=$'\xef\x81\xad'       # U+F06D fire (prompt cache warm)
+NF_CACHE_EXPIRING=$'\xf3\xb1\x97\x97'  # U+F15D7 md-fire-alert (last 20% of the TTL)
+NF_CACHE_COLD=$'\xef\x8b\x9c'       # U+F2DC snowflake (prompt cache cold)
 NF_CORNER_TL=$'\xee\x82\xba'    # U+E0BA lower-right fill (top-left corner)
 NF_CORNER_BL=$'\xee\x82\xbe'    # U+E0BE upper-right fill (bottom-left corner)
 NF_CORNER_TR=$'\xee\x82\xb8'    # U+E0B8 lower-left fill -> top-right corner cut
@@ -940,6 +950,7 @@ L2_DIM="\033[38;2;80;80;80m"      # dim gray for separators + resets
 CLR_SAGE="\033[38;2;150;210;150m"   # green: good
 CLR_GOLD="\033[38;2;215;195;125m"   # amber: caution
 CLR_CORAL="\033[38;2;225;150;150m"  # coral: warning
+CLR_ICE="\033[38;2;140;180;225m"    # ice blue: prompt cache cold
 # Threshold color for a percentage. Default scale: low is good (sage), high is
 # bad (coral). Pass "invert" as $2 for metrics where high is GOOD, e.g. the
 # cache hit rate (green when most of the context is served from cache, coral
@@ -1224,6 +1235,59 @@ if [ "${STATUSLINE_CACHE:-0}" = "1" ] && [ -n "${CACHE_PCT:-}" ]; then
     CACHE_SEG=" ${L2_TXT}${NF_CACHE} ${CACHE_CLR}${CACHE_PCT}%${B2}"
 fi
 
+# ── Prompt-cache cooldown timer (line 2, after the hit rate) ───────────────
+# How long until the main conversation's prompt cache goes cold, from Claude
+# Code's documented stdin .prompt_cache (v2.1.251+). Claude Code re-renders at
+# expires_at, so the flip to cold needs no refreshInterval; the minutes only
+# tick while idle with one. Minute granularity on purpose: mm:ss would be
+# stale between renders and change width every second.
+#   fire 42m       warm; minutes left rounded up ("<1m" in the last minute)
+#   fire-alert 5m  warm, last 20% of the TTL (coral)
+#   ...·5m         dim tag when the TTL is 5m (API key / usage credits)
+#   snowflake 184k cold: the next message re-caches ~184k tokens ("cold" if unknown)
+# Cold means warm=false or a valid expires_at already passed. Hidden when the
+# object is absent (older Claude Code, before the first API response),
+# caching_observed is false ("off" is not "cold"), or warm=true arrives with an
+# invalid ttl/expires_at (missing data does not prove the cache is cold).
+# Hidden on any OpenAI-backed pane (effective model, so a GPT agent pane that
+# reports its Claude parent on stdin is caught too), independent of
+# STATUSLINE_GPT_LIMITS: Claude Code stamps its own Anthropic 5m/1h TTL on
+# those responses, while OpenAI reports no expiry and the Codex backend's
+# lifetime is undocumented. Opt in with STATUSLINE_CACHE_TIMER=1.
+PC_OPENAI=0
+case "${EFFECTIVE_MODEL_ID%%\[*}" in *gpt-*|*openai*) PC_OPENAI=1 ;; esac
+TIMER_SEG=""
+if [ "${STATUSLINE_CACHE_TIMER:-0}" = "1" ] && [ "$PC_OPENAI" = "0" ] && [ "$PC_OBS" = "true" ]; then
+    case "$PC_TTL" in 5m) PC_TTL_S=300 ;; 1h) PC_TTL_S=3600 ;; *) PC_TTL_S=0 ;; esac
+    PC_REM=""
+    if [ "$PC_WARM" = "false" ]; then
+        PC_REM=0
+    elif [ "$PC_WARM" = "true" ] && [[ "$PC_EXP" =~ ^[0-9]{1,12}$ ]] && [ "$PC_TTL_S" -gt 0 ]; then
+        PC_REM=$((PC_EXP - NOW))
+        [ "$PC_REM" -gt "$PC_TTL_S" ] && PC_REM=$PC_TTL_S   # clock-skew cap
+    fi
+    if [ -z "$PC_REM" ]; then
+        :
+    elif [ "$PC_REM" -gt 0 ]; then
+        PC_FRAC=$((PC_REM * 100 / PC_TTL_S))
+        PC_ICON="$NF_CACHE_WARM"
+        if   [ "$PC_FRAC" -gt 50 ]; then PC_CLR="$CLR_SAGE"
+        elif [ "$PC_FRAC" -gt 20 ]; then PC_CLR="$CLR_GOLD"
+        else PC_CLR="$CLR_CORAL"; PC_ICON="$NF_CACHE_EXPIRING"; fi
+        if [ "$PC_REM" -lt 60 ]; then PC_TXT="<1m"; else PC_TXT="$(((PC_REM + 59) / 60))m"; fi
+        TIMER_SEG=" ${PC_CLR}${PC_ICON} ${PC_TXT}"
+        [ "$PC_TTL" = "5m" ] && TIMER_SEG+="${L2_DIM}·5m"
+    else
+        if ! [[ "$PC_RECACHE" =~ ^[0-9]{1,15}$ ]]; then PC_TXT="cold"
+        elif [ "$PC_RECACHE" -ge 1000000 ]; then
+            PC_TXT="$((PC_RECACHE / 1000000)).$((PC_RECACHE % 1000000 / 100000))M"
+        elif [ "$PC_RECACHE" -ge 1000 ]; then PC_TXT="$((PC_RECACHE / 1000))k"
+        else PC_TXT="$PC_RECACHE"; fi
+        TIMER_SEG=" ${CLR_ICE}${NF_CACHE_COLD} ${PC_TXT}"
+    fi
+    [ -n "$TIMER_SEG" ] && TIMER_SEG+="${B2}"
+fi
+
 # ── Provider service status (read before width reservation) ─────────────────
 # Claude sessions keep their existing summary source. Opt-in GPT sessions use
 # only OpenAI's exact "Codex API" component, with a separate cache and test
@@ -1416,7 +1480,7 @@ _apply_phone_l2() {
         L2C+=" ${PROFILE_FG}${lbl}${B2}"
         PH_SEP=" ${L2_DIM}│${B2}"
     fi
-    CACHE_SEG=""
+    CACHE_SEG=""; TIMER_SEG=""
     if [ "$RATE_READY" = "1" ]; then
         # Context is the first optional segment to shed. Each limit window is
         # independent so GPT accounts that currently expose only weekly usage
@@ -1490,12 +1554,12 @@ _apply_phone_l2() {
 # the trailing line-padding measurement further down.
 TARGET=$((SAFE_WIDTH - WIDE_GLYPH_MARGIN))
 assemble_l1
-read -r L1_COLS BASE_W RFULL_W RCOMPACT_W RMINIMAL_W CACHE_W SVC_W < <(
-    measure_cols "$L1C" "$L2C" "$RATE_FULL" "$RATE_COMPACT" "$RATE_MINIMAL" "$CACHE_SEG" "$SVC_SEG" | tr '\n' ' '
+read -r L1_COLS BASE_W RFULL_W RCOMPACT_W RMINIMAL_W CACHE_W TIMER_W SVC_W < <(
+    measure_cols "$L1C" "$L2C" "$RATE_FULL" "$RATE_COMPACT" "$RATE_MINIMAL" "$CACHE_SEG" "$TIMER_SEG" "$SVC_SEG" | tr '\n' ' '
 )
 L1_COLS=${L1_COLS:-0}; BASE_W=${BASE_W:-0}
 RFULL_W=${RFULL_W:-0}; RCOMPACT_W=${RCOMPACT_W:-0}; RMINIMAL_W=${RMINIMAL_W:-0}
-CACHE_W=${CACHE_W:-0}; SVC_W=${SVC_W:-0}
+CACHE_W=${CACHE_W:-0}; TIMER_W=${TIMER_W:-0}; SVC_W=${SVC_W:-0}
 
 # ── Wide-base fallback: the tier is chosen from the width, but only a
 # MEASUREMENT can say whether the wide render actually fits it. Line 2's wide
@@ -1515,12 +1579,12 @@ if [ "$LAYOUT" = "wide" ] && [ "$LAYOUT_FORCED" = "0" ] \
     LAYOUT=phone
     _apply_phone_l2
     assemble_l1
-    read -r L1_COLS BASE_W RFULL_W RCOMPACT_W RMINIMAL_W CACHE_W SVC_W < <(
-        measure_cols "$L1C" "$L2C" "$RATE_FULL" "$RATE_COMPACT" "$RATE_MINIMAL" "$CACHE_SEG" "$SVC_SEG" | tr '\n' ' '
+    read -r L1_COLS BASE_W RFULL_W RCOMPACT_W RMINIMAL_W CACHE_W TIMER_W SVC_W < <(
+        measure_cols "$L1C" "$L2C" "$RATE_FULL" "$RATE_COMPACT" "$RATE_MINIMAL" "$CACHE_SEG" "$TIMER_SEG" "$SVC_SEG" | tr '\n' ' '
     )
     L1_COLS=${L1_COLS:-0}; BASE_W=${BASE_W:-0}
     RFULL_W=${RFULL_W:-0}; RCOMPACT_W=${RCOMPACT_W:-0}; RMINIMAL_W=${RMINIMAL_W:-0}
-    CACHE_W=${CACHE_W:-0}; SVC_W=${SVC_W:-0}
+    CACHE_W=${CACHE_W:-0}; TIMER_W=${TIMER_W:-0}; SVC_W=${SVC_W:-0}
 fi
 
 # ── Line 1 truncation, measured. Priority (least to most essential, so the
@@ -1603,7 +1667,7 @@ for _t in $TRUNC_ORDER; do
     L1_COLS=$(measure_cols "$L1C"); L1_COLS=${L1_COLS:-0}
 done
 
-# ── Line 2: widest rate tier that fits, then cache if room remains ─────────
+# ── Line 2: widest rate tier that fits, then cache/timer if room remains ───
 # Rate detail gets FIRST claim on the leftover width (so reset countdowns are
 # not squeezed out by cache); cache takes only what is left after it. Only the
 # service icon's actual width is reserved (SVC_W is 0 when no status is shown),
@@ -1614,7 +1678,14 @@ if   [ "$RFULL_W"    -gt 0 ] && [ "$RFULL_W"    -le "$AVAIL" ] 2>/dev/null; then
 elif [ "$RCOMPACT_W" -gt 0 ] && [ "$RCOMPACT_W" -le "$AVAIL" ] 2>/dev/null; then RATE_STR="$RATE_COMPACT"; RATE_W=$RCOMPACT_W
 elif [ "$RMINIMAL_W" -gt 0 ] && [ "$RMINIMAL_W" -le "$AVAIL" ] 2>/dev/null; then RATE_STR="$RATE_MINIMAL"; RATE_W=$RMINIMAL_W
 fi
-if [ "$CACHE_W" -gt 0 ] && [ "$((BASE_W + CACHE_W + RATE_W + SVC_W))" -le "$TARGET" ] 2>/dev/null; then
+# The cooldown timer outranks the hit rate: it is most urgent in its last
+# minute, exactly when "<1m·5m" is widest, so the hit rate is shed first.
+L2_LEFT=$((TARGET - BASE_W - RATE_W - SVC_W))
+if [ "$((CACHE_W + TIMER_W))" -le "$L2_LEFT" ] 2>/dev/null; then
+    L2C+="${CACHE_SEG}${TIMER_SEG}"
+elif [ "$TIMER_W" -gt 0 ] && [ "$TIMER_W" -le "$L2_LEFT" ] 2>/dev/null; then
+    L2C+="$TIMER_SEG"
+elif [ "$CACHE_W" -gt 0 ] && [ "$CACHE_W" -le "$L2_LEFT" ] 2>/dev/null; then
     L2C+="$CACHE_SEG"
 fi
 L2C+="$RATE_STR"
