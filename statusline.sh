@@ -1253,11 +1253,11 @@ fi
 # reports its Claude parent on stdin is caught too), independent of
 # STATUSLINE_GPT_LIMITS: Claude Code stamps its own Anthropic 5m/1h TTL on
 # those responses, while OpenAI reports no expiry and the Codex backend's
-# lifetime is undocumented. Opt in with STATUSLINE_CACHE_TIMER=1.
+# lifetime is undocumented. On by default; hide with STATUSLINE_CACHE_TIMER=0.
 PC_OPENAI=0
 case "${EFFECTIVE_MODEL_ID%%\[*}" in *gpt-*|*openai*) PC_OPENAI=1 ;; esac
 TIMER_SEG=""
-if [ "${STATUSLINE_CACHE_TIMER:-0}" = "1" ] && [ "$PC_OPENAI" = "0" ] && [ "$PC_OBS" = "true" ]; then
+if [ "${STATUSLINE_CACHE_TIMER:-1}" != "0" ] && [ "$PC_OPENAI" = "0" ] && [ "$PC_OBS" = "true" ]; then
     case "$PC_TTL" in 5m) PC_TTL_S=300 ;; 1h) PC_TTL_S=3600 ;; *) PC_TTL_S=0 ;; esac
     PC_REM=""
     if [ "$PC_WARM" = "false" ]; then
