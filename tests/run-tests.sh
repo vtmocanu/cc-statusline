@@ -2184,6 +2184,95 @@ effort_tests() {
     _eff_case effort-env-malformed-ignored xhigh "$(_eff_json)" "CLAUDE_EFFORT=hi gh"
 }
 
+cache_timer_tests() {
+    printf '\n'
+    printf 'prompt-cache timer tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    # NOW is pinned to 1700000000 (CC_STATUSLINE_NOW above).
+    local fire snow alert zap
+    zap=$(printf '\xef\x83\xa7'); fire=$(printf '\xef\x81\xad'); alert=$(printf '\xf3\xb1\x97\x97'); snow=$(printf '\xef\x8b\x9c')
+
+    _pc_json() {  # _pc_json [prompt_cache-json] [model-id] [transcript-path]
+        printf '{"model":{"display_name":"Claude Opus 5","id":"%s"},"cwd":"/home/test/pc",' "${2:-opus}"
+        printf '"context_window":{"remaining_percentage":50,"context_window_size":1000000,'
+        printf '"current_usage":{"input_tokens":1000,"cache_creation_input_tokens":4000,"cache_read_input_tokens":95000}},'
+        printf '"cost":{"total_duration_ms":300000},"session_id":"pc",'
+        [ -n "${3:-}" ] && printf '"transcript_path":"%s",' "$3"
+        printf '"rate_limits":{"five_hour":{"used_percentage":15,"resets_at":0},"seven_day":{"used_percentage":2,"resets_at":0}}'
+        [ -n "${1:-}" ] && printf ',"prompt_cache":%s' "$1"
+        printf '}'
+    }
+    # _pc_case <name> <want-substring|!unwanted|-> <stdin-json> <env...>
+    # "-" asserts the timer is hidden: none of its three icons on line 2.
+    # Width is checked against the case's own STATUSLINE_WIDTH when it sets one.
+    _pc_case() {
+        local name="$1" want="$2" j="$3" out="$SCRATCH/pc.out" err="$SCRATCH/pc.err" l2 cols max limit="$SAFE_WIDTH" a
+        shift 3
+        for a in "$@"; do case "$a" in STATUSLINE_WIDTH=*) limit="${a#STATUSLINE_WIDTH=}" ;; esac; done
+        ( cd "$SCRATCH" && printf '%s' "$j" \
+            | env CC_STATUSLINE_RL_CACHE="$SCRATCH/pc.cache" STATUSLINE_CACHE_TIMER=1 "$@" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+        l2=$(sed -n '2p' "$out" | _strip_ansi)
+        max=0
+        while IFS= read -r line; do
+            cols=$(printf '%s' "$line" | vis_cols)
+            [ "$cols" -gt "$max" ] && max=$cols
+        done <"$out"
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+        elif [ "$(wc -l <"$out" | tr -d ' ')" -ne 2 ]; then _rl_fail "$name" "expected 2 lines"
+        elif [ "$max" -gt "$limit" ]; then _rl_fail "$name" "line is $max cols (> $limit)"
+        else
+            case "$want" in
+                -)  if _has "$l2" "$fire" || _has "$l2" "$alert" || _has "$l2" "$snow"; then
+                        _rl_fail "$name" "timer should be hidden: $l2"; else _rl_pass "$name"; fi ;;
+                !*) if _has "$l2" "${want#!}"; then _rl_fail "$name" "unexpected '${want#!}': $l2"; else _rl_pass "$name"; fi ;;
+                *)  if _has "$l2" "$want"; then _rl_pass "$name"; else _rl_fail "$name" "want '$want': $l2"; fi ;;
+            esac
+        fi
+    }
+
+    local w='"caching_observed":true,"warm":true'
+    _pc_case pc-warm-1h         "$fire 50m"      "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}")"
+    _pc_case pc-warm-rounds-up  "$fire 4m·5m"    "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000181}")"
+    _pc_case pc-expiring-alert  "$alert 12m"     "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700000700}")"
+    _pc_case pc-5m-tag          "$fire 4m·5m"    "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000240}")"
+    _pc_case pc-last-minute     "$alert <1m·5m"  "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000040}")"
+    _pc_case pc-1h-untagged     "!m·"            "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}")"
+    _pc_case pc-without-hitrate "!$zap"          "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}")" STATUSLINE_CACHE=0
+    _pc_case pc-with-hitrate    "$zap 95% $fire 50m" "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}")" STATUSLINE_CACHE=1
+    _pc_case pc-skew-capped     "$fire 60m"      "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1799999999}")"
+    _pc_case pc-expired-clock   "$snow 184k"     "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1699999000,\"recache_tokens_if_cold\":184000}")"
+    _pc_case pc-cold-millions   "$snow 1.2M"     "$(_pc_json '{"caching_observed":true,"warm":false,"expires_at":null,"recache_tokens_if_cold":1234567}')"
+    _pc_case pc-cold-unknown    "$snow cold"     "$(_pc_json '{"caching_observed":true,"warm":false,"expires_at":null,"recache_tokens_if_cold":null}')"
+    _pc_case pc-caching-off     "-"              "$(_pc_json '{"caching_observed":false,"warm":false}')"
+    _pc_case pc-absent          "-"              "$(_pc_json)"
+    _pc_case pc-toggle-off      "-"              "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}")" STATUSLINE_CACHE_TIMER=0
+    # warm=true with unusable timer data is unknown, not cold: hidden.
+    _pc_case pc-garbage-warm    "-"              "$(_pc_json '{"caching_observed":true,"warm":"yes","ttl":"2h","expires_at":"soon","recache_tokens_if_cold":-5}')"
+    _pc_case pc-warm-no-ttl     "-"              "$(_pc_json '{"caching_observed":true,"warm":true,"expires_at":1700003000}')"
+    _pc_case pc-huge-numbers    "-"              "$(_pc_json '{"caching_observed":true,"warm":true,"ttl":"1h","expires_at":1e300,"recache_tokens_if_cold":1e300}')"
+    _pc_case pc-cold-bad-count  "$snow cold"     "$(_pc_json '{"caching_observed":true,"warm":false,"recache_tokens_if_cold":1e300}')"
+    # OpenAI-backed panes: Claude Code's TTL does not describe OpenAI's cache.
+    # Hidden with or without STATUSLINE_GPT_LIMITS, by stdin id or transcript.
+    _pc_case pc-gpt-stdin       "-"              "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}" gpt-6-sol)"
+    _pc_case pc-gpt-limits-on   "-"              "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}" claude-ocx-native--gpt-6-sol)" STATUSLINE_GPT_LIMITS=1
+    _pc_case pc-gpt-apikey      "-"              "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}" clodex:openai:gpt-6-sol)"
+    printf '{"type":"assistant","message":{"model":"gpt-6-sol","content":[]}}\n' >"$SCRATCH/pc-gpt.transcript.jsonl"
+    _pc_case pc-gpt-transcript  "-"              "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}" opus pc-gpt.transcript.jsonl)"
+    printf '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[]}}\n' >"$SCRATCH/pc-claude.transcript.jsonl"
+    _pc_case pc-claude-transcript "$fire 50m"    "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}" opus pc-claude.transcript.jsonl)"
+    # Phone layout drops cache and timer alike.
+    _pc_case pc-phone-hidden    "-"              "$(_pc_json "{$w,\"ttl\":\"1h\",\"expires_at\":1700003000}")" STATUSLINE_LAYOUT=phone
+    # Narrow line: the timer outranks the hit rate, so the hit rate is shed first
+    # (the final-minute "<1m·5m" is the widest timer and the most urgent).
+    _pc_case pc-narrow-keeps-timer "$alert <1m·5m" "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000040}")" STATUSLINE_CACHE=1 STATUSLINE_WIDTH=86
+    _pc_case pc-narrow-drops-rate  "!$zap"       "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000040}")" STATUSLINE_CACHE=1 STATUSLINE_WIDTH=86
+    # Narrower still: the timer no longer fits alone, but the hit rate does.
+    _pc_case pc-narrow-hitrate-only "$zap 95%" "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000040}")" STATUSLINE_CACHE=1 STATUSLINE_WIDTH=83
+    _pc_case pc-narrow-hitrate-only-2 "-"               "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000040}")" STATUSLINE_CACHE=1 STATUSLINE_WIDTH=83
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2207,6 +2296,7 @@ session_name_tests
 env_hardening_tests
 effort_tests
 update_check_tests
+cache_timer_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"
