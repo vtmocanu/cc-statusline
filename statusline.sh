@@ -409,14 +409,16 @@ if [ -n "$CTX_SNAP" ] && _is_gpt_model_id "$EFFECTIVE_MODEL_ID" \
                     if [ "${BASH_REMATCH[6]}" = "1" ]; then
                         CTX_TMP="$CTX_SNAP.tmp.$$"
                         trap 'rm -f "${CTX_TMP:-}" 2>/dev/null; printf "\n"' EXIT
-                        if printf 'v3|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$SESSION_ID" "$MODEL_ID" \
-                            "$EFFECTIVE_MODEL_ID" "$CTX_SIZE" "$PCT" "${CTX_USAGE// /.}" "${BASH_REMATCH[1]}" \
-                            "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
-                            "${BASH_REMATCH[5]}" "$TRANSCRIPT_PATH" >"$CTX_TMP" 2>/dev/null; then
-                            chmod 600 "$CTX_TMP" 2>/dev/null || true
-                            mv -f "$CTX_TMP" "$CTX_SNAP" 2>/dev/null || rm -f "$CTX_TMP" 2>/dev/null || true
-                        else
-                            rm -f "$CTX_TMP" 2>/dev/null || true
+                        # Publish only after write, mode and rename all succeed.
+                        # Any failure deletes the old snapshot too: it holds an
+                        # older value than this render shows, so keeping it would
+                        # let a later all-zero frame resurrect a stale reading.
+                        if ! { printf 'v3|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$SESSION_ID" "$MODEL_ID" \
+                                   "$EFFECTIVE_MODEL_ID" "$CTX_SIZE" "$PCT" "${CTX_USAGE// /.}" "${BASH_REMATCH[1]}" \
+                                   "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
+                                   "${BASH_REMATCH[5]}" "$TRANSCRIPT_PATH" >"$CTX_TMP" \
+                               && chmod 600 "$CTX_TMP" && mv -f "$CTX_TMP" "$CTX_SNAP"; } 2>/dev/null; then
+                            rm -f "$CTX_TMP" "$CTX_SNAP" 2>/dev/null || true
                         fi
                         CTX_TMP=""
                         trap 'printf "\n"' EXIT

@@ -2857,6 +2857,17 @@ context_hold_tests() {
     _ctx_pos $S claude-opus-4-8 $W pos10; _ctx_expect ctx-claude-drops-gpt 10 0 absent
     _ctx_asst "$tr" $M pos10
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-claude-then-gpt-zero 0 0 absent
+
+    # 11. A failed snapshot replacement (here the rename) must not leave the
+    #     older value behind: a proven 10% whose write fails, then an all-zero
+    #     frame, shows the native 0%, never a resurrected dim 21%.
+    local failbin="$d/failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    _ctx_case write-fail
+    _ctx_pos $S $M $W pos21; _ctx_expect ctx-write-fail-seed 21 0 present
+    _ctx_pos $S $M $W pos10 PATH="$failbin:$PATH"; _ctx_expect ctx-write-fail-drops-old 10 0 absent
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
 }
 
 if [ ! -d "$FIXTURES" ]; then
