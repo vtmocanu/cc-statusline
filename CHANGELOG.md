@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v3.6.0] - 2026-10-04
+
 ### Added
 - Repo-wide session counts on line 1 (`STATUSLINE_PEERS`, on by default). When another Claude Code session works in the same repository (linked worktrees included), the right edge of line 1 counts every session, this one included, by state: `⚙` busy, `◷` background shells running, `?` idle and waiting on your answer (reverse video), `○` idle. Zero counts are omitted, the segment is hidden for a lone session, and the count the current session belongs to is bracketed (`[⚙N]`, `[◷N]` or `[○N]`); the current session never counts as `?`. States come from Claude Code's internal session registry; `?` is a hint from the end of each idle session's transcript. Codex peer threads are not counted. The segment shares line 1's spare columns with the update indicator and is dropped, never truncated, when it does not fit.
 
@@ -336,7 +338,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.1...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.6.0...HEAD
+[v3.6.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.1...v3.6.0
 [v3.5.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.0...v3.5.1
 [v3.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.1...v3.5.0
 [v3.4.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.0...v3.4.1
