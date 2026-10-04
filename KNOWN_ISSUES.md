@@ -128,6 +128,38 @@ does not define cache-write accounting, any recognized response with nonzero
 `cache_creation_input_tokens` makes the whole session estimate unavailable.
 No API long-context multiplier or USD conversion is applied.
 
+GPT context hold: a GPT session (`gpt-6.1-sol`, 872k window) was captured
+sending 21%, then a context window whose four `current_usage` counters and both
+totals were 0 (used 0%, remaining 100%), then 21% again. The native source of
+that payload is not identified. The statusline holds the last valid value in
+dim gray for exactly that shape and only for GPT effective models. Limits:
+
+- A value is stored only when the transcript has an assistant entry (its
+  completion fields, such as `stop_reason`, are not checked) after its last
+  compact boundary with the same input, cache-creation and cache-read
+  counters and the same (raw or effective) model. This assumes Claude Code
+  records the GPT response usage in the transcript with the counters it
+  reports on stdin; if a route records them differently, nothing is ever
+  stored and the native `0%` shows as before. A frame the transcript has not
+  caught up with yet is not stored, and the older value is dropped.
+- The hold needs the same compact epoch (uuid of the last `compact_boundary`),
+  found by reading the whole transcript, JSON-parsing only boundary and
+  provenance candidate lines (about 45-70 ms on a synthetic 40 MB file; it runs
+  only on all-zero frames and when the percentage or counters change). A
+  boundary line that does not parse, a boundary without a well-formed uuid,
+  or an unterminated last line declines the hold.
+- A `/rewind` (or other branch change) that leaves no null or new valid
+  reading and no new compact boundary before an all-zero frame cannot be told
+  apart from the transient case; the transcript identity checks (same device
+  and inode, not shorter, the 4 KB before the recorded size unchanged) catch
+  replacement, truncation and edits in that tail only, not appended branch
+  switches or edits earlier in the same file (the transcript is assumed to be
+  append-only).
+- The hold has no time limit: as long as the payload stays all-zero and the
+  transcript evidence still matches, the dim value stays.
+- One small `ctx-last-<session_id>` file per GPT session remains in the
+  per-user runtime directory after the session ends.
+
 Setting the terminal tab title via `printf '\033]1;%s\007' > /dev/tty` only works
 when the script has a controlling terminal. Under tmux, screen, and most CI
 runners it silently no-ops (since v2.0.1, without leaking stderr). The title text
