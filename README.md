@@ -27,7 +27,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **GitHub service status**: line-1 icon (same glyphs/colors as the provider one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
 - **Clickable status icons**: both service-status icons are OSC 8 hyperlinks (GitHub icon to `githubstatus.com`, provider icon to `status.claude.com` or `status.openai.com`), so Cmd+click (macOS) / Ctrl+click opens the status page in a supporting terminal; on by default, disable with `STATUSLINE_HYPERLINKS=0`
 - **Update indicator**: a gold `⇡ X.Y.Z` at the right edge of line 1 when a newer cc-statusline release exists (checked hourly against GitHub, hyperlinked to the release page); hidden entirely when you are current, disable with `STATUSLINE_UPDATE_CHECK=0`
-- **Sessions in this repo**: right-aligned on line 1 when another Claude Code session works in the same repository, a repo-wide count of every session by state (`⚙` busy, `◷` background shells running, `?` waiting on your answer, `○` idle), with your own session's idle count bracketed; disable with `STATUSLINE_PEERS=0`
+- **Sessions in this repo**: right-aligned on line 1 when another Claude Code session works in the same repository, a repo-wide count of every session by state (`⚙` busy, `◷` background shells running, `?` waiting on your answer, `○` idle), with the count your own session belongs to bracketed; disable with `STATUSLINE_PEERS=0`
 - **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
 - **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
 - **Tab title**: sets the terminal tab title from the session title or directory
@@ -257,7 +257,7 @@ Earlier versions synthesized the title with an opt-in `UserPromptSubmit` hook th
 
 ### Sessions in this repo
 
-When more than one Claude Code session works in the same repository, line 1 shows a repo-wide count of all of them, your own included, at its right edge, for example `⚙2 ◷1 ?1 [○2]`:
+When more than one Claude Code session works in the same repository, line 1 shows a repo-wide count of all of them, your own included, at its right edge, for example `[⚙2] ◷1 ?1 ○2`:
 
 | Glyph | Meaning |
 |---|---|
@@ -266,7 +266,7 @@ When more than one Claude Code session works in the same repository, line 1 show
 | `?N` | idle, and its last reply asked you something (an unanswered question prompt, or its final line ends with `?`); drawn in reverse video so it stands out |
 | `○N` | idle and asked nothing: probably finished, a candidate for a final check |
 
-Zero counts are left out, and the whole segment is hidden when a session is alone in its repo. Your own session is never counted as `?` (you are already looking at it); when it is idle, the `○` count it belongs to is bracketed, `[○N]`. "Same repo" follows `git worktree list`, so sessions in linked worktrees at other paths count too. Codex threads attached as session peers are not counted; they are Codex runs, not Claude Code sessions.
+Zero counts are left out, and the whole segment is hidden when a session is alone in its repo. The count your own session belongs to is bracketed (`[⚙N]`, `[◷N]` or `[○N]`), so each session shows where it stands; it is never counted as `?`, since you are already looking at it. "Same repo" follows `git worktree list`, so sessions in linked worktrees at other paths count too. Codex threads attached as session peers are not counted; they are Codex runs, not Claude Code sessions.
 
 The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Each statusline counts at its own redraw, so two sessions can briefly disagree by one; set `refreshInterval` on your `statusLine` so idle sessions redraw (60 seconds is plenty). The segment sits in line 1's spare columns next to the update indicator and is dropped, never truncated, when it does not fit. Disable with `STATUSLINE_PEERS=0`.
 

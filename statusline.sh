@@ -1422,8 +1422,8 @@ fi
 #            segment never counts itself here (you are already looking at it);
 #            it falls to ○ instead
 #   ○N idle  (idle and asked nothing: probably finished, NOT proof of it).
-#            Bracketed, [○N], when this session is one of them, so an idle
-#            session you switch to is easy to spot
+# The count this session belongs to is bracketed ([⚙N], [◷N] or [○N]), so each
+# session shows its own state within the repo-wide picture.
 # The ? test is a HINT from the transcript tail, not a guarantee.
 # Zero counts are omitted, and the whole segment is absent unless at least one
 # OTHER session shares the repo, so a solo session renders exactly as before.
@@ -1440,17 +1440,6 @@ fi
 # only its last 300 lines are read. Placed in the padding pass at the bottom,
 # like the update indicator: dropped, never truncated, when it does not fit.
 # Test seams: CC_STATUSLINE_SESSIONS_DIR, CC_STATUSLINE_PROJECTS_DIR.
-_asked_user() {  # _asked_user <transcript> -> "ask" when the last reply asked something
-    tail -n 300 "$1" 2>/dev/null | jq -rR '
-        fromjson? | select(.type == "assistant" and (.message.content | type) == "array")
-        | .message.content as $c
-        | if any($c[]; .type == "tool_use" and .name == "AskUserQuestion") then "ask"
-          else ([$c[] | select(.type == "text") | .text] | last // empty
-                | split("\n") | map(select(test("\\S"))) | last // ""
-                | gsub("[\\s*_`)\\]]+$"; "")
-                | if endswith("?") then "ask" else "no" end)
-          end' 2>/dev/null | tail -n1
-}
 PEER_SEG=""
 if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
     _PEER_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
@@ -1459,55 +1448,110 @@ if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
     [ -d "$_PEER_DIR" ] && _PEER_WTS=$(git -C "$CWD_FULL" worktree list --porcelain 2>/dev/null \
         | sed -n 's/^worktree //p' || true)
     if [ -n "$_PEER_WTS" ]; then
-        P_BUSY=0 P_SHELL=0 P_ASK=0 P_IDLE=0 P_OTHERS=0 P_SELF_IDLE=0
-        while IFS=$'\t' read -r _p_sid _p_pid _p_status _p_cwd; do
-            case "$_p_pid" in ''|*[!0-9]*) continue ;; esac
-            kill -0 "$_p_pid" 2>/dev/null || continue
-            _p_in=0
-            while IFS= read -r _wt; do
-                [ -n "$_wt" ] || continue
-                case "$_p_cwd" in "$_wt"|"$_wt"/*) _p_in=1; break ;; esac
+        _in_repo() {  # _in_repo <path>: is it one of this repo's worktrees, or under one?
+            local w
+            while IFS= read -r w; do
+                [ -n "$w" ] || continue
+                case "$1" in "$w"|"$w"/*) return 0 ;; esac
             done <<<"$_PEER_WTS"
-            [ "$_p_in" = "1" ] || continue
+            return 1
+        }
+        P_BUSY=0 P_SHELL=0 P_ASK=0 P_IDLE=0 P_OTHERS=0 P_SELF=""
+        _P_IDLE_SIDS=""   # idle peers (not this session) whose transcript to check
+        # Registry files are joined with an RS byte and parsed one by one
+        # (fromjson?), so a malformed or half-written file is skipped instead of
+        # aborting the read for every session after it. Files come both compact
+        # and pretty-printed, which rules out line-based parsing.
+        while IFS=$'\t' read -r _p_sid _p_pid _p_status _p_cwd; do
+            case "$_p_pid" in ''|0|*[!0-9]*) continue ;; esac   # kill -0 0 probes our own group
+            kill -0 "$_p_pid" 2>/dev/null || continue
+            if ! _in_repo "$_p_cwd"; then
+                # Git reports physical paths; the registry may hold a symlinked
+                # one (macOS /tmp vs /private/tmp). Resolve only on a miss, so
+                # the common case costs no subshell.
+                _p_phys=$(cd "$_p_cwd" 2>/dev/null && pwd -P) || continue
+                _in_repo "$_p_phys" || continue
+            fi
             case "$_p_status" in
                 busy)  P_BUSY=$((P_BUSY + 1)) ;;
                 shell) P_SHELL=$((P_SHELL + 1)) ;;
                 idle)
-                    _p_q=""
-                    # sessionId is only ever used as a file name: refuse any
-                    # value that could walk out of the projects folder.
-                    if [ "$_p_sid" != "$SESSION_ID" ]; then
-                        case "$_p_sid" in
-                            ''|*/*|*..*) ;;
-                            *) for _p_tr in "$_PROJ_DIR"/*/"$_p_sid".jsonl; do
-                                   [ -f "$_p_tr" ] && _p_q=$(_asked_user "$_p_tr" || true)
-                                   break
-                               done ;;
-                        esac
-                    fi
-                    if [ "$_p_q" = "ask" ]; then P_ASK=$((P_ASK + 1)); else P_IDLE=$((P_IDLE + 1)); fi
-                    [ "$_p_sid" = "$SESSION_ID" ] && P_SELF_IDLE=1 ;;
+                    if [ "$_p_sid" = "$SESSION_ID" ]; then
+                        P_IDLE=$((P_IDLE + 1))
+                    else
+                        # Classified in one batch below; until then it is idle.
+                        P_IDLE=$((P_IDLE + 1))
+                        # The id becomes a file name and a JSON string: only a
+                        # plain id is looked up, anything else stays idle.
+                        case "$_p_sid" in ''|*[!A-Za-z0-9_-]*) ;; *) _P_IDLE_SIDS+="$_p_sid " ;; esac
+                    fi ;;
                 *)     continue ;;
             esac
-            [ "$_p_sid" = "$SESSION_ID" ] || P_OTHERS=$((P_OTHERS + 1))
-        done < <(jq -r \
-            'select(.entrypoint != "codex")
-             | [(.sessionId // ""), (.pid | tostring), (.status // ""), (.cwd // "")] | @tsv' \
-            "$_PEER_DIR"/*.json 2>/dev/null || true)
+            if [ "$_p_sid" = "$SESSION_ID" ]; then P_SELF="$_p_status"; else P_OTHERS=$((P_OTHERS + 1)); fi
+        done < <(for _p_f in "$_PEER_DIR"/*.json; do
+                     [ -f "$_p_f" ] && { cat "$_p_f"; printf '\036'; }
+                 done 2>/dev/null | jq -Rrs '
+                     split("\u001e")[] | fromjson? | objects
+                     | select(.entrypoint != "codex")
+                     | [(.sessionId // "" | tostring), (.pid // "" | tostring),
+                        (.status // "" | tostring), (.cwd // "" | tostring)] | @tsv' 2>/dev/null || true)
+        # "?" check, one jq pass for every idle peer: each transcript tail is
+        # preceded by a {"__peer":id} marker. A peer asks when an AskUserQuestion
+        # call has no tool_result yet (answered and cancelled prompts both write
+        # one), or when its last assistant block is text whose final non-blank
+        # line ends with "?" (trailing markdown stripped). Lines are prefiltered
+        # to assistant records and tool results; fromjson? skips any line the
+        # tail cut in half.
+        if [ -n "$_P_IDLE_SIDS" ]; then
+            P_ASK=$(for _p_sid in $_P_IDLE_SIDS; do
+                for _p_tr in "$_PROJ_DIR"/*/"$_p_sid".jsonl; do
+                    [ -f "$_p_tr" ] || break
+                    printf '{"__peer":"%s"}\n' "$_p_sid"
+                    tail -n 300 "$_p_tr" 2>/dev/null | grep -F -e '"assistant"' -e '"tool_result"' || true
+                    break
+                done
+            done 2>/dev/null | jq -nR '
+                reduce (inputs | fromjson? | objects) as $r ({cur: null, s: {}};
+                  if $r.__peer then .cur = $r.__peer | .s[.cur] = {pend: {}, last: "no"}
+                  elif .cur == null then .
+                  elif $r.type == "assistant" and ($r.message.content | type) == "array" then
+                    reduce $r.message.content[] as $c (.;
+                      if $c.type == "tool_use" then
+                        (if $c.name == "AskUserQuestion" then .s[.cur].pend[($c.id // "?") | tostring] = true else . end)
+                        | .s[.cur].last = "no"
+                      elif $c.type == "text" then
+                        .s[.cur].last = ($c.text | tostring | split("\n") | map(select(test("\\S"))) | last // ""
+                                         | gsub("[\\s*_`)\\]]+$"; "")
+                                         | if endswith("?") then "ask" else "no" end)
+                      else . end)
+                  elif ($r.message.content | type) == "array" then
+                    reduce ($r.message.content[] | objects | select(.type == "tool_result")
+                            | (.tool_use_id // "") | tostring) as $id (.; .s[.cur].pend |= del(.[$id]))
+                  else . end)
+                | [.s[] | select((.pend | length) > 0 or .last == "ask")] | length' 2>/dev/null || echo 0)
+            P_ASK=$(_gate_int "$P_ASK" 0)
+            [ "$P_ASK" -gt "$P_IDLE" ] && P_ASK=$P_IDLE
+            P_IDLE=$((P_IDLE - P_ASK))
+        fi
         # Weight, not hue, carries urgency: the 12 project backgrounds make any
         # fixed color unreadable on some of them, while the palette's own dark
         # text stays legible on all. Busy is bold, idle is the dim separator
         # tone, and a waiting question is reversed (dark chip, light text).
         _P_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
         _P_BODY=""
-        [ "$P_BUSY" -gt 0 ]  && _P_BODY+=" ${TXT_BOLD}⚙${P_BUSY}${B}"
-        [ "$P_SHELL" -gt 0 ] && _P_BODY+=" ${TXT_FG}◷${P_SHELL}${B}"
-        [ "$P_ASK" -gt 0 ]   && _P_BODY+=" \033[7m${TXT_BOLD}?${P_ASK}${B}"
-        if [ "$P_SELF_IDLE" = "1" ]; then
-            _P_BODY+=" ${TXT_BOLD}[${_P_DIM}○${P_IDLE}${TXT_BOLD}]${B}"
-        elif [ "$P_IDLE" -gt 0 ]; then
-            _P_BODY+=" ${_P_DIM}○${P_IDLE}${B}"
-        fi
+        _p_add() {  # _p_add <count> <style> <glyph> <self-state>: bracket the
+            # count this session belongs to, so each session spots its own state
+            [ "$1" -gt 0 ] || return 0
+            if [ "$P_SELF" = "$4" ]; then
+                _P_BODY+=" ${TXT_BOLD}[${2}${3}${1}${TXT_BOLD}]${B}"
+            else
+                _P_BODY+=" ${2}${3}${1}${B}"
+            fi
+        }
+        _p_add "$P_BUSY"  "$TXT_BOLD"        "⚙" busy
+        _p_add "$P_SHELL" "$TXT_FG"          "◷" shell
+        _p_add "$P_ASK"   "\033[7m$TXT_BOLD" "?" never   # this session is never "?"
+        _p_add "$P_IDLE"  "$_P_DIM"          "○" idle
         [ "$P_OTHERS" -gt 0 ] && [ -n "$_P_BODY" ] && PEER_SEG="${SEP}${B}${_P_BODY} "
     fi
 fi

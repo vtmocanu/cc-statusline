@@ -2331,7 +2331,7 @@ peer_tests() {
     _peer_run "$out" "$err"
     l1=$(sed -n '1p' "$out" | _strip_ansi)
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif ! _has "$l1" "⚙2 ◷1 ○1"; then _rl_fail "$name" "expected '⚙2 ◷1 ○1' on line 1: $l1"
+    elif ! _has "$l1" "[⚙2] ◷1 ○1"; then _rl_fail "$name" "expected '[⚙2] ◷1 ○1' on line 1: $l1"
     else _rl_pass "$name"; fi
 
     # 2. Both lines stay the same width and within budget with the segment placed.
@@ -2381,7 +2381,7 @@ peer_tests() {
     l1=$(sed -n '1p' "$out" | _strip_ansi)
     w1=$(sed -n '1p' "$out" | vis_cols)
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif ! _has "$l1" "⚙2 ◷1 ○1 │ ⇡ 99.0.0"; then _rl_fail "$name" "expected peers then update: $l1"
+    elif ! _has "$l1" "[⚙2] ◷1 ○1 │ ⇡ 99.0.0"; then _rl_fail "$name" "expected peers then update: $l1"
     elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then _rl_fail "$name" "width $w1 exceeds budget"
     else _rl_pass "$name"; fi
 
@@ -2393,7 +2393,7 @@ peer_tests() {
     w1=$(sed -n '1p' "$out" | vis_cols)
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif [ "$w1" -gt 40 ]; then _rl_fail "$name" "width $w1 exceeds 40"
-    elif { _has "$l1" "⚙" || _has "$l1" "○"; } && ! _has "$l1" "⚙2 ◷1 ○1"; then _rl_fail "$name" "segment partially rendered: $l1"
+    elif { _has "$l1" "⚙" || _has "$l1" "○"; } && ! _has "$l1" "[⚙2] ◷1 ○1"; then _rl_fail "$name" "segment partially rendered: $l1"
     else _rl_pass "$name"; fi
 
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
@@ -2426,7 +2426,7 @@ peer_tests() {
     _peer_entry d    "$$" sid-d2   idle "$repo"
     _peer_tr sid-q  "$ask_txt"
     _peer_tr sid-d2 "$done_txt"
-    _ask_case peers-ask-question-mark "⚙1 ?1 ○1" ""
+    _ask_case peers-ask-question-mark "[⚙1] ?1 ○1" ""
     # The "?" chip is drawn in reverse video
     if _has "$raw" $'\e[7m'; then _rl_pass peers-ask-reverse-video
     else _rl_fail peers-ask-reverse-video "no SGR 7 on the ? chip"; fi
@@ -2451,7 +2451,36 @@ peer_tests() {
     _peer_entry n    "$$" sid-none idle "$repo"
     _peer_entry e    "$$" '../evil' idle "$repo"
     mkdir -p "$proj"; printf '%s\n' "$ask_txt" > "$SCRATCH/evil.jsonl"
-    _ask_case peers-ask-missing-or-unsafe "⚙1 ○2" "?"
+    _ask_case peers-ask-missing-or-unsafe "[⚙1] ○2" "?"
+
+    # Answered and cancelled question prompts both get a tool_result, so they
+    # no longer count as "?" (cancelled: followed by a tool call, no text).
+    local q_use q_res
+    q_use='{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"AskUserQuestion","input":{}}]}}'
+    q_res='{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"x"}]}}'
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    _peer_entry self "$$" self-sid busy "$repo"
+    _peer_entry a    "$$" sid-ans  idle "$repo"
+    _peer_entry c    "$$" sid-can  idle "$repo"
+    _peer_tr sid-ans "$q_use"$'\n'"$q_res"$'\n''{"type":"assistant","message":{"content":[{"type":"text","text":"Got it, proceeding."}]}}'
+    _peer_tr sid-can "$q_use"$'\n'"$q_res"$'\n''{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{}}]}}'
+    _ask_case peers-ask-answered-or-cancelled "[⚙1] ○2" "?"
+
+    # A malformed registry file must not hide the valid sessions after it, and
+    # a pid of 0 (kill -0 0 probes our own process group) never counts.
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    printf '{"pid":' > "$reg/0000-broken.json"
+    _peer_entry self "$$" self-sid busy "$repo"
+    _peer_entry z    0    sid-zero busy "$repo"
+    _peer_entry i    "$$" sid-i    idle "$repo"
+    _ask_case peers-malformed-and-pid0 "[⚙1] ○1" "⚙2"
+
+    # A peer whose registry cwd reaches the repo through a symlink still counts.
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    ln -s "$repo" "$SCRATCH/peer-repo-link"
+    _peer_entry self "$$" self-sid busy "$repo"
+    _peer_entry l    "$$" sid-l    busy "$SCRATCH/peer-repo-link/sub"
+    _ask_case peers-symlinked-cwd "[⚙2]" ""
 }
 
 if [ ! -d "$FIXTURES" ]; then
