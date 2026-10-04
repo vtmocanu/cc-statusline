@@ -1411,8 +1411,10 @@ fi
 # ── Peer sessions in this repo (line 1, right-aligned) ──────────────────────
 # On by default; opt OUT with STATUSLINE_PEERS=0. Counts EVERY live session
 # working in the same repository, this one included, by state, so all of the
-# repo's sessions show the same repo-wide picture (up to each one's own render
-# moment) and a multi-session setup shows at a glance which need attention:
+# repo's sessions show the same repo-wide total (up to each one's own render
+# moment; the split differs by design where a session waits on you, since it
+# counts itself as ○ while the others count it as ?) and a multi-session setup
+# shows at a glance which need attention:
 #   ⚙N busy  (a turn, background subagent, or similar is running)
 #   ◷N shell (the turn ended but background shells are still running, e.g. a
 #            watcher that will wake the session when a delegated run finishes)

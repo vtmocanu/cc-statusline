@@ -173,6 +173,11 @@ internals and on redraw timing:
   flags a pending question prompt or a final line ending in `?`. A rhetorical
   question shows as `?`; a request phrased without a question mark shows as
   `○`.
+- **A waiting session sees itself as `○`.** The current session is never
+  counted as `?` (you are already looking at it), so its own statusline and
+  the others' show the same total but a different split for as long as it
+  waits on you: with idle sessions A and B where only A asked something, A
+  shows `[○2]` and B shows `?1 [○1]`. This is intentional.
 - **Counts can disagree briefly.** Each statusline counts when it redraws, so
   two sessions can differ by one for up to the `refreshInterval` while a
   session changes state. Without `refreshInterval`, an idle session never
