@@ -2273,6 +2273,187 @@ cache_timer_tests() {
     _pc_case pc-narrow-hitrate-only-2 "-"               "$(_pc_json "{$w,\"ttl\":\"5m\",\"expires_at\":1700000040}")" STATUSLINE_CACHE=1 STATUSLINE_WIDTH=83
 }
 
+# ── Peer-session tests ─────────────────────────────────────────────────────
+# The right-aligned line-1 segment counts EVERY live session in the same repo
+# (this one included; shown only when at least one other exists)
+# from the session registry (CC_STATUSLINE_SESSIONS_DIR seam): ⚙ busy, ◷ shell,
+# ○ idle, zero counts omitted. A throwaway repo with a linked worktree at an
+# unrelated path proves "same repo" follows `git worktree list`, not the path.
+# Live pids come from this harness ($$); a reaped background job supplies a
+# pid that is certainly dead.
+peer_tests() {
+    printf '\n'
+    printf 'peer-session tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local name out err l1 reg repo wt other dead w1 w2
+    reg="$SCRATCH/peer-reg"
+    # cd -P: git reports physical paths (macOS TMPDIR sits behind /var -> /private/var)
+    repo="$(mkdir -p "$SCRATCH/peer-repo" && cd -P "$SCRATCH/peer-repo" && pwd)"
+    wt="$(cd -P "$SCRATCH" && pwd)/peer-wt-elsewhere"
+    other="$(mkdir -p "$SCRATCH/peer-other" && cd -P "$SCRATCH/peer-other" && pwd)"
+    git -C "$repo" init -q 2>/dev/null
+    git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init 2>/dev/null
+    git -C "$repo" worktree add -q -b peer-wt "$wt" 2>/dev/null
+    mkdir -p "$repo/sub"
+    git -C "$other" init -q 2>/dev/null
+    sleep 0 & dead=$!; wait "$dead" 2>/dev/null
+
+    _peer_entry() {  # _peer_entry <file-id> <pid> <sessionId> <status> <cwd>
+        printf '{"pid":%s,"sessionId":"%s","name":"p-%s","status":"%s","cwd":"%s"}\n' \
+            "$2" "$3" "$1" "$4" "$5" > "$reg/$1.json"
+    }
+    _peer_run() {  # _peer_run <out> <err> <env...>
+        local o="$1" e="$2"; shift 2
+        ( cd "$SCRATCH" && printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"%s","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"self-sid"}' "$repo" \
+            | env CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_RL_CACHE="$SCRATCH/peer.cache" "$@" \
+                  bash "$STATUSLINE" ) >"$o" 2>"$e"
+    }
+    _peer_full_reg() {
+        rm -rf "$reg"; mkdir -p "$reg"
+        _peer_entry self  "$$"    self-sid busy  "$repo"         # this session: counted ⚙ (repo-wide view)
+        _peer_entry busy  "$$"    sid-b    busy  "$repo"         # counted ⚙
+        _peer_entry shell "$$"    sid-s    shell "$wt"           # linked worktree: counted ◷
+        _peer_entry idle  "$$"    sid-i    idle  "$repo/sub"     # subdir: counted ○
+        _peer_entry other "$$"    sid-o    busy  "$other"        # other repo: excluded
+        _peer_entry dead  "$dead" sid-d    busy  "$repo"         # dead pid: excluded
+        _peer_entry odd   "$$"    sid-u    weird "$repo"         # unknown status: ignored
+        _peer_entry pref  "$$"    sid-p    busy  "${repo}-sibling" # path-prefix lookalike: excluded
+        # Codex shim (session-peers): a Codex run, not a Claude session: excluded
+        printf '{"pid":%s,"sessionId":"sid-c","name":"codex-x","status":"busy","cwd":"%s","entrypoint":"codex"}\n' \
+            "$$" "$repo" > "$reg/codex.json"
+    }
+
+    # 1. Mixed registry -> self + one busy peer = ⚙2, one shell, one idle;
+    #    every other entry filtered.
+    name="peers-counts-and-filters"; out="$SCRATCH/pe1.out"; err="$SCRATCH/pe1.err"
+    _peer_full_reg
+    _peer_run "$out" "$err"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "⚙2 ◷1 ○1"; then _rl_fail "$name" "expected '⚙2 ◷1 ○1' on line 1: $l1"
+    else _rl_pass "$name"; fi
+
+    # 2. Both lines stay the same width and within budget with the segment placed.
+    name="peers-width"
+    w1=$(sed -n '1p' "$out" | vis_cols); w2=$(sed -n '2p' "$out" | vis_cols)
+    if [ "$w1" -ne "$w2" ]; then _rl_fail "$name" "line widths differ: $w1 vs $w2"
+    elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then _rl_fail "$name" "width $w1 exceeds budget"
+    else _rl_pass "$name"; fi
+
+    # 3. Zero counts are omitted: only an idle peer -> "○1", no busy/shell glyph.
+    name="peers-zero-counts-hidden"; out="$SCRATCH/pe3.out"; err="$SCRATCH/pe3.err"
+    rm -rf "$reg"; mkdir -p "$reg"
+    _peer_entry idle "$$" sid-i idle "$repo"
+    _peer_run "$out" "$err"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "○1"; then _rl_fail "$name" "idle count missing: $l1"
+    elif _has "$l1" "⚙" || _has "$l1" "◷"; then _rl_fail "$name" "zero count rendered: $l1"
+    else _rl_pass "$name"; fi
+
+    # 4. Only this session (and filtered entries) -> no segment at all: a solo
+    #    session renders as before even though it would count itself.
+    name="peers-none-no-segment"; out="$SCRATCH/pe4.out"; err="$SCRATCH/pe4.err"
+    rm -rf "$reg"; mkdir -p "$reg"
+    _peer_entry self  "$$"    self-sid busy "$repo"
+    _peer_entry dead  "$dead" sid-d    busy "$repo"
+    _peer_entry other "$$"    sid-o    idle "$other"
+    _peer_run "$out" "$err"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "⚙" || _has "$l1" "◷" || _has "$l1" "○"; then _rl_fail "$name" "segment shown with no peers: $l1"
+    else _rl_pass "$name"; fi
+
+    # 5. STATUSLINE_PEERS=0 opts out.
+    name="peers-opt-out"; out="$SCRATCH/pe5.out"; err="$SCRATCH/pe5.err"
+    _peer_full_reg
+    _peer_run "$out" "$err" STATUSLINE_PEERS=0
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif _has "$l1" "⚙" || _has "$l1" "◷" || _has "$l1" "○"; then _rl_fail "$name" "STATUSLINE_PEERS=0 still rendered: $l1"
+    else _rl_pass "$name"; fi
+
+    # 6. Peers and the update indicator share the right edge, peers first.
+    name="peers-with-update-indicator"; out="$SCRATCH/pe6.out"; err="$SCRATCH/pe6.err"
+    printf 'v99.0.0\n' > "$SCRATCH/peer-upd-cache"
+    _peer_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$SCRATCH/peer-upd-cache"
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    w1=$(sed -n '1p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif ! _has "$l1" "⚙2 ◷1 ○1 │ ⇡ 99.0.0"; then _rl_fail "$name" "expected peers then update: $l1"
+    elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then _rl_fail "$name" "width $w1 exceeds budget"
+    else _rl_pass "$name"; fi
+
+    # 7. Narrow viewport: the segment is dropped, never truncated, and the
+    #    line still fits.
+    name="peers-narrow-dropped-not-cut"; out="$SCRATCH/pe7.out"; err="$SCRATCH/pe7.err"
+    _peer_run "$out" "$err" STATUSLINE_WIDTH=40
+    l1=$(sed -n '1p' "$out" | _strip_ansi)
+    w1=$(sed -n '1p' "$out" | vis_cols)
+    if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
+    elif [ "$w1" -gt 40 ]; then _rl_fail "$name" "width $w1 exceeds 40"
+    elif { _has "$l1" "⚙" || _has "$l1" "○"; } && ! _has "$l1" "⚙2 ◷1 ○1"; then _rl_fail "$name" "segment partially rendered: $l1"
+    else _rl_pass "$name"; fi
+
+    git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
+
+    # ── "?" state: an idle session whose last reply asked something. The
+    #    transcript is found by session id under CC_STATUSLINE_PROJECTS_DIR.
+    local proj ask_txt done_txt ask_tool
+    proj="$SCRATCH/peer-projects"
+    ask_txt='{"type":"assistant","message":{"content":[{"type":"text","text":"Done the first part.\n\nShall I **continue?**"}]}}'
+    done_txt='{"type":"assistant","message":{"content":[{"type":"text","text":"Is it fixed? Yes.\n\nAll tests pass."}]}}'
+    ask_tool='{"type":"assistant","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{}}]}}'
+    _peer_tr() {  # _peer_tr <sessionId> <transcript-line>
+        mkdir -p "$proj/-some-project"
+        printf '%s\n' "$2" > "$proj/-some-project/$1.jsonl"
+    }
+    _ask_case() {  # _ask_case <name> <expect> <reject-or-empty>
+        local n="$1" want="$2" reject="$3"
+        out="$SCRATCH/$n.out"; err="$SCRATCH/$n.err"
+        _peer_run "$out" "$err" CC_STATUSLINE_PROJECTS_DIR="$proj"
+        raw=$(sed -n '1p' "$out"); l1=$(printf '%s' "$raw" | _strip_ansi)
+        if [ -s "$err" ]; then _rl_fail "$n" "non-empty stderr: $(head -1 "$err")"
+        elif ! _has "$l1" "$want"; then _rl_fail "$n" "expected '$want': $l1"
+        elif [ -n "$reject" ] && _has "$l1" "$reject"; then _rl_fail "$n" "unexpected '$reject': $l1"
+        else _rl_pass "$n"; fi
+    }
+    local raw
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    _peer_entry self "$$" self-sid busy "$repo"
+    _peer_entry q    "$$" sid-q    idle "$repo"
+    _peer_entry d    "$$" sid-d2   idle "$repo"
+    _peer_tr sid-q  "$ask_txt"
+    _peer_tr sid-d2 "$done_txt"
+    _ask_case peers-ask-question-mark "⚙1 ?1 ○1" ""
+    # The "?" chip is drawn in reverse video
+    if _has "$raw" $'\e[7m'; then _rl_pass peers-ask-reverse-video
+    else _rl_fail peers-ask-reverse-video "no SGR 7 on the ? chip"; fi
+
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    _peer_entry self "$$" self-sid busy "$repo"
+    _peer_entry q    "$$" sid-q    idle "$repo"
+    _peer_tr sid-q "$ask_tool"
+    _ask_case peers-ask-tool "?1" "○"
+
+    # This session never counts itself as "?" (you are looking at it): ○ instead,
+    # and the idle count it joined is bracketed so the idle session stands out
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    _peer_entry self "$$" self-sid idle "$repo"
+    _peer_entry b    "$$" sid-b    busy "$repo"
+    _peer_tr self-sid "$ask_txt"
+    _ask_case peers-ask-not-self "⚙1 [○1]" "?"   # and bracketed: this session is idle
+
+    # No transcript, or a session id that tries to walk out of the folder -> ○
+    rm -rf "$reg" "$proj"; mkdir -p "$reg"
+    _peer_entry self "$$" self-sid busy "$repo"
+    _peer_entry n    "$$" sid-none idle "$repo"
+    _peer_entry e    "$$" '../evil' idle "$repo"
+    mkdir -p "$proj"; printf '%s\n' "$ask_txt" > "$SCRATCH/evil.jsonl"
+    _ask_case peers-ask-missing-or-unsafe "⚙1 ○2" "?"
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2293,6 +2474,7 @@ phone_truncation_tests
 phone_gap_tests
 github_status_tests
 session_name_tests
+peer_tests
 env_hardening_tests
 effort_tests
 update_check_tests

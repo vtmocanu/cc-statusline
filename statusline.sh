@@ -1408,6 +1408,110 @@ if [ "${STATUSLINE_UPDATE_CHECK:-1}" != "0" ]; then
     fi
 fi
 
+# ── Peer sessions in this repo (line 1, right-aligned) ──────────────────────
+# On by default; opt OUT with STATUSLINE_PEERS=0. Counts EVERY live session
+# working in the same repository, this one included, by state, so all of the
+# repo's sessions show the same repo-wide picture (up to each one's own render
+# moment) and a multi-session setup shows at a glance which need attention:
+#   ⚙N busy  (a turn, background subagent, or similar is running)
+#   ◷N shell (the turn ended but background shells are still running, e.g. a
+#            watcher that will wake the session when a delegated run finishes)
+#   ?N asks  (idle, and its last reply asked you something: a pending
+#            AskUserQuestion, or the final line of its last text ends with "?").
+#            Drawn in reverse video so it stands out. The session showing the
+#            segment never counts itself here (you are already looking at it);
+#            it falls to ○ instead
+#   ○N idle  (idle and asked nothing: probably finished, NOT proof of it).
+#            Bracketed, [○N], when this session is one of them, so an idle
+#            session you switch to is easy to spot
+# The ? test is a HINT from the transcript tail, not a guarantee.
+# Zero counts are omitted, and the whole segment is absent unless at least one
+# OTHER session shares the repo, so a solo session renders exactly as before.
+# Source: the same UNDOCUMENTED per-session registry as the @handle
+# (~/.claude/sessions/<pid>.json: .sessionId, .pid, .status, .cwd). Only
+# Claude Code sessions count: Codex threads attached through session-peers shims
+# register there too (.entrypoint "codex"), but they are Codex runs helping a
+# Claude session, not sessions of their own. An entry counts only when its pid
+# is alive (registry files can outlive a crashed process) and its .cwd sits
+# inside one of this repo's worktrees: one `git worktree list` per render covers
+# linked worktrees at any path, with no per-peer git call. Unknown .status
+# values are ignored. An idle peer's transcript is found by session id under
+# ~/.claude/projects/*/ (no reliance on how Claude Code names those folders) and
+# only its last 300 lines are read. Placed in the padding pass at the bottom,
+# like the update indicator: dropped, never truncated, when it does not fit.
+# Test seams: CC_STATUSLINE_SESSIONS_DIR, CC_STATUSLINE_PROJECTS_DIR.
+_asked_user() {  # _asked_user <transcript> -> "ask" when the last reply asked something
+    tail -n 300 "$1" 2>/dev/null | jq -rR '
+        fromjson? | select(.type == "assistant" and (.message.content | type) == "array")
+        | .message.content as $c
+        | if any($c[]; .type == "tool_use" and .name == "AskUserQuestion") then "ask"
+          else ([$c[] | select(.type == "text") | .text] | last // empty
+                | split("\n") | map(select(test("\\S"))) | last // ""
+                | gsub("[\\s*_`)\\]]+$"; "")
+                | if endswith("?") then "ask" else "no" end)
+          end' 2>/dev/null | tail -n1
+}
+PEER_SEG=""
+if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
+    _PEER_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
+    _PROJ_DIR="${CC_STATUSLINE_PROJECTS_DIR:-$HOME/.claude/projects}"
+    _PEER_WTS=""
+    [ -d "$_PEER_DIR" ] && _PEER_WTS=$(git -C "$CWD_FULL" worktree list --porcelain 2>/dev/null \
+        | sed -n 's/^worktree //p' || true)
+    if [ -n "$_PEER_WTS" ]; then
+        P_BUSY=0 P_SHELL=0 P_ASK=0 P_IDLE=0 P_OTHERS=0 P_SELF_IDLE=0
+        while IFS=$'\t' read -r _p_sid _p_pid _p_status _p_cwd; do
+            case "$_p_pid" in ''|*[!0-9]*) continue ;; esac
+            kill -0 "$_p_pid" 2>/dev/null || continue
+            _p_in=0
+            while IFS= read -r _wt; do
+                [ -n "$_wt" ] || continue
+                case "$_p_cwd" in "$_wt"|"$_wt"/*) _p_in=1; break ;; esac
+            done <<<"$_PEER_WTS"
+            [ "$_p_in" = "1" ] || continue
+            case "$_p_status" in
+                busy)  P_BUSY=$((P_BUSY + 1)) ;;
+                shell) P_SHELL=$((P_SHELL + 1)) ;;
+                idle)
+                    _p_q=""
+                    # sessionId is only ever used as a file name: refuse any
+                    # value that could walk out of the projects folder.
+                    if [ "$_p_sid" != "$SESSION_ID" ]; then
+                        case "$_p_sid" in
+                            ''|*/*|*..*) ;;
+                            *) for _p_tr in "$_PROJ_DIR"/*/"$_p_sid".jsonl; do
+                                   [ -f "$_p_tr" ] && _p_q=$(_asked_user "$_p_tr" || true)
+                                   break
+                               done ;;
+                        esac
+                    fi
+                    if [ "$_p_q" = "ask" ]; then P_ASK=$((P_ASK + 1)); else P_IDLE=$((P_IDLE + 1)); fi
+                    [ "$_p_sid" = "$SESSION_ID" ] && P_SELF_IDLE=1 ;;
+                *)     continue ;;
+            esac
+            [ "$_p_sid" = "$SESSION_ID" ] || P_OTHERS=$((P_OTHERS + 1))
+        done < <(jq -r \
+            'select(.entrypoint != "codex")
+             | [(.sessionId // ""), (.pid | tostring), (.status // ""), (.cwd // "")] | @tsv' \
+            "$_PEER_DIR"/*.json 2>/dev/null || true)
+        # Weight, not hue, carries urgency: the 12 project backgrounds make any
+        # fixed color unreadable on some of them, while the palette's own dark
+        # text stays legible on all. Busy is bold, idle is the dim separator
+        # tone, and a waiting question is reversed (dark chip, light text).
+        _P_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
+        _P_BODY=""
+        [ "$P_BUSY" -gt 0 ]  && _P_BODY+=" ${TXT_BOLD}⚙${P_BUSY}${B}"
+        [ "$P_SHELL" -gt 0 ] && _P_BODY+=" ${TXT_FG}◷${P_SHELL}${B}"
+        [ "$P_ASK" -gt 0 ]   && _P_BODY+=" \033[7m${TXT_BOLD}?${P_ASK}${B}"
+        if [ "$P_SELF_IDLE" = "1" ]; then
+            _P_BODY+=" ${TXT_BOLD}[${_P_DIM}○${P_IDLE}${TXT_BOLD}]${B}"
+        elif [ "$P_IDLE" -gt 0 ]; then
+            _P_BODY+=" ${_P_DIM}○${P_IDLE}${B}"
+        fi
+        [ "$P_OTHERS" -gt 0 ] && [ -n "$_P_BODY" ] && PEER_SEG="${SEP}${B}${_P_BODY} "
+    fi
+fi
+
 # ── GitHub service status (line 1, after the branch; repo-scoped) ───────────
 # On by default; opt OUT with STATUSLINE_GITHUB_STATUS=0. Uses the SAME status
 # glyphs and colors as the Claude icon above (green ✓ / gold ~ / orange ⚠ /
@@ -1701,24 +1805,37 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 { printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
 
 # ── Pad shorter line to match longer ────────────────────────────────────────
-# The update indicator (UPD_SEG, empty when current) is placed here rather than
-# in assemble_l1: right-aligned into line 1's padding zone. It is shown when it
-# fits in the gap below line 2's width, or when appending it keeps line 1
+# The right-aligned segments (peer sessions PEER_SEG, then the update indicator
+# UPD_SEG; each empty when it has nothing to say) are placed here rather than in
+# assemble_l1: right-aligned into line 1's padding zone. A segment is shown when
+# it fits in the gap below line 2's width, or when appending it keeps line 1
 # within TARGET (line 2 then pads to match); otherwise it is dropped, never
 # truncated, so it can neither widen a line past the budget nor be sliced
-# mid-escape.
+# mid-escape. Both are tried together first; when only one fits, the peer
+# counts win (they change minute to minute, the update notice can wait).
 {
-    # Single perl invocation for both line measurements plus the indicator
-    read -r L1_COLS L2_COLS UPD_W < <(
-        measure_cols "$L1C" "$L2C" "$UPD_SEG" | tr '\n' ' '
+    # Single perl invocation for both line measurements plus both segments
+    read -r L1_COLS L2_COLS UPD_W PEER_W < <(
+        measure_cols "$L1C" "$L2C" "$UPD_SEG" "$PEER_SEG" | tr '\n' ' '
     )
-    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}
+    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}; PEER_W=${PEER_W:-0}
     SYNC_W=$L2_COLS
     [ "$L1_COLS" -gt "$SYNC_W" ] 2>/dev/null && SYNC_W=$L1_COLS
-    if [ -n "$UPD_SEG" ] && [ "$UPD_W" -gt 0 ] 2>/dev/null && [ "$L1_COLS" -gt 10 ] 2>/dev/null \
-       && { [ "$((L1_COLS + UPD_W))" -le "$SYNC_W" ] || [ "$((L1_COLS + UPD_W))" -le "$TARGET" ]; } 2>/dev/null; then
-        [ "$((L1_COLS + UPD_W))" -gt "$SYNC_W" ] && SYNC_W=$((L1_COLS + UPD_W))
-        L1C+="${BG1}$(printf '%*s' "$((SYNC_W - L1_COLS - UPD_W))" '')${UPD_SEG}"
+    _right_fits() {  # _right_fits <width>: does a right segment of that width fit?
+        [ "$1" -gt 0 ] && [ "$L1_COLS" -gt 10 ] \
+            && { [ "$((L1_COLS + $1))" -le "$SYNC_W" ] || [ "$((L1_COLS + $1))" -le "$TARGET" ]; }
+    } 2>/dev/null
+    RIGHT_SEG=""; RIGHT_W=0
+    if [ -n "$PEER_SEG" ] && [ -n "$UPD_SEG" ] && _right_fits "$((PEER_W + UPD_W))"; then
+        RIGHT_SEG="${PEER_SEG}${UPD_SEG}"; RIGHT_W=$((PEER_W + UPD_W))
+    elif [ -n "$PEER_SEG" ] && _right_fits "$PEER_W"; then
+        RIGHT_SEG="$PEER_SEG"; RIGHT_W=$PEER_W
+    elif [ -n "$UPD_SEG" ] && _right_fits "$UPD_W"; then
+        RIGHT_SEG="$UPD_SEG"; RIGHT_W=$UPD_W
+    fi
+    if [ -n "$RIGHT_SEG" ]; then
+        [ "$((L1_COLS + RIGHT_W))" -gt "$SYNC_W" ] && SYNC_W=$((L1_COLS + RIGHT_W))
+        L1C+="${BG1}$(printf '%*s' "$((SYNC_W - L1_COLS - RIGHT_W))" '')${RIGHT_SEG}"
         L1_COLS=$SYNC_W
     fi
     if [ "$L1_COLS" -gt 10 ] 2>/dev/null && [ "$L1_COLS" -lt "$SYNC_W" ] 2>/dev/null; then
