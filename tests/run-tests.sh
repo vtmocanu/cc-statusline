@@ -66,6 +66,10 @@ export CC_STATUSLINE_GPT_CREDITS_FETCH="$SCRATCH/no-such-credit-fetcher.sh"
 # render never hits api.github.com during tests.
 export CC_STATUSLINE_UPDATE_CACHE="$SCRATCH/update-cache"
 export CC_STATUSLINE_UPDATE_FETCH="$SCRATCH/no-such-update-fetcher.sh"
+# GPT context-hold snapshot: a scratch path so no render (fixture or test)
+# reads or writes the real per-session snapshot in the runtime dir. The
+# context-hold tests below point each case at its own path.
+export CC_STATUSLINE_CTX_CACHE="$SCRATCH/ctx-snapshot"
 
 # Pin the clock so rate-limit reset countdowns and pace arrows are
 # deterministic across runs and locales. Fixtures with future resets_at are
@@ -2483,6 +2487,389 @@ peer_tests() {
     _ask_case peers-symlinked-cwd "[⚙2]" ""
 }
 
+# ── GPT context-hold tests ─────────────────────────────────────────────────
+# A GPT session observed sending 21%, then one all-zero context_window (four
+# current_usage counters and both totals 0, used 0 / remaining 100), then 21%
+# again. That exact shape re-shows the last proven snapshot in dim gray; every
+# reset or mismatch must fall back to the native value and drop the snapshot.
+# A positive frame is only stored when the transcript holds the matching
+# assistant usage after its last compact boundary, so most cases append that
+# entry (_ctx_asst) before rendering the frame.
+_ctx_counters() {  # shape -> "input cache_creation cache_read"
+    case "$1" in
+        pos21) printf '1000 0 180000' ;;
+        pos21b) printf '900 0 181000' ;;
+        pos22) printf '1500 0 190000' ;;
+        pos10) printf '2000 0 85000' ;;
+        low0)  printf '1 0 0' ;;
+    esac
+}
+_ctx_json() {  # sid model transcript window shape
+    local cw i c r p=${5#pos}
+    p=${p%b}
+    read -r i c r <<<"$(_ctx_counters "$5")"
+    case "$5" in
+        pos21|pos21b|pos22|pos10)
+            cw="\"used_percentage\":$p,\"remaining_percentage\":$((100 - p)),\"total_input_tokens\":$((i + c + r)),\"total_output_tokens\":50,\"current_usage\":{\"input_tokens\":$i,\"output_tokens\":50,\"cache_creation_input_tokens\":$c,\"cache_read_input_tokens\":$r}" ;;
+        low0)  cw='"used_percentage":0,"remaining_percentage":100,"total_input_tokens":1,"total_output_tokens":1,"current_usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}' ;;
+        zero)  cw='"used_percentage":0,"remaining_percentage":100,"total_input_tokens":0,"total_output_tokens":0,"current_usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}' ;;
+        zero-totals) cw='"used_percentage":0,"remaining_percentage":100,"total_input_tokens":5,"total_output_tokens":0,"current_usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}' ;;
+        zero-partial) cw='"used_percentage":0,"remaining_percentage":100,"total_input_tokens":0,"total_output_tokens":0,"current_usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0}' ;;
+        null)  cw='"used_percentage":null,"remaining_percentage":null,"total_input_tokens":0,"total_output_tokens":0,"current_usage":null' ;;
+    esac
+    printf '{"model":{"display_name":"GPT 6.1 Sol","id":"%s"},"cwd":"/home/test/ctx",' "$2"
+    printf '"session_id":"%s","transcript_path":"%s"' "$1" "$3"
+    if [ "$5" = "absent" ]; then printf '}'
+    else printf ',"context_window":{"context_window_size":%s,%s}}' "$4" "$cw"; fi
+}
+_ctx_asst() {  # transcript model shape: append that response's assistant entry
+    local i c r
+    read -r i c r <<<"$(_ctx_counters "$3")"
+    printf '{"type":"assistant","uuid":"a-%s","message":{"model":"%s","usage":{"input_tokens":%s,"cache_creation_input_tokens":%s,"cache_read_input_tokens":%s,"output_tokens":50}}}\n' \
+        "$3" "$2" "$i" "$c" "$r" >>"$1"
+}
+_ctx_boundary() {  # transcript uuid
+    printf '{"type":"system","subtype":"compact_boundary","uuid":"%s","compactMetadata":{"trigger":"manual","preTokens":181000}}\n' "$2" >>"$1"
+}
+
+context_hold_tests() {
+    printf '\n'
+    printf 'GPT context-hold tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local dim=$'\033[38;2;80;80;80m' sage=$'\033[38;2;150;210;150m'
+    local d="$SCRATCH/ctxhold" snap tr out err raw l2 w lines mode state uid i
+    local U1=11111111-2222-4333-8444-555555555555 U2=99999999-8888-4777-8666-555555555555
+    mkdir -p "$d"
+    out="$d/out"; err="$d/err"
+
+    _ctx_run() {  # <json> [env...]: one render with the case's snapshot seam
+        local json="$1"; shift
+        ( cd "$SCRATCH" && printf '%s' "$json" \
+            | env CC_STATUSLINE_CTX_CACHE="$snap" CC_STATUSLINE_RL_CACHE="$d/rl.cache" "$@" \
+                  bash "$STATUSLINE" ) >"$out" 2>"$err"
+    }
+    # _ctx_expect <name> <pct> <stale 0|1> [snapshot: present|absent|-]
+    # Checks exit shape, stderr, both widths, the percentage, and whether it is
+    # drawn in the dim stale gray (percentage and, when filled, the bar).
+    _ctx_expect() {
+        local nm="$1" pct="$2" stale="$3" want_snap="${4:--}" reason="" ln
+        raw=$(sed -n '2p' "$out"); l2=$(printf '%s' "$raw" | _strip_ansi)
+        lines=$(wc -l <"$out" | tr -d ' ')
+        if [ -s "$err" ]; then reason="non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then reason="expected 2 lines, got $lines"
+        fi
+        if [ -z "$reason" ]; then
+            for ln in 1 2; do
+                w=$(sed -n "${ln}p" "$out" | vis_cols)
+                [ "$w" -le "$((SAFE_WIDTH + WIDTH_SLOP))" ] || reason="line $ln is $w cols"
+            done
+        fi
+        if [ -z "$reason" ]; then
+            if ! _has "$l2" "${pct}%"; then reason="expected ${pct}% on line 2: $l2"
+            elif [ "$stale" = "1" ] && ! _has "$raw" "${dim}${pct}%"; then reason="expected dim ${pct}%"
+            elif [ "$stale" = "0" ] && _has "$raw" "${dim}${pct}%"; then reason="unexpected dim ${pct}%"
+            elif [ "$stale" = "1" ] && [ "$pct" != "0" ] && _has "$l2" "of " \
+                && _has "$raw" "▰" && ! _has "$raw" "${dim}▰"; then reason="stale bar not dim"
+            elif [ "$stale" = "0" ] && _has "$raw" "${dim}▰"; then reason="fresh bar drawn dim"
+            fi
+        fi
+        if [ -z "$reason" ]; then
+            case "$want_snap" in
+                present) [ -f "$snap" ] || reason="snapshot missing" ;;
+                absent)  [ ! -e "$snap" ] || reason="snapshot not removed: $(head -c 200 "$snap")" ;;
+            esac
+        fi
+        if [ -z "$reason" ]; then _rl_pass "$nm"; else _rl_fail "$nm" "$reason"; fi
+    }
+    # Fresh case: a one-line transcript and an empty snapshot path.
+    _ctx_case() {
+        snap="$d/$1.snap"; tr="$d/$1.jsonl"
+        rm -f "$snap"
+        printf '{"type":"user","message":{"content":"hi"}}\n' >"$tr"
+    }
+    # Append the response's transcript entry, then render its frame.
+    _ctx_pos() {  # sid model window shape [env...]
+        local sid="$1" m="$2" win="$3" shape="$4"; shift 4
+        _ctx_asst "$tr" "$m" "$shape"
+        _ctx_run "$(_ctx_json "$sid" "$m" "$tr" "$win" "$shape")" "$@"
+    }
+    local M=gpt-6.1-sol S=ctx-sess-1 W=872000
+
+    # 1. The captured sequence: 21 -> all-zero -> 21. The zero render holds 21
+    #    in dim gray and leaves the snapshot alone; the next 21 is fresh again.
+    _ctx_case capture
+    _ctx_pos $S $M $W pos21; _ctx_expect ctx-capture-first 21 0 present
+    if [ "$(cut -d'|' -f1-8 "$snap")" = "v3|$S|$M|$M|$W|21|1000.0.180000|none" ] && [ "$(cut -d'|' -f13- "$snap")" = "$tr" ]; then
+        _rl_pass ctx-capture-snapshot-keys
+    else _rl_fail ctx-capture-snapshot-keys "unexpected snapshot: $(cat "$snap")"; fi
+    mode=$(ls -l "$snap" | cut -c1-10)
+    if [ "$mode" = "-rw-------" ]; then _rl_pass ctx-capture-snapshot-mode
+    else _rl_fail ctx-capture-snapshot-mode "snapshot mode $mode"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-capture-zero-held 21 1 present
+    if _has "$l2" "of 872k"; then _rl_pass ctx-capture-zero-capacity
+    else _rl_fail ctx-capture-zero-capacity "capacity not native: $l2"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos21)"; _ctx_expect ctx-capture-recovered 21 0 present
+    if _has "$raw" "${sage}21%"; then _rl_pass ctx-capture-recovered-color
+    else _rl_fail ctx-capture-recovered-color "21% not in its normal color"; fi
+    # Ordinary appended lines, including a parseable message that merely
+    # mentions the marker text, keep the hold.
+    printf '{"type":"user","message":{"content":"what is \\"subtype\\":\\"compact_boundary\\"?"}}\n' >>"$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-hold-after-append 21 1 present
+    # Routed GPT spellings: the transcript records the served id, stdin may
+    # carry the routed or [1m] form; either matches the provenance check.
+    for i in 'gpt-6.1-sol[1m]' claude-ocx-native--gpt-6.1-sol clodex:openai-oauth:gpt-6.1-sol; do
+        _ctx_case routed
+        _ctx_asst "$tr" $M pos21
+        _ctx_run "$(_ctx_json $S "$i" "$tr" $W pos21)"
+        _ctx_run "$(_ctx_json $S "$i" "$tr" $W zero)"; _ctx_expect "ctx-hold-id-$i" 21 1 present
+    done
+
+    # 2. Phone layout (ctx fallback and with rate limits) and viewports that
+    #    shed ctx entirely: the held value is dim wherever it is shown.
+    _ctx_case phone
+    _ctx_pos $S $M $W pos21
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)" COLUMNS=46; _ctx_expect ctx-phone-held 21 1 present
+    if _has "$l2" "ctx 21%"; then _rl_pass ctx-phone-ctx-seg
+    else _rl_fail ctx-phone-ctx-seg "phone ctx segment missing: $l2"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)" STATUSLINE_LAYOUT=phone STATUSLINE_GPT_LIMITS=1 \
+        CC_STATUSLINE_GPT_CACHE="$d/gpt.cache" STATUSLINE_GPT_FETCH=0 COLUMNS=60
+    _ctx_expect ctx-phone-gpt-limits 21 1 present
+    for w in 30 24 20; do
+        _ctx_run "$(_ctx_json $S $M "$tr" $W zero)" COLUMNS=$w
+        lines=$(wc -l <"$out" | tr -d ' '); l2=$(sed -n 2p "$out" | _strip_ansi)
+        raw=$(sed -n 2p "$out")
+        if [ -s "$err" ] || [ "$lines" -ne 2 ] \
+            || [ "$(sed -n 1p "$out" | vis_cols)" -gt "$((w - 1))" ] \
+            || [ "$(sed -n 2p "$out" | vis_cols)" -gt "$((w - 1))" ]; then
+            _rl_fail "ctx-phone-cols-$w" "bad render at COLUMNS=$w: $l2"
+        elif _has "$l2" "21%" && ! _has "$raw" "${dim}21%"; then
+            _rl_fail "ctx-phone-cols-$w" "held value shown but not dim: $l2"
+        else _rl_pass "ctx-phone-cols-$w"; fi
+    done
+
+    # 3. Genuine decreases, including a real 0% with positive input, are shown
+    #    natively and become the new snapshot.
+    _ctx_case decrease
+    _ctx_pos $S $M $W pos21
+    _ctx_pos $S $M $W pos10; _ctx_expect ctx-decrease-shown 10 0 present
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-decrease-held 10 1 present
+    _ctx_pos $S $M $W low0; _ctx_expect ctx-real-zero-shown 0 0 present
+    if [ "$(cut -d'|' -f6 "$snap")" = "0" ]; then _rl_pass ctx-real-zero-snapshot
+    else _rl_fail ctx-real-zero-snapshot "snapshot not updated to 0: $(cat "$snap")"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-real-zero-held 0 1 present
+    # A new value the transcript does not show yet cannot be proven, and the
+    # older snapshot is no longer the last value: dropped, not held.
+    _ctx_case unproven
+    _ctx_pos $S $M $W pos21
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos10)"; _ctx_expect ctx-unproven-shown 10 0 absent
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-unproven-zero 0 0 absent
+    # Provenance needs the matching model too.
+    _ctx_case wrong-model-entry
+    _ctx_asst "$tr" gpt-5.6-sol pos21
+    _ctx_asst "$tr" $M pos10
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos21)"; _ctx_expect ctx-provenance-model 21 0 absent
+
+    # 4. Fresh session (no snapshot): all-zero renders natively, writes nothing.
+    _ctx_case fresh
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-fresh-native 0 0 absent
+
+    # 5. Null and absent usage reset the snapshot.
+    for i in null absent; do
+        _ctx_case "reset-$i"
+        _ctx_pos $S $M $W pos21
+        _ctx_run "$(_ctx_json $S $M "$tr" $W "$i")"; _ctx_expect "ctx-reset-$i" 0 0 absent
+        _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect "ctx-reset-$i-then-zero" 0 0 absent
+    done
+    # Near-miss zero shapes are not the observed payload: native, and reset.
+    for i in zero-totals zero-partial; do
+        _ctx_case "$i"
+        _ctx_pos $S $M $W pos21
+        _ctx_run "$(_ctx_json $S $M "$tr" $W "$i")"; _ctx_expect "ctx-$i-native" 0 0 absent
+    done
+
+    # 6. Key mismatches invalidate: effective model, raw model (a /model switch
+    #    the transcript has not caught up with), provider, transcript path,
+    #    window, session id. W1 -> W2 zero -> W1 zero must not resurrect W1.
+    _ctx_case key-model
+    _ctx_pos $S $M $W pos21
+    _ctx_asst "$tr" gpt-5.6-sol pos21
+    _ctx_run "$(_ctx_json $S gpt-5.6-sol "$tr" $W zero)"; _ctx_expect ctx-key-model 0 0 absent
+    _ctx_case key-raw-model
+    _ctx_pos $S $M $W pos21
+    _ctx_run "$(_ctx_json $S gpt-5.6-sol "$tr" $W zero)"; _ctx_expect ctx-key-raw-model 0 0 absent
+    _ctx_case key-provider
+    _ctx_pos $S $M $W pos21
+    _ctx_asst "$tr" claude-opus-4-8 pos10
+    _ctx_run "$(_ctx_json $S claude-opus-4-8 "$tr" $W zero)"; _ctx_expect ctx-key-provider 0 0 absent
+    _ctx_case key-path
+    _ctx_pos $S $M $W pos21
+    cp "$tr" "$d/key-path-other.jsonl"
+    _ctx_run "$(_ctx_json $S $M "$d/key-path-other.jsonl" $W zero)"; _ctx_expect ctx-key-path 0 0 absent
+    _ctx_case key-window
+    _ctx_pos $S $M $W pos21
+    _ctx_run "$(_ctx_json $S $M "$tr" 1000000 zero)"; _ctx_expect ctx-key-window 0 0 absent
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-key-window-back 0 0 absent
+    # A window that is not a bounded positive integer is defaulted later, so it
+    # must not match a warm snapshot that happens to hold the default.
+    for i in 200000.5 1e16 '"200000"' 0 -5; do
+        _ctx_case "bad-window"
+        _ctx_pos $S $M 200000 pos21
+        _ctx_run "$(_ctx_json $S $M "$tr" "$i" zero)"; _ctx_expect "ctx-bad-window-$i" 0 0 absent
+    done
+    # Malformed positive frames (unchanged percentage, so no re-proof would
+    # otherwise run) render natively and invalidate the snapshot.
+    local bad n=0
+    for bad in '"input_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":-5' \
+               '"input_tokens":1000,"cache_read_input_tokens":180000' \
+               '"input_tokens":1000.5,"cache_creation_input_tokens":0,"cache_read_input_tokens":180000' \
+               '"input_tokens":"1000","cache_creation_input_tokens":0,"cache_read_input_tokens":180000' \
+               '"input_tokens":1e16,"cache_creation_input_tokens":0,"cache_read_input_tokens":180000'; do
+        n=$((n + 1)); _ctx_case malformed-positive
+        _ctx_pos $S $M $W pos21
+        _ctx_run "{\"model\":{\"display_name\":\"GPT 6.1 Sol\",\"id\":\"$M\"},\"cwd\":\"/home/test/ctx\",\"session_id\":\"$S\",\"transcript_path\":\"$tr\",\"context_window\":{\"context_window_size\":$W,\"used_percentage\":21,\"remaining_percentage\":79,\"total_input_tokens\":181000,\"total_output_tokens\":50,\"current_usage\":{$bad,\"output_tokens\":50}}}"
+        _ctx_expect "ctx-malformed-positive-$n" 21 0 absent
+        _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect "ctx-malformed-positive-$n-then-zero" 0 0 absent
+    done
+    _ctx_case key-session
+    _ctx_pos $S $M $W pos21
+    _ctx_run "$(_ctx_json ctx-sess-2 $M "$tr" $W zero)"; _ctx_expect ctx-key-session 0 0 absent
+    # Default (non-seam) path: one file per session id in the runtime dir, so a
+    # new session id (as after /clear) never sees the old snapshot.
+    state="$d/state"; mkdir -p "$state"; uid=$(id -u)
+    _ctx_case key-session-default
+    _ctx_pos $S $M $W pos21 XDG_RUNTIME_DIR="$state" CC_STATUSLINE_CTX_CACHE=
+    if [ -f "$state/cc-statusline-$uid/ctx-last-$S" ]; then _rl_pass ctx-default-path
+    else _rl_fail ctx-default-path "no snapshot under the runtime dir"; fi
+    _ctx_run "$(_ctx_json ctx-sess-2 $M "$tr" $W zero)" XDG_RUNTIME_DIR="$state" CC_STATUSLINE_CTX_CACHE=
+    _ctx_expect ctx-default-new-session 0 0
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)" XDG_RUNTIME_DIR="$state" CC_STATUSLINE_CTX_CACHE=
+    _ctx_expect ctx-default-same-session 21 1
+
+    # 7. Compact epochs. A boundary with a new uuid after the snapshot cancels
+    #    the hold; a value proven after a boundary is tagged with it and holds.
+    _ctx_case compact
+    _ctx_pos $S $M $W pos21
+    _ctx_boundary "$tr" $U2
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-compact-boundary 0 0 absent
+    _ctx_case compact-then-new
+    _ctx_boundary "$tr" $U1
+    _ctx_asst "$tr" $M pos21
+    _ctx_boundary "$tr" $U2
+    _ctx_pos $S $M $W pos10; _ctx_expect ctx-post-compact-seed 10 0 present
+    if [ "$(cut -d'|' -f8 "$snap")" = "$U2" ]; then _rl_pass ctx-post-compact-epoch
+    else _rl_fail ctx-post-compact-epoch "epoch not the latest uuid: $(cat "$snap")"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-post-compact-held 10 1 present
+    # The race: a pre-compaction frame (its usage is before the boundary)
+    # arrives after the boundary was written. Cold: never seeded.
+    _ctx_case race-cold
+    _ctx_asst "$tr" $M pos21
+    _ctx_boundary "$tr" $U2
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos21)"; _ctx_expect ctx-race-cold-seed 21 0 absent
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-race-cold-zero 0 0 absent
+    # Warm, new value: the old-epoch snapshot is invalidated, not refreshed.
+    _ctx_case race-warm
+    _ctx_pos $S $M $W pos21
+    _ctx_asst "$tr" $M pos22
+    _ctx_boundary "$tr" $U2
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos22)"; _ctx_expect ctx-race-warm-seed 22 0 absent
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-race-warm-zero 0 0 absent
+    # Warm, same value (no re-proof): the hold pass sees the new epoch.
+    _ctx_case race-warm-same
+    _ctx_pos $S $M $W pos21
+    _ctx_boundary "$tr" $U2
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos21)"; _ctx_expect ctx-race-same-seed 21 0 present
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-race-same-zero 0 0 absent
+    # A genuine post-compaction reading at the SAME percentage (new counters,
+    # matching entry after the boundary) re-proves and moves to the new epoch.
+    _ctx_case post-compact-same-pct
+    _ctx_pos $S $M $W pos21
+    _ctx_boundary "$tr" $U2
+    _ctx_pos $S $M $W pos21b; _ctx_expect ctx-post-compact-same-pct 21 0 present
+    if [ "$(cut -d'|' -f7-8 "$snap")" = "900.0.181000|$U2" ]; then _rl_pass ctx-post-compact-same-pct-epoch
+    else _rl_fail ctx-post-compact-same-pct-epoch "not re-proven: $(cat "$snap")"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-post-compact-same-pct-held 21 1 present
+    # Unknown evidence: malformed boundary candidate, boundary uuid not a
+    # uuid, unterminated tail. Each declines the hold.
+    _ctx_case compact-malformed
+    _ctx_pos $S $M $W pos21
+    printf '{"type":"system","subtype":"compact_boundary",\n' >>"$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-compact-malformed 0 0 absent
+    _ctx_case compact-bad-uuid
+    _ctx_pos $S $M $W pos21
+    _ctx_boundary "$tr" not-a-uuid
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-compact-bad-uuid 0 0 absent
+    _ctx_case unterminated
+    _ctx_pos $S $M $W pos21
+    printf '{"type":"system","subtype":"compact_bou' >>"$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-unterminated-tail 0 0 absent
+    _ctx_case unterminated-write
+    _ctx_asst "$tr" $M pos21
+    printf '{"type":"user"' >>"$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos21)"; _ctx_expect ctx-no-snapshot-mid-line 21 0 absent
+
+    # 8. File replacement, truncation, an edit inside the checked 4 KB tail,
+    #    removal, and a directory in its place all cancel the hold.
+    _ctx_case replaced
+    _ctx_pos $S $M $W pos21
+    cp "$tr" "$tr.new" && mv -f "$tr.new" "$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-replaced 0 0 absent
+    _ctx_case truncated
+    _ctx_pos $S $M $W pos21
+    head -1 "$tr" >"$d/trunc.tmp" && cat "$d/trunc.tmp" >"$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-truncated 0 0 absent
+    _ctx_case rewritten
+    _ctx_pos $S $M $W pos21
+    perl -pi -e 's/"hi"/"HI"/' "$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-rewritten 0 0 absent
+    _ctx_case removed
+    _ctx_pos $S $M $W pos21
+    rm -f "$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-transcript-missing 0 0 absent
+    _ctx_case directory
+    _ctx_pos $S $M $W pos21
+    rm -f "$tr"; mkdir "$tr"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-transcript-directory 0 0 absent
+    rmdir "$tr"
+
+    # 9. Corrupt or out-of-range snapshots never hold and are removed.
+    for i in garbage pct pct-08 pct-009 bad-md5 old-version bad-epoch bad-usage; do
+        _ctx_case "corrupt-$i"
+        _ctx_pos $S $M $W pos21
+        case "$i" in
+            garbage) printf 'not a snapshot\n' >"$snap" ;;
+            pct) perl -pi -e 's/^((?:[^|]*\|){5})21\|/${1}999|/' "$snap" ;;
+            pct-08) perl -pi -e 's/^((?:[^|]*\|){5})21\|/${1}08|/' "$snap" ;;
+            pct-009) perl -pi -e 's/^((?:[^|]*\|){5})21\|/${1}009|/' "$snap" ;;
+            bad-usage) perl -pi -e 's/\|1000\.0\.180000\|/|1000.0|/' "$snap" ;;
+            bad-md5) perl -pi -e 's/\|[0-9a-f]{32}\|/|zzzz|/' "$snap" ;;
+            old-version) perl -pi -e 's/^v3\|/v2|/' "$snap" ;;
+            bad-epoch) perl -pi -e 's/\|none\|/|..|/' "$snap" ;;
+        esac
+        _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect "ctx-corrupt-$i" 0 0 absent
+    done
+
+    # 10. Claude renders never write a snapshot, never hold, and drop a GPT one
+    #     (a /model switch away from GPT and back must not resurrect it).
+    _ctx_case claude
+    _ctx_pos $S claude-opus-4-8 $W pos21; _ctx_expect ctx-claude-no-write 21 0 absent
+    _ctx_pos $S $M $W pos21
+    _ctx_pos $S claude-opus-4-8 $W pos10; _ctx_expect ctx-claude-drops-gpt 10 0 absent
+    _ctx_asst "$tr" $M pos10
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-claude-then-gpt-zero 0 0 absent
+
+    # 11. A failed snapshot replacement (here the rename) must not leave the
+    #     older value behind: a proven 10% whose write fails, then an all-zero
+    #     frame, shows the native 0%, never a resurrected dim 21%.
+    local failbin="$d/failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    _ctx_case write-fail
+    _ctx_pos $S $M $W pos21; _ctx_expect ctx-write-fail-seed 21 0 present
+    _ctx_pos $S $M $W pos10 PATH="$failbin:$PATH"; _ctx_expect ctx-write-fail-drops-old 10 0 absent
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2508,6 +2895,7 @@ env_hardening_tests
 effort_tests
 update_check_tests
 cache_timer_tests
+context_hold_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

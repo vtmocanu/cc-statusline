@@ -152,7 +152,7 @@ The statusline normally writes its caches under a per-user mode-700 runtime dir 
 - Cause cross-fixture contamination
 - Launch network reads or the logged-in Codex app server
 
-The harness points every cache and helper seam at its scratch directory: `CC_STATUSLINE_SVC_*`, `CC_STATUSLINE_CODEX_SVC_*`, `CC_STATUSLINE_RL_*`, `CC_STATUSLINE_GPT_*`, and `CC_STATUSLINE_UPDATE_*`. Codex usage tests use `CC_STATUSLINE_CODEX_DATA` for response parsing and a fake `CC_STATUSLINE_CODEX_BIN` for the JSONL handshake, so they never touch the real Codex login. Credit tests build isolated main/subagent transcript trees under the harness scratch directory. Keep that isolation whenever a new fetcher or fixture is added.
+The harness points every cache and helper seam at its scratch directory: `CC_STATUSLINE_SVC_*`, `CC_STATUSLINE_CODEX_SVC_*`, `CC_STATUSLINE_RL_*`, `CC_STATUSLINE_GPT_*`, `CC_STATUSLINE_UPDATE_*`, and `CC_STATUSLINE_CTX_CACHE` (the GPT context-hold snapshot). Codex usage tests use `CC_STATUSLINE_CODEX_DATA` for response parsing and a fake `CC_STATUSLINE_CODEX_BIN` for the JSONL handshake, so they never touch the real Codex login. Credit tests build isolated main/subagent transcript trees under the harness scratch directory. Keep that isolation whenever a new fetcher or fixture is added.
 
 ### Adding a new fixture
 1. Create `tests/fixtures/0N-name.json` with a JSON shape that exercises the case you care about

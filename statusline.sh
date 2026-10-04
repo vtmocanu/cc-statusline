@@ -87,6 +87,23 @@ eval "$(echo "$DATA" | jq -r '
         else 0 end
     ) catch 0)",
     @sh "CTX_SIZE=\(.context_window.context_window_size // 200000)",
+    @sh "CTX_SHAPE=\(try (
+        .context_window as $c | ($c.current_usage) as $u
+        | if $u == null then "null"
+          elif ($u | type) != "object" then "other"
+          elif ($c.context_window_size | (type != "number") or . <= 0 or . >= 1e9 or . != floor) then "other"
+          elif ([$u.input_tokens, $u.output_tokens, $u.cache_creation_input_tokens, $u.cache_read_input_tokens]
+                | all(type == "number" and . == 0))
+               and $c.total_input_tokens == 0 and $c.total_output_tokens == 0
+               and $c.used_percentage == 0 and $c.remaining_percentage == 100 then "zero"
+          elif [$u.input_tokens, $u.cache_creation_input_tokens, $u.cache_read_input_tokens]
+               | all(type == "number" and . >= 0 and . < 1e15 and . == floor) and add > 0 then "positive"
+          else "other" end
+    ) catch "other")",
+    @sh "CTX_USAGE=\(try ([.context_window.current_usage
+        | .input_tokens, .cache_creation_input_tokens, .cache_read_input_tokens
+        | if type == "number" and . >= 0 and . < 1e15 and . == floor then tostring else "x" end]
+        | join(" ")) catch "")",
     @sh "CACHE_PCT=\(try (
         (.context_window.current_usage) as $u
         | if ($u == null) then ""
@@ -120,7 +137,7 @@ MODEL=${MODEL:-Claude}; DIR=${DIR:-~}
 # the env inputs get. The stdin JSON is a narrower threat model than the process
 # environment (it needs control of what Claude Code sends), but the sink is
 # identical and the fix costs one call each.
-PCT=${PCT:-0}; COST_USD=${COST_USD:-0}
+PCT=${PCT:-0}; COST_USD=${COST_USD:-0}; CTX_SHAPE=${CTX_SHAPE:-other}; CTX_USAGE=${CTX_USAGE:-}
 CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
 DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}; EFFORT_IN=${EFFORT_IN:-}
@@ -235,6 +252,190 @@ _is_gpt_model_id() {
 GPT_EFFECTIVE_EARLY=0
 if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL_ID"; then
     GPT_EFFECTIVE_EARLY=1
+fi
+
+# ── GPT context hold (transient all-zero usage) ─────────────────────────────
+# Observed on a gpt-6.1-sol session: between renders reporting 21% with positive
+# input and cache tokens, Claude Code sent a context_window whose four
+# current_usage counters, total_input_tokens and total_output_tokens were all 0
+# (used 0%, remaining 100%), then 21% again. Where that payload comes from is
+# unproven. For a GPT effective model, exactly that shape re-shows the last
+# valid native percentage in dim gray (CTX_STALE) instead of a false 0%; every
+# other shape renders natively. Claude renders never hold.
+#
+# One private snapshot per session_id (mode 600, atomic replace) records the
+# native percentage with its keys (raw and effective model, window, transcript
+# path), the stdin input/cache counters it was proven with, the compact epoch
+# (uuid of the transcript's last compact_boundary, or "none") and a light
+# transcript identity: dev/inode, size, and an MD5 of only the up-to-4 KB that
+# end at that size. Each check reads the whole transcript line by line, but only
+# compact-boundary and provenance candidate lines are JSON-parsed:
+#   seed  A positive render is stored only when the transcript has an assistant
+#         entry (completion fields such as stop_reason are not checked) AFTER
+#         the last compact boundary whose input, cache-creation and cache-read
+#         counters equal stdin's and whose model is the raw or effective one.
+#         That ties the value to the current epoch: a pre-compaction frame read
+#         after the boundary was written finds no such entry and is not stored.
+#         It is re-proven whenever the percentage, the counters or a key
+#         changed, so a post-compaction frame with the same percentage still
+#         moves the snapshot to the new epoch. Without that proof (including a
+#         transcript that has not caught up yet) the old snapshot is deleted,
+#         since it no longer holds the last displayed value.
+#   hold  The all-zero shape holds only if every key matches, the file has the
+#         same dev/inode, is not shorter, the checked tail bytes still match,
+#         and the latest compact epoch is still the recorded one. Edits earlier
+#         in the same file are not detected: the transcript is assumed to be
+#         append-only.
+# A boundary candidate that does not parse, a boundary without a well-formed
+# uuid, an unterminated last line, or a read error makes the pass "unknown",
+# which never holds or seeds. Any failed hold, a null/absent current_usage, any
+# other shape, a key change, and a non-GPT render delete the snapshot rather
+# than skip it, so switching away and back cannot resurrect an older value.
+#   CC_STATUSLINE_CTX_CACHE   override the snapshot path (test isolation)
+CTX_STALE=0
+_ctx_transcript() {  # seed <path> <in> <cc> <cr> <model...> | hold <path> <epoch> <dev> <ino> <size> <md5>
+    perl -e '
+        use strict; use JSON::PP (); use Digest::MD5 qw(md5_hex);
+        my ($mode, $p, @a) = @ARGV;
+        my $UUID = qr/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+        my $INT = qr/^[0-9]{1,15}$/;
+        open(my $fh, "<:raw", $p) or exit 1;
+        my @st = stat($fh) or exit 1;
+        -f _ or exit 1;
+        my $size = $st[7];
+        $size > 0 or exit 1;
+        sub tail4k {  # the up-to-4096 bytes that end at offset $_[0]
+            my $end = shift; my $off = $end > 4096 ? $end - 4096 : 0;
+            seek($fh, $off, 0) or exit 1;
+            my $got = read($fh, my $buf, $end - $off);
+            (defined $got && $got == $end - $off) or exit 1;
+            return $buf;
+        }
+        sub dec { my $o = eval { JSON::PP::decode_json($_[0]) }; ref($o) eq "HASH" ? $o : undef }
+        my ($in, $cc, $cr, %models);
+        if ($mode eq "seed") {
+            ($in, $cc, $cr) = splice(@a, 0, 3); $models{$_} = 1 for @a;
+            ("$in$cc$cr" =~ /^[0-9]+$/ && $in =~ $INT && $cc =~ $INT && $cr =~ $INT) or exit 1;
+        }
+        elsif ($mode eq "hold") {
+            my ($ep, $dev, $ino, $was, $md5) = @a;
+            ("$st[0]" eq $dev && "$st[1]" eq $ino && $size >= $was) or exit 1;
+            md5_hex(tail4k($was)) eq $md5 or exit 1;
+        } else { exit 1 }
+        seek($fh, 0, 0) or exit 1;
+        my ($epoch, $found, $last) = ("none", 0, "");
+        while (my $l = <$fh>) {
+            $last = $l;
+            if (index($l, "compact_boundary") >= 0) {
+                my $o = dec($l) or exit 1;
+                if (($o->{type} // "") eq "system" && ($o->{subtype} // "") eq "compact_boundary") {
+                    my $u = $o->{uuid};
+                    (defined $u && !ref $u && $u =~ $UUID) or exit 1;
+                    ($epoch, $found) = ($u, 0);
+                    next;
+                }
+            }
+            # Cheap exact-text prefilter; only real candidates pay for a decode.
+            next unless $mode eq "seed" && index($l, q("type":"assistant")) >= 0
+                && $l =~ /"input_tokens":$in(?![0-9])/ && $l =~ /"cache_read_input_tokens":$cr(?![0-9])/
+                && $l =~ /"cache_creation_input_tokens":$cc(?![0-9])/;
+            my $o = dec($l) or next;
+            ($o->{type} // "") eq "assistant" && ref($o->{message}) eq "HASH" or next;
+            my $m = $o->{message}; my $u = $m->{usage};
+            ref($u) eq "HASH" && defined $m->{model} && !ref $m->{model} && $models{$m->{model}} or next;
+            my $ok = 1;
+            for ([input_tokens => $in], [cache_creation_input_tokens => $cc], [cache_read_input_tokens => $cr]) {
+                my $v = $u->{$_->[0]};
+                $ok = 0 unless defined $v && !ref $v && "$v" =~ $INT && $v == $_->[1];
+            }
+            $found = 1 if $ok;
+        }
+        (eof($fh) && substr($last, -1) eq "\n") or exit 1;
+        if ($mode eq "hold") { exit($epoch eq $a[0] ? 0 : 1) }
+        my $buf = tail4k($size);
+        substr($buf, -1) eq "\n" or exit 1;
+        print "$epoch $st[0] $st[1] $size ", md5_hex($buf), " $found\n";
+        exit 0;
+    ' "$@" 2>/dev/null
+}
+CTX_SNAP=""
+if [[ "$SESSION_ID" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+    CTX_SNAP="${CC_STATUSLINE_CTX_CACHE:-$(_state_dir)/ctx-last-$SESSION_ID}"
+fi
+_CTX_MODEL_RE='^[][A-Za-z0-9._:/-]{1,128}$'
+if [ -n "$CTX_SNAP" ] && _is_gpt_model_id "$EFFECTIVE_MODEL_ID" \
+    && [[ "$EFFECTIVE_MODEL_ID" =~ $_CTX_MODEL_RE ]] && [[ "$MODEL_ID" =~ $_CTX_MODEL_RE ]] \
+    && [ -n "$TRANSCRIPT_PATH" ] && [[ "$TRANSCRIPT_PATH" != *[$'\001'-$'\037\177']* ]]; then
+    S_V=""; S_SID=""; S_RAW=""; S_EFF=""; S_SIZE=""; S_PCT=""; S_USE=""; S_EP=""
+    S_DEV=""; S_INO=""; S_LEN=""; S_MD5=""; S_PATH=""
+    CTX_SNAP_OK=0
+    if [ -f "$CTX_SNAP" ]; then
+        IFS='|' read -r S_V S_SID S_RAW S_EFF S_SIZE S_PCT S_USE S_EP S_DEV S_INO S_LEN S_MD5 S_PATH \
+            <"$CTX_SNAP" 2>/dev/null || true
+        if [ "$S_V" = "v3" ] && [ "$S_SID" = "$SESSION_ID" ] \
+            && [ "$S_RAW" = "$MODEL_ID" ] && [ "$S_EFF" = "$EFFECTIVE_MODEL_ID" ] \
+            && [ "$S_SIZE" = "$CTX_SIZE" ] && [ "$S_PATH" = "$TRANSCRIPT_PATH" ] \
+            && [[ "$S_PCT" =~ ^(0|[1-9][0-9]?|100)$ ]] \
+            && [[ "$S_USE" =~ ^[0-9]{1,15}\.[0-9]{1,15}\.[0-9]{1,15}$ ]] \
+            && [[ "$S_EP" =~ ^(none|[0-9a-fA-F-]{36})$ ]] \
+            && [[ "$S_DEV" =~ ^[0-9]{1,20}$ ]] && [[ "$S_INO" =~ ^[0-9]{1,20}$ ]] \
+            && [[ "$S_LEN" =~ ^[0-9]{1,15}$ ]] && [[ "$S_MD5" =~ ^[0-9a-f]{32}$ ]]; then
+            CTX_SNAP_OK=1
+        fi
+    fi
+    case "$CTX_SHAPE" in
+        zero)
+            if [ "$CTX_SNAP_OK" = "1" ] && _ctx_transcript hold "$TRANSCRIPT_PATH" \
+                "$S_EP" "$S_DEV" "$S_INO" "$S_LEN" "$S_MD5"; then
+                CTX_STALE=1
+                PCT="$S_PCT"
+            else
+                rm -f "$CTX_SNAP" 2>/dev/null || true
+            fi ;;
+        positive)
+            # Re-proven when the value, the counters or a key changed. Identical
+            # counters are the same response, so the stored epoch still applies
+            # (a pre-compaction frame repeated after a boundary keeps the old
+            # epoch, which the hold pass then refuses).
+            if [ "$CTX_SNAP_OK" != "1" ] || [ "$S_PCT" != "$PCT" ] \
+                || [ "$S_USE" != "${CTX_USAGE// /.}" ]; then
+                CTX_ID=""
+                if [[ "$CTX_USAGE" =~ ^[0-9]{1,15}\ [0-9]{1,15}\ [0-9]{1,15}$ ]]; then
+                    # shellcheck disable=SC2086  # three validated integers
+                    CTX_ID=$(_ctx_transcript seed "$TRANSCRIPT_PATH" $CTX_USAGE \
+                        "$MODEL_ID" "$EFFECTIVE_MODEL_ID" || true)
+                fi
+                if [[ "$CTX_ID" =~ ^(none|[0-9a-fA-F-]{36})\ ([0-9]{1,20})\ ([0-9]{1,20})\ ([0-9]{1,15})\ ([0-9a-f]{32})\ ([01])$ ]]; then
+                    if [ "${BASH_REMATCH[6]}" = "1" ]; then
+                        CTX_TMP="$CTX_SNAP.tmp.$$"
+                        trap 'rm -f "${CTX_TMP:-}" 2>/dev/null; printf "\n"' EXIT
+                        # Publish only after write, mode and rename all succeed.
+                        # Any failure deletes the old snapshot too: it holds an
+                        # older value than this render shows, so keeping it would
+                        # let a later all-zero frame resurrect a stale reading.
+                        if ! { printf 'v3|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$SESSION_ID" "$MODEL_ID" \
+                                   "$EFFECTIVE_MODEL_ID" "$CTX_SIZE" "$PCT" "${CTX_USAGE// /.}" "${BASH_REMATCH[1]}" \
+                                   "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
+                                   "${BASH_REMATCH[5]}" "$TRANSCRIPT_PATH" >"$CTX_TMP" \
+                               && chmod 600 "$CTX_TMP" && mv -f "$CTX_TMP" "$CTX_SNAP"; } 2>/dev/null; then
+                            rm -f "$CTX_TMP" "$CTX_SNAP" 2>/dev/null || true
+                        fi
+                        CTX_TMP=""
+                        trap 'printf "\n"' EXIT
+                    else
+                        # Not provably post-boundary. The stored value is older
+                        # than what this render shows, so it is not the last
+                        # value any more either.
+                        rm -f "$CTX_SNAP" 2>/dev/null || true
+                    fi
+                else
+                    rm -f "$CTX_SNAP" 2>/dev/null || true
+                fi
+            fi ;;
+        *)  rm -f "$CTX_SNAP" 2>/dev/null || true ;;
+    esac
+elif [ -n "$CTX_SNAP" ] && [ -e "$CTX_SNAP" ]; then
+    rm -f "$CTX_SNAP" 2>/dev/null || true
 fi
 
 # ── Shared per-user rate-limits cache ─────────────────────────────────────
@@ -1142,6 +1343,9 @@ assemble_l1() {
 
 # ── Line 2 base content (model / effort / profile / clock / context) ────────
 CTX_CLR=$(pct_color "$PCT")
+# A held GPT value (see the context-hold block) is drawn in the dim separator
+# gray, bar and percentage alike, in both layouts: same width, visibly stale.
+[ "$CTX_STALE" = "1" ] && CTX_CLR="$L2_DIM"
 CTX_BAR=$(make_bar "$PCT" 7 "$CTX_CLR" "$L2_DIM")
 # Effort level color
 case $EFFORT in
