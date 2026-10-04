@@ -157,3 +157,32 @@ active Claude/OpenAI provider) so they are clickable;
   glyphs, which are never truncated. `measure_cols` (and the test harness's
   `vis_cols`/`_strip_ansi`) strip the OSC 8 wrapper, so it is zero-width for
   layout, matching what a terminal actually renders.
+
+## Repo-wide session counts read an internal registry
+
+The line-1 session counts (`STATUSLINE_PEERS`) depend on Claude Code
+internals and on redraw timing:
+
+- **The registry is undocumented.** `~/.claude/sessions/<pid>.json` and its
+  `.status` values (`busy`, `shell`, `idle`) are internal to Claude Code and
+  may change in any release. The read is guarded: an unknown status is ignored
+  and a missing registry hides the segment. The meaning of `shell` (turn ended,
+  background shells still running) is inferred from observation, not
+  documented.
+- **`?` is a guess.** It reads the end of an idle session's transcript and
+  flags a pending question prompt or a final line ending in `?`. A rhetorical
+  question shows as `?`; a request phrased without a question mark shows as
+  `○`.
+- **A waiting session sees itself as `○`.** The current session is never
+  counted as `?` (you are already looking at it), so its own statusline and
+  the others' show the same total but a different split for as long as it
+  waits on you: with idle sessions A and B where only A asked something, A
+  shows `[○2]` and B shows `?1 [○1]`. This is intentional.
+- **Counts can disagree briefly.** Each statusline counts when it redraws, so
+  two sessions can differ by one for up to the `refreshInterval` while a
+  session changes state. Without `refreshInterval`, an idle session never
+  redraws and its counts go stale.
+- **Paths are compared literally.** A session counts when its registry `.cwd`
+  sits inside one of the repo's `git worktree list` paths. A cwd reached
+  through a symlink, or a separate repository nested inside a worktree, can be
+  miscounted.

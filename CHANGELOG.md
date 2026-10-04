@@ -6,6 +6,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Repo-wide session counts on line 1 (`STATUSLINE_PEERS`, on by default). When another Claude Code session works in the same repository (linked worktrees included), the right edge of line 1 counts every session, this one included, by state: `⚙` busy, `◷` background shells running, `?` idle and waiting on your answer (reverse video), `○` idle. Zero counts are omitted, the segment is hidden for a lone session, and the count the current session belongs to is bracketed (`[⚙N]`, `[◷N]` or `[○N]`); the current session never counts as `?`. States come from Claude Code's internal session registry; `?` is a hint from the end of each idle session's transcript. Codex peer threads are not counted. The segment shares line 1's spare columns with the update indicator and is dropped, never truncated, when it does not fit.
+
 ## [v3.5.1] - 2026-09-30
 
 ### Changed
