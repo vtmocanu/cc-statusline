@@ -1163,6 +1163,10 @@ BAR_FILL="▰"; BAR_EMPTY="▱"; BAR_PRE=""; BAR_POST=""
 CAP1_L="${PROJ_FG}${NF_CORNER_TL}"; CAP1_R="${PROJ_FG}${NF_CORNER_TR}"
 CAP2_L="\033[38;2;0;0;0m${NF_CORNER_BL}"; CAP2_R="\033[38;2;0;0;0m${NF_CORNER_BR}"
 
+THEME_STYLE=flat
+SEG_JOIN=$'\xee\x82\xb0'; SEG_OPEN=$'\xee\x82\xb2'
+SEG_PILL_L=$'\xee\x82\xb6'; SEG_PILL_R=$'\xee\x82\xb4'
+
 # Hex conversion and token assignment use bash printf -v, with no forks.
 # All inputs below are trusted palette constants, never user-controlled text.
 _theme_rgb() { printf -v THEME_RGB '%d;%d;%d' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}"; }
@@ -1179,6 +1183,17 @@ _theme_palette() {  # bg1, text, separator, bg2, l2 text/dim, good/caution/bad/c
     _theme_fg CLR_CORAL "$9"; _theme_fg CLR_ICE "${10}"
     CLR_OK="$CLR_SAGE"; CLR_INC="$CLR_GOLD"; CLR_BAD="$CLR_CORAL"
     MODE_CLR="${CLR_GOLD}\033[1m"
+}
+
+# Segment roles keep their backgrounds separate from the transparent padding.
+_theme_roles() {  # handle, topic, directory, branch, status, tail, right
+    _theme_rgb "$1"; SEG_HANDLE_BG="$THEME_RGB"
+    _theme_rgb "$2"; SEG_TOPIC_BG="$THEME_RGB"
+    _theme_rgb "$3"; SEG_DIR_BG="$THEME_RGB"
+    _theme_rgb "$4"; SEG_BRANCH_BG="$THEME_RGB"
+    _theme_rgb "$5"; SEG_STATUS_BG="$THEME_RGB"
+    _theme_rgb "$6"; SEG_TAIL_BG="$THEME_RGB"
+    _theme_rgb "$7"; SEG_RIGHT_BG="$THEME_RGB"
 }
 
 # One palette block; derived separators/background resets are built afterward.
@@ -1211,10 +1226,56 @@ case "$THEME" in
         _theme_fg CAP1_FG 05d9e8; CAP1_R="${CAP1_FG}${NF_CORNER_TR}"
         SEP_CH="▸"; SEP2_CH="//"; BAR_FILL="⣿"; BAR_EMPTY="⣀"
         ;;
+    tokyo-night)  # Stepped arrows, neon on navy.
+        _theme_palette 1a1b26 c0caf5 3b4261 1a1b26 a9b1d6 3b4261 9ece6a e0af68 f7768e 7dcfff
+        _theme_roles 7aa2f7 bb9af7 3b4261 292e42 292e42 292e42 292e42
+        _theme_fg SEG_INK 1a1b26; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
+        SEG_RIGHT_FG="$CLR_ICE"; THEME_STYLE=arrow
+        SEP2_CH=$'\xee\x82\xb1'; BAR_FILL="━"; BAR_EMPTY="━"
+        CAP2_L=""; CAP2_R="\033[38;2;26;27;38m${SEG_JOIN}"
+        ;;
+    gruvbox)  # Earth tones and hard arrows.
+        _theme_palette 282828 ebdbb2 665c54 282828 ebdbb2 665c54 b8bb26 fabd2f fb4934 83a598
+        _theme_roles d65d0e d79921 689d6a 504945 504945 504945 d65d0e
+        _theme_fg SEG_INK 282828; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$TXT_FG"
+        SEG_RIGHT_FG="$SEG_INK"; THEME_STYLE=arrow
+        BAR_FILL="█"; BAR_EMPTY="░"; BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
+        CAP2_L=""; CAP2_R=""
+        ;;
+    dracula)  # Purple/pink steps with flame joiners.
+        _theme_palette 282a36 f8f8f2 6272a4 282a36 f8f8f2 6272a4 50fa7b ffb86c ff5555 8be9fd
+        _theme_roles bd93f9 ff79c6 44475a 44475a 44475a 44475a 44475a
+        _theme_fg SEG_INK 282a36; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
+        SEG_RIGHT_FG="$CLR_ICE"; THEME_STYLE=arrow; SEG_JOIN=$'\xee\x83\x80'
+        CAP2_L=""; CAP2_R="\033[38;2;40;42;54m${SEG_JOIN}"
+        ;;
+    catppuccin)  # Mocha capsules; service alerts use a dark surface.
+        _theme_palette 1e1e2e cdd6f4 585b70 313244 cdd6f4 585b70 a6e3a1 f9e2af f38ba8 89dceb
+        _theme_roles f5c2e7 cba6f7 89b4fa a6e3a1 313244 313244 f9e2af
+        _theme_fg SEG_INK 1e1e2e; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$SEG_INK"
+        SEG_RIGHT_FG="$SEG_INK"; THEME_STYLE=pill
+        BAR_FILL="●"; BAR_EMPTY="○"
+        CAP2_L="${CAP2_FG}${SEG_PILL_L}"; CAP2_R="${CAP2_FG}${SEG_PILL_R}"
+        ;;
 esac
 B="${RST}${BG1}"; B2="${RST}${BG2}"
 SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
 SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
+if [ "$THEME_STYLE" != "flat" ]; then
+    BG1="\033[49m"  # Padding between left and right groups is transparent.
+    CAP1_L=""
+    TXT_FG="$SEG_RIGHT_FG"; TXT_BOLD="${TXT_FG}\033[1m"
+    B="${RST}\033[48;2;${SEG_RIGHT_BG}m"
+    IFS=';' read -r SEP_R SEP_G SEP_B <<< "$SEG_RIGHT_BG"
+    if [ "$THEME_STYLE" = "pill" ]; then
+        SEP="${RST}\033[38;2;${SEG_RIGHT_BG}m${SEG_PILL_L}"
+        CAP1_R="\033[38;2;${SEG_RIGHT_BG}m${SEG_PILL_R}"
+        SEP2="${RST}${CAP2_FG}${SEG_PILL_R}${RST} ${CAP2_FG}${SEG_PILL_L}${B2}"
+    else
+        SEP="${RST}\033[38;2;${SEG_RIGHT_BG}m${SEG_OPEN}"
+        CAP1_R="\033[38;2;${SEG_RIGHT_BG}m${SEG_JOIN}"
+    fi
+fi
 # Threshold color for a percentage. Default scale: low is good (sage), high is
 # bad (coral). Pass "invert" as $2 for metrics where high is GOOD, e.g. the
 # cache hit rate (green when most of the context is served from cache, coral
@@ -1375,7 +1436,52 @@ L1_PREFIX="${RST}${CAP1_L}${BG1}"
 # before assemble_l1 is first called). Declared here so the function never
 # references an unset var under set -u regardless of ordering.
 GH_SEG=""; GH_GLYPH=""
+# The segmented builder receives the same truncated values as the flat path.
+# Every cap/joiner is assembled before measure_cols, including the closing cap.
+_seg_add() {  # background RGB, foreground SGR, content
+    local bg="$1" fg="$2" text="$3"
+    [ -n "$text" ] || return 0
+    if [ -z "$SEG_PREV_BG" ]; then
+        L1C+="${RST}"
+        [ "$THEME_STYLE" = "pill" ] && L1C+="\033[38;2;${bg}m${SEG_PILL_L}"
+        L1C+="\033[48;2;${bg}m${fg} ${text} "
+    elif [ "$bg" = "$SEG_PREV_BG" ]; then
+        L1C+="${fg}${text} "
+    elif [ "$THEME_STYLE" = "pill" ]; then
+        L1C+="${RST}\033[38;2;${SEG_PREV_BG}m${SEG_PILL_R}${RST} \033[38;2;${bg}m${SEG_PILL_L}\033[48;2;${bg}m${fg} ${text} "
+    else
+        L1C+="${RST}\033[48;2;${bg}m\033[38;2;${SEG_PREV_BG}m${SEG_JOIN}${fg} ${text} "
+    fi
+    SEG_PREV_BG="$bg"
+}
+_assemble_l1_seg() {
+    L1C="${RST}"; SEG_PREV_BG=""
+    if [ "$LAYOUT" != "phone" ]; then
+        [ -n "$SESSION_HANDLE" ] && _seg_add "$SEG_HANDLE_BG" "${SEG_INK}\033[1m" "@${SESSION_HANDLE}"
+        [ -n "$TOPIC" ] && _seg_add "$SEG_TOPIC_BG" "${SEG_INK}\033[1m" "$TOPIC"
+    fi
+    _seg_add "$SEG_DIR_BG" "$SEG_DIR_FG" "${NF_FOLDER} ${DIR}"
+    if [ -n "$BRANCH" ]; then
+        local status=""
+        [ -n "$GIT_STATUS" ] && status=" ${CLR_GOLD}${GIT_STATUS}"
+        # Pastel branch capsules need dark ink for the dirty markers too.
+        [ "$THEME_STYLE" = "pill" ] && [ -n "$status" ] && status=" ${SEG_INK}${GIT_STATUS}"
+        _seg_add "$SEG_BRANCH_BG" "$SEG_BRANCH_FG" "${NF_GIT} ${BRANCH}${status}"
+    fi
+    [ -n "$GH_GLYPH" ] && _seg_add "$SEG_STATUS_BG" "$CLR_OK" "$GH_GLYPH"
+    if [ "$LAYOUT" != "phone" ]; then
+        local tail="$AGENT"
+        [ -n "$MODE" ] && tail+="${tail:+ }${MODE_CLR}${MODE}"
+        [ -n "$K8S_CTX" ] && tail+="${tail:+ }${SEG_DIR_FG}${NF_K8S} ${K8S_CTX}"
+        [ -n "$tail" ] && _seg_add "$SEG_TAIL_BG" "$L2_TXT" "$tail"
+    fi
+    local end="$SEG_JOIN"
+    [ "$THEME_STYLE" = "pill" ] && end="$SEG_PILL_R"
+    L1C+="${RST}\033[38;2;${SEG_PREV_BG}m${end}${RST}"
+}
+
 assemble_l1() {
+    if [ "$THEME_STYLE" != "flat" ]; then _assemble_l1_seg; return; fi
     L1C="${L1_PREFIX}"
     # Phone: folder + branch only. Topic, agent, mode and k8s are the first
     # things a narrow viewport cannot afford, and the folder answers "which
@@ -2161,6 +2267,7 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 } 2>/dev/null || true
 
 # ── Output ───────────────────────────────────────────────────────────────────
+[ "$THEME_STYLE" != "flat" ] && [ -z "$RIGHT_SEG" ] && CAP1_R=""
 trap - EXIT  # disarm crash trap before normal output
 printf '\033[0m%b\n' "${L1C}${RST}${CAP1_R}${RST}"
 printf '\033[0m%b\n' "${L2C}${RST}${CAP2_R}${RST}"
