@@ -154,6 +154,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `STATUSLINE_THEME` | `default` | Select a built-in theme (see Themes below). Unset or unknown names use `default`. |
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line, and a hard cap: when Claude Code reports a narrower viewport (see below), the render follows the viewport instead. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
 | `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
@@ -184,6 +185,32 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
+
+### Themes
+
+Set `STATUSLINE_THEME` in your statusline command, for example:
+
+```bash
+STATUSLINE_THEME=tokyo-night cc-statusline
+```
+
+| Theme | Appearance |
+|-------|------------|
+| `default` | Current project hue, slanted caps, black second line. |
+| `hue-dark` | Project hue on a dark tint, with vertical edge caps. |
+| `nord` | Transparent backgrounds and a restrained Nordic palette. |
+| `phosphor` | CRT green and ASCII bars, with distinct amber/red alerts. |
+| `synthwave` | Pink, purple, and cyan gradient, with a dusk second line. |
+| `tokyo-night` | Neon on navy, with stepped Powerline arrows. |
+| `gruvbox` | Warm earth tones, hard arrows, and block bars. |
+| `dracula` | Purple and pink segments, with flame joins. |
+| `catppuccin` | Mocha pastel capsules and round bars. |
+
+The default retains the existing output byte for byte. Project color overrides
+and project hues apply to `default` and `hue-dark`; the other themes use fixed
+palettes. All themes keep the same content, status meanings, hyperlinks, and
+adaptive width rules. A theme's caps and separators can change how much detail
+fits at a given width. Powerline caps require a Nerd Font, like the existing icons.
 
 ### Phone layout (narrow viewports)
 
@@ -312,8 +339,11 @@ To roll back:
 
 ```bash
 # Reinstall a specific version (does not touch your clone)
-./install.sh --version v2.0.0
+./install.sh --version v3.6.0
 ```
+
+The archived release must include the helper scripts required by the current
+installer. Releases that predate those helpers need their own installer.
 
 ## Testing
 

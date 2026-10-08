@@ -194,6 +194,22 @@ Two paths cost more, both bounded and both off the common path. A viewport that 
 
 `WIDE_GLYPH_MARGIN` (env `STATUSLINE_GLYPH_MARGIN`, default 3) keeps a small real-terminal cushion for Nerd Font glyphs that render double-width; see `KNOWN_ISSUES.md`.
 
+### Theme rendering tokens
+
+`STATUSLINE_THEME` selects a palette in one block, followed by a derive step
+for background resets, caps and separators. Default tokens must reproduce the
+original bytes, including escape spelling and order. Only `default` and
+`hue-dark` read project color overrides. Flat themes reuse the original line-1
+builder; segmented themes assemble every cap and join before measurement and
+use the same truncation ladder. OSC 8 wrappers remain confined to fixed glyphs.
+
+Synthwave's single perl gradient pass runs after all width decisions and
+padding. It adds only zero-width background SGRs and preserves OSC 8 and other
+SGRs. Its output is already expanded, so print it with `%s`, never a second
+`%b`. Do not move the gradient before measurement or add visible characters
+after measured assembly. The theme matrix and 20-60-column phone sweep run in
+both locales through `task ci`; keep `WIDTH_SLOP=0`.
+
 ## Session name and title (both native, no hook)
 
 Line 1 leads with two identifiers that come straight from Claude Code, sourced in `statusline.sh` (grep `SESSION_HANDLE` and `SESSION_TITLE`):

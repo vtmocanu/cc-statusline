@@ -39,7 +39,7 @@ unset GIT_DIR GIT_WORK_TREE
 # COLUMNS (v2.1.153+). A runner that happens to export it would silently shrink
 # every fixture's budget (and flip the phone layout on), so drop it here; the
 # phone-layout tests below set it explicitly per run.
-unset COLUMNS LINES
+unset COLUMNS LINES STATUSLINE_THEME
 # Isolate the layout override file ($XDG_CONFIG_HOME/cc-statusline/layout): the
 # maintainer's own file must not decide which layout the fixtures render.
 export XDG_CONFIG_HOME="$SCRATCH/xdg-empty"
@@ -110,6 +110,35 @@ vis_cols() {
     '
 }
 
+_render_contract() {  # stdout file, stderr file, exit status, width budget
+    local stdout_file="$1" stderr_file="$2" rc="$3"
+    if [ "$rc" -ne 0 ]; then
+        fail_reasons+=("exit code $rc")
+    fi
+
+    local line_count
+    line_count=$(wc -l <"$stdout_file" | tr -d ' ')
+    if [ "$line_count" -ne 2 ]; then
+        fail_reasons+=("expected 2 stdout lines, got $line_count")
+    fi
+
+    if [ -s "$stderr_file" ]; then
+        fail_reasons+=("non-empty stderr: $(head -1 "$stderr_file")")
+    fi
+
+    local lineno=0
+    local max_allowed=$4
+    while IFS= read -r line; do
+        lineno=$((lineno + 1))
+        local cols
+        cols=$(printf '%s' "$line" | vis_cols)
+        if [ "$cols" -gt "$max_allowed" ]; then
+            fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
+        fi
+    done <"$stdout_file"
+
+}
+
 run_one() {
     local fixture="$1"
     local name
@@ -136,36 +165,13 @@ run_one() {
 
     local fail_reasons=()
 
-    if [ "$rc" -ne 0 ]; then
-        fail_reasons+=("exit code $rc")
-    fi
-
-    local line_count
-    line_count=$(wc -l <"$stdout_file" | tr -d ' ')
-    if [ "$line_count" -ne 2 ]; then
-        fail_reasons+=("expected 2 stdout lines, got $line_count")
-    fi
-
-    if [ -s "$stderr_file" ]; then
-        fail_reasons+=("non-empty stderr: $(head -1 "$stderr_file")")
-    fi
-
-    local lineno=0
-    local max_allowed=$((SAFE_WIDTH + WIDTH_SLOP))
-    while IFS= read -r line; do
-        lineno=$((lineno + 1))
-        local cols
-        cols=$(printf '%s' "$line" | vis_cols)
-        if [ "$cols" -gt "$max_allowed" ]; then
-            fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
-        fi
-    done <"$stdout_file"
+    _render_contract "$stdout_file" "$stderr_file" "$rc" "$((SAFE_WIDTH + WIDTH_SLOP))"
 
     # Optional content assertion: <name>.expect-l2 holds a substring that line 2
     # (ANSI-stripped) must contain. Used to prove the transcript-derived model
     # name actually reaches line 2, not just that the render stays within width.
     local expect_file="$FIXTURES/$name.expect-l2"
-    if [ -f "$expect_file" ]; then
+    if [ -f "$expect_file" ] && [ "${THEME_MATRIX:-0}" != "1" ]; then
         local want line2 stripped
         want=$(cat "$expect_file")
         line2=$(sed -n '2p' "$stdout_file")
@@ -177,13 +183,13 @@ run_one() {
     fi
 
     if [ ${#fail_reasons[@]} -eq 0 ]; then
-        printf '  PASS  %s\n' "$name"
+        printf '  PASS  %s\n' "${TEST_CASE_LABEL:-$name}"
         pass=$((pass + 1))
     else
-        printf '  FAIL  %s\n' "$name"
+        printf '  FAIL  %s\n' "${TEST_CASE_LABEL:-$name}"
         for r in "${fail_reasons[@]}"; do
             printf '          - %s\n' "$r"
-            errors+=("$name: $r")
+            errors+=("${TEST_CASE_LABEL:-$name}: $r")
         done
         fail=$((fail + 1))
     fi
@@ -2902,6 +2908,228 @@ theme_right_contrast_tests() {
     done
 }
 
+# Themes use the same render contract as every fixture, in both task locales.
+theme_tests() {
+    printf '\ntheme matrix and phone sweep\n'
+    local themes="default hue-dark nord phosphor synthwave tokyo-night gruvbox dracula catppuccin"
+    local theme f w SAFE_WIDTH
+    # Real repository state exercises branch joins, a GitHub alert, and the
+    # right-aligned update group. This runs last, after other scratch tests.
+    git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
+    git -C "$SCRATCH" remote add origin https://github.com/example/theme-tests
+    printf 'operational\n' >"$CC_STATUSLINE_SVC_CACHE"
+    printf 'incident:test\n' >"$SCRATCH/theme-gh"
+    printf 'v99.0.0\n' >"$CC_STATUSLINE_UPDATE_CACHE"
+    local CC_STATUSLINE_GH_CACHE="$SCRATCH/theme-gh"
+    local CC_STATUSLINE_GH_FETCH="$SCRATCH/no-gh-fetcher"
+    export CC_STATUSLINE_GH_CACHE CC_STATUSLINE_GH_FETCH
+    local CC_STATUSLINE_SESSIONS_DIR="$SCRATCH/theme-sessions"
+    export CC_STATUSLINE_SESSIONS_DIR
+    mkdir -p "$CC_STATUSLINE_SESSIONS_DIR"
+    _theme_matrix_one() {
+        local theme="$1" f w SAFE_WIDTH
+        # Each parallel worker owns its cwd, transcripts and rate-cache files.
+        local SCRATCH="$SCRATCH/matrix-$theme"
+        mkdir -p "$SCRATCH"
+        git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
+        git -C "$SCRATCH" remote add origin https://github.com/example/theme-tests
+        pass=0; fail=0; errors=()
+        for f in "$FIXTURES"/*.json; do
+            for w in 130 110 80 50 30; do
+                SAFE_WIDTH=$w
+                STATUSLINE_THEME="$theme" STATUSLINE_WIDTH="$w" THEME_MATRIX=1 \
+                    TEST_CASE_LABEL="theme-$theme-$(basename "$f" .json)-$w" run_one "$f"
+            done
+            SAFE_WIDTH=39
+            STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=130 COLUMNS=40 THEME_MATRIX=1 \
+                TEST_CASE_LABEL="theme-$theme-$(basename "$f" .json)-phone" run_one "$f"
+        done
+        for ((w=20; w<=60; w++)); do
+            SAFE_WIDTH=$((w-1))
+            STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=130 COLUMNS="$w" THEME_MATRIX=1 \
+                TEST_CASE_LABEL="theme-$theme-phone-sweep-$w" run_one "$FIXTURES/08-long-dir.json"
+        done
+        printf '%s %s\n' "$pass" "$fail" >"$SCRATCH/counts"
+    }
+    local -a theme_pids=()
+    local pid tpass tfail
+    for theme in $themes; do
+        _theme_matrix_one "$theme" >"$SCRATCH/matrix-$theme.log" 2>&1 &
+        theme_pids+=("$!")
+        if [ "${#theme_pids[@]}" -eq 4 ]; then
+            for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
+            theme_pids=()
+        fi
+    done
+    for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
+    for theme in $themes; do
+        cat "$SCRATCH/matrix-$theme.log"
+        if read -r tpass tfail <"$SCRATCH/matrix-$theme/counts"; then
+            pass=$((pass+tpass)); fail=$((fail+tfail))
+        else _rl_fail "theme-$theme-worker" "no result count"; fi
+    done
+
+    # A roomy wide render proves segmented assembly preserves all content.
+    local fixture="$SCRATCH/theme-content.json"
+    jq '.session_name="Theme topic" | .agent.name="theme-agent" | .mode="plan"' \
+        "$FIXTURES/18-session-name.json" >"$fixture"
+    printf '{"sessionId":"test-session-name","name":"theme-handle"}\n' >"$CC_STATUSLINE_SESSIONS_DIR/handle.json"
+    local out="$SCRATCH/theme-contract.out" err="$SCRATCH/theme-contract.err" rc
+    local base="" actual name
+    for theme in default tokyo-night gruvbox dracula catppuccin; do
+        (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=600 STATUSLINE_LAYOUT=wide \
+            bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+        rc=$?; name="theme-$theme-content"
+        local fail_reasons=()
+        _render_contract "$out" "$err" "$rc" 600
+        # Remove only decoration, preserving all text, dirty markers and alerts.
+        actual=$(head -1 "$out" | _strip_ansi | perl -CS -pe \
+            's/[\x{e0b0}\x{e0b2}\x{e0b4}\x{e0b6}\x{e0b8}\x{e0ba}\x{e0c0}\x{2502}]//g; s/\s+/ /g; s/^ | $//g')
+        if [ "$theme" = "default" ]; then base="$actual"; fi
+        if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
+        elif [ "$actual" != "$base" ]; then _rl_fail "$name" "content differs: $actual vs $base"
+        else _rl_pass "$name"; fi
+    done
+
+    # Byte identity includes GH/provider links and the right update segment,
+    # not just visible text. Compare all fixtures at every requested width.
+    local baseline="$SCRATCH/theme-baseline"
+    for f in "$FIXTURES"/*.json; do
+        for w in 130 110 80 50 30 phone; do
+            local viewport=130 width="$w"
+            [ "$w" = phone ] && { viewport=40; width=130; }
+            (cd "$SCRATCH" && COLUMNS="$viewport" STATUSLINE_WIDTH="$width" \
+                bash "$STATUSLINE" <"$f" >"$baseline" 2>"$err")
+            for theme in default bogus; do
+                (cd "$SCRATCH" && STATUSLINE_THEME="$theme" COLUMNS="$viewport" STATUSLINE_WIDTH="$width" \
+                    bash "$STATUSLINE" <"$f" >"$out" 2>"$err")
+                name="theme-identity-$theme-$(basename "$f" .json)-$w"
+                if cmp -s "$baseline" "$out"; then _rl_pass "$name"
+                else _rl_fail "$name" "unset and $theme differ in raw bytes"; fi
+            done
+        done
+    done
+
+    # Compare Synthwave to its own pre-gradient builder, including OSC 8 bytes.
+    # Only the post-pass condition changes in this disposable script copy.
+    local grad="$SCRATCH/gradient" plain="$SCRATCH/gradient/plain" locale
+    mkdir -p "$grad"
+    perl -pe 's/if \[ "\$THEME" = "synthwave" \]; then/if false; then/' "$STATUSLINE" >"$grad/statusline.sh"
+    cp "$REPO_DIR/VERSION" "$grad/VERSION"
+    jq '.cwd="/home/test/日本語目录"' "$fixture" >"$grad/input"
+    for locale in normal C; do
+        (cd "$SCRATCH" && GIT_DIR="$grad/no-git" STATUSLINE_THEME=synthwave STATUSLINE_WIDTH=130 \
+            STATUSLINE_HYPERLINKS=1 STATUSLINE_UPDATE_CHECK=0 STATUSLINE_PEERS=0 \
+            bash "$grad/statusline.sh" <"$grad/input" >"$plain" 2>"$err")
+        if [ "$locale" = C ]; then
+            (cd "$SCRATCH" && LC_ALL=C GIT_DIR="$grad/no-git" STATUSLINE_THEME=synthwave STATUSLINE_WIDTH=130 \
+                STATUSLINE_HYPERLINKS=1 STATUSLINE_UPDATE_CHECK=0 STATUSLINE_PEERS=0 \
+                bash "$STATUSLINE" <"$grad/input" >"$out" 2>"$err")
+        else
+            (cd "$SCRATCH" && GIT_DIR="$grad/no-git" STATUSLINE_THEME=synthwave STATUSLINE_WIDTH=130 \
+                STATUSLINE_HYPERLINKS=1 STATUSLINE_UPDATE_CHECK=0 STATUSLINE_PEERS=0 \
+                bash "$STATUSLINE" <"$grad/input" >"$out" 2>"$err")
+        fi
+        rc=$?; name="theme-synthwave-gradient-text-$locale"
+        local fail_reasons=()
+        _render_contract "$out" "$err" "$rc" 130
+        base=$(head -1 "$plain" | _strip_ansi); actual=$(head -1 "$out" | _strip_ansi)
+        if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
+        elif [ "$base" = "$actual" ] && _has "$actual" '日本語目录'; then _rl_pass "$name"
+        else _rl_fail "$name" "gradient changed non-ASCII visible text"; fi
+        base=$(head -1 "$plain" | perl -ne 'print "$&\n" while /\e\]8;;.*?(?:\a|\e\\)/g')
+        actual=$(head -1 "$out" | perl -ne 'print "$&\n" while /\e\]8;;.*?(?:\a|\e\\)/g')
+        if [ -n "$base" ] && [ "$base" = "$actual" ]; then _rl_pass "theme-synthwave-gradient-links-$locale"
+        else _rl_fail "theme-synthwave-gradient-links-$locale" "gradient changed OSC 8 wrappers"; fi
+    done
+
+    # Each theme retains the glyph meanings and distinct alert foregrounds.
+    local status glyph good caution bad rgb
+    for theme in $themes; do
+        good=""; caution=""; bad=""
+        for status in operational incident:test degraded_performance:test major_outage:test; do
+            case "$status" in operational) glyph="✓" ;; incident:*) glyph="⚠" ;; degraded*) glyph="~" ;; *) glyph="✗" ;; esac
+            printf '%s\n' "$status" >"$CC_STATUSLINE_SVC_CACHE"
+            (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_HYPERLINKS=0 STATUSLINE_WIDTH=600 \
+                bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+            name="theme-$theme-status-$status"
+            actual=$(_rl_l2 "$out")
+            rgb=$(tail -1 "$out" | perl -CS -ne \
+                'print $1 if /\e\[38;2;([0-9]+;[0-9]+;[0-9]+)m[\x{2713}\x{26a0}~\x{2717}]/')
+            if _has "$actual" "$glyph" && [ -n "$rgb" ]; then _rl_pass "$name"
+            else _rl_fail "$name" "missing service glyph or color"; fi
+            case "$status" in operational) good="$rgb" ;; incident:*) caution="$rgb" ;; major*) bad="$rgb" ;; esac
+        done
+        name="theme-$theme-status-colors"
+        if [ "$good" != "$caution" ] && [ "$good" != "$bad" ] && [ "$caution" != "$bad" ]; then _rl_pass "$name"
+        else _rl_fail "$name" "good/caution/bad foregrounds are not distinct"; fi
+        # Future-reset fixture keeps the ahead-of-pace and on-pace alerts.
+        (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=600 STATUSLINE_RL_SHARE=0 \
+            bash "$STATUSLINE" <"$FIXTURES/07-pace.json" >"$out" 2>"$err")
+        actual=$(_rl_l2 "$out"); name="theme-$theme-pace-arrows"
+        if _has "$actual" "↑" && _has "$actual" "→"; then _rl_pass "$name"
+        else _rl_fail "$name" "pace arrows lost: $actual"; fi
+    done
+
+    # Held GPT context uses the theme's dim token in both layouts.
+    local tr="$SCRATCH/theme-ctx.jsonl" snap dim layout raw
+    for theme in $themes; do
+        case "$theme" in
+            default) dim=$'\e[38;2;80;80;80m' ;;
+            hue-dark) dim=$'\e[38;2;58;58;58m' ;;
+            nord) dim=$'\e[38;2;76;86;106m' ;;
+            phosphor) dim=$'\e[38;2;20;92;44m' ;;
+            synthwave) dim=$'\e[38;2;74;58;107m' ;;
+            tokyo-night) dim=$'\e[38;2;59;66;97m' ;;
+            gruvbox) dim=$'\e[38;2;102;92;84m' ;;
+            dracula) dim=$'\e[38;2;98;114;164m' ;;
+            catppuccin) dim=$'\e[38;2;88;91;112m' ;;
+        esac
+        : >"$tr"; _ctx_asst "$tr" gpt-6.1-sol pos21
+        snap="$SCRATCH/theme-$theme-ctx"
+        (cd "$SCRATCH" && _ctx_json theme-ctx gpt-6.1-sol "$tr" 872000 pos21 \
+            | STATUSLINE_THEME="$theme" STATUSLINE_GPT_LIMITS=1 STATUSLINE_GPT_FETCH=0 \
+              CC_STATUSLINE_GPT_CACHE="$SCRATCH/no-theme-gpt" CC_STATUSLINE_CTX_CACHE="$snap" \
+              bash "$STATUSLINE" >"$out" 2>"$err")
+        for layout in wide phone; do
+            (cd "$SCRATCH" && _ctx_json theme-ctx gpt-6.1-sol "$tr" 872000 zero \
+                | STATUSLINE_THEME="$theme" STATUSLINE_LAYOUT="$layout" STATUSLINE_GPT_LIMITS=1 \
+                  STATUSLINE_GPT_FETCH=0 CC_STATUSLINE_GPT_CACHE="$SCRATCH/no-theme-gpt" \
+                  CC_STATUSLINE_CTX_CACHE="$snap" bash "$STATUSLINE" >"$out" 2>"$err")
+            rc=$?; name="theme-$theme-context-dim-$layout"
+            local fail_reasons=()
+            _render_contract "$out" "$err" "$rc" 110
+            raw=$(tail -1 "$out")
+            if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
+            elif _has "$raw" "${dim}21%"; then _rl_pass "$name"
+            else _rl_fail "$name" "held context lost its dim color"; fi
+        done
+    done
+
+    # Override-file access is exclusive to the two project-hue themes.
+    local bin="$SCRATCH/theme-bin" real_jq
+    real_jq=$(command -v jq); mkdir -p "$bin"
+    cat >"$bin/jq" <<'JQ'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    case "$arg" in */statusline-color-overrides.json) printf 'read\n' >>"$THEME_READ_LOG" ;; esac
+done
+exec "$THEME_REAL_JQ" "$@"
+JQ
+    chmod +x "$bin/jq"
+    printf '{}\n' >"$HOME/.claude/statusline-color-overrides.json"
+    for theme in $themes; do
+        : >"$SCRATCH/theme-reads"
+        (cd "$SCRATCH" && PATH="$bin:$PATH" THEME_REAL_JQ="$real_jq" THEME_READ_LOG="$SCRATCH/theme-reads" \
+            STATUSLINE_THEME="$theme" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+        name="theme-$theme-override-read"
+        case "$theme" in
+            default|hue-dark) if [ -s "$SCRATCH/theme-reads" ]; then _rl_pass "$name"; else _rl_fail "$name" "override read missing"; fi ;;
+            *) if [ -s "$SCRATCH/theme-reads" ]; then _rl_fail "$name" "fixed palette read project overrides"; else _rl_pass "$name"; fi ;;
+        esac
+    done
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2929,6 +3157,7 @@ effort_tests
 update_check_tests
 cache_timer_tests
 context_hold_tests
+theme_tests
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

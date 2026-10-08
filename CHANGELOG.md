@@ -6,6 +6,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Selectable themes via `STATUSLINE_THEME`: `default`, `hue-dark`, `nord`, `phosphor`, `synthwave`, `tokyo-night`, `gruvbox`, `dracula`, and `catppuccin`. Unset or unknown names preserve the existing default output byte for byte. Project color overrides apply only to `default` and `hue-dark`; every theme retains adaptive wide/phone layouts and distinct status alerts.
+
 ## [v3.6.0] - 2026-10-04
 
 ### Added
