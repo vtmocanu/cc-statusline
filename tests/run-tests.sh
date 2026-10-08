@@ -2919,6 +2919,10 @@ theme_tests() {
     printf '\ntheme matrix and phone sweep\n'
     local themes="default hue-dark nord phosphor synthwave tokyo-night gruvbox dracula catppuccin"
     local theme f w SAFE_WIDTH
+    local worker_slots
+    worker_slots=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || printf '1')
+    [[ "$worker_slots" =~ ^[1-9][0-9]{0,2}$ ]] || worker_slots=1
+    [ "$worker_slots" -le 8 ] || worker_slots=8
     local -a theme_fixtures=() theme_widths=(110 50) sweep_cols=()
     if [ "${STATUSLINE_TEST_THEMES_FULL:-0}" = 1 ]; then
         theme_fixtures=("$FIXTURES"/*.json)
@@ -2974,12 +2978,14 @@ theme_tests() {
     for theme in $themes; do
         _theme_matrix_one "$theme" >"$SCRATCH/matrix-$theme.log" 2>&1 &
         theme_pids+=("$!")
-        if [ "${#theme_pids[@]}" -eq 8 ]; then
+        if [ "${#theme_pids[@]}" -eq "$worker_slots" ]; then
             for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
             theme_pids=()
         fi
     done
+    if [ "${#theme_pids[@]}" -gt 0 ]; then
     for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
+    fi
     for theme in $themes; do
         cat "$SCRATCH/matrix-$theme.log"
         if read -r tpass tfail <"$SCRATCH/matrix-$theme/counts"; then
@@ -3046,12 +3052,14 @@ theme_tests() {
         key=$(basename "$f" .json)
         _theme_identity_one "$f" >"$SCRATCH/identity-$key.log" 2>&1 &
         theme_pids+=("$!")
-        if [ "${#theme_pids[@]}" -eq 8 ]; then
+        if [ "${#theme_pids[@]}" -eq "$worker_slots" ]; then
             for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail identity-worker "worker failed"; done
             theme_pids=()
         fi
     done
+    if [ "${#theme_pids[@]}" -gt 0 ]; then
     for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail identity-worker "worker failed"; done
+    fi
     for f in "$FIXTURES"/*.json; do
         key=$(basename "$f" .json)
         cat "$SCRATCH/identity-$key.log"
