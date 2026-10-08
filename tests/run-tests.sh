@@ -3134,14 +3134,14 @@ theme_tests() {
     for theme in $themes; do
         case "$theme" in
             default) dim=$'\e[38;2;80;80;80m' ;;
-            hue-dark) dim=$'\e[38;2;58;58;58m' ;;
-            nord) dim=$'\e[38;2;76;86;106m' ;;
-            phosphor) dim=$'\e[38;2;20;92;44m' ;;
-            synthwave) dim=$'\e[38;2;74;58;107m' ;;
-            tokyo-night) dim=$'\e[38;2;59;66;97m' ;;
-            gruvbox) dim=$'\e[38;2;102;92;84m' ;;
+            hue-dark) dim=$'\e[38;2;100;100;100m' ;;
+            nord) dim=$'\e[38;2;96;106;128m' ;;
+            phosphor) dim=$'\e[38;2;42;116;60m' ;;
+            synthwave) dim=$'\e[38;2;107;91;133m' ;;
+            tokyo-night) dim=$'\e[38;2;96;105;135m' ;;
+            gruvbox) dim=$'\e[38;2;131;117;103m' ;;
             dracula) dim=$'\e[38;2;98;114;164m' ;;
-            catppuccin) dim=$'\e[38;2;88;91;112m' ;;
+            catppuccin) dim=$'\e[38;2;124;128;152m' ;;
         esac
         : >"$tr"; _ctx_asst "$tr" gpt-6.1-sol pos21
         snap="$SCRATCH/theme-$theme-ctx"
@@ -3260,7 +3260,7 @@ theme_chooser_tests() {
         && ! compgen -G "$d/tmp/cc-statusline-preview.*" >/dev/null; then _rl_pass chooser-preview-all
     else _rl_fail chooser-preview-all "preview contract or cleanup failed: $(head -1 "$err")"; fi
     _choose preview nord
-    if [ "$rc" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 3 ]; then _rl_pass chooser-preview-one
+    if [ "$rc" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 3 ] && _has "$(cat "$out" | _strip_ansi)" "code/my-project"; then _rl_pass chooser-preview-one
     else _rl_fail chooser-preview-one "single preview failed"; fi
     local sentinel="$d/sentinel" sentinel_dir sentinel_bad=0 fake_fetch="$d/sentinel-fetch"
     mkdir -p "$sentinel/home" "$sentinel/xdg" "$sentinel/runtime"

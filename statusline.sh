@@ -1222,31 +1222,31 @@ case "$THEME" in
         TXT_FG="$PROJ_FG"; TXT_BOLD="${PROJ_FG}\033[1m"
         SEP_R=$((BG_R*55/100)); SEP_G=$((BG_G*55/100)); SEP_B=$((BG_B*55/100))
         BG2="\033[48;2;14;14;16m"
-        L2_TXT="\033[38;2;176;176;176m"; L2_DIM="\033[38;2;58;58;58m"
+        L2_TXT="\033[38;2;176;176;176m"; L2_DIM="\033[38;2;100;100;100m"
         CAP1_L="${PROJ_FG}▌"; CAP1_R="${PROJ_FG}▐"
         CAP2_L="$CAP1_L"; CAP2_R="$CAP1_R"
         BAR_FILL="▮"; BAR_EMPTY="▯"
         ;;
     nord)  # Transparent, restrained Nordic colors.
-        _theme_palette 000000 d8dee9 4c566a 000000 d8dee9 4c566a a3be8c ebcb8b bf616a 88c0d0
+        _theme_palette 000000 d8dee9 4c566a 000000 d8dee9 606a80 a3be8c ebcb8b bf616a 88c0d0
         BG1="\033[49m"; BG2="\033[49m"
         CAP1_L=""; CAP1_R=""; CAP2_L=""; CAP2_R=""
         SEP_CH=" "; SEP2_CH=" "; BAR_FILL="─"; BAR_EMPTY="─"
         ;;
     phosphor)  # CRT green with amber/red alerts preserved.
-        _theme_palette 001a08 33cc66 145c2c 001a08 33cc66 145c2c 5dff8a d7c37d e19696 33cc66
+        _theme_palette 001a08 33cc66 145c2c 001a08 33cc66 2a743c 5dff8a d7c37d e19696 33cc66
         CAP1_L=""; CAP1_R=""; CAP2_L=""; CAP2_R=""
         SEP_CH=">"; SEP2_CH="|"; BAR_FILL="#"; BAR_EMPTY="."
         BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
         ;;
     synthwave)  # Neon gradient on line 1, dusk on line 2.
-        _theme_palette ff2a6d ffffff ffffff 1a1033 d1c4e9 4a3a6b 05d9e8 f9c80e ff2a6d 05d9e8
+        _theme_palette ff2a6d ffffff 9f94b5 1a1033 d1c4e9 6b5b85 05d9e8 f9c80e ff2a6d 05d9e8
         _theme_fg CAP1_FG ff2a6d; CAP1_L="${CAP1_FG}${NF_CORNER_TL}"
         _theme_fg CAP1_FG 05d9e8; CAP1_R="${CAP1_FG}${NF_CORNER_TR}"
         SEP_CH="▸"; SEP2_CH="//"; BAR_FILL="⣿"; BAR_EMPTY="⣀"
         ;;
     tokyo-night)  # Stepped arrows, neon on navy.
-        _theme_palette 1a1b26 c0caf5 3b4261 1a1b26 a9b1d6 3b4261 9ece6a e0af68 f7768e 7dcfff
+        _theme_palette 1a1b26 c0caf5 3b4261 1a1b26 a9b1d6 606987 9ece6a e0af68 f7768e 7dcfff
         _theme_roles 7aa2f7 bb9af7 3b4261 292e42 292e42 292e42 292e42
         _theme_fg SEG_INK 1a1b26; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
         SEG_RIGHT_FG="$CLR_ICE"; _theme_fg SEG_RIGHT_DIM 7883a3; THEME_STYLE=arrow
@@ -1254,7 +1254,7 @@ case "$THEME" in
         CAP2_L=""; CAP2_R="\033[38;2;26;27;38m${SEG_JOIN}"
         ;;
     gruvbox)  # Earth tones and hard arrows.
-        _theme_palette 282828 ebdbb2 665c54 282828 ebdbb2 665c54 b8bb26 fabd2f fb4934 83a598
+        _theme_palette 282828 ebdbb2 665c54 282828 ebdbb2 837567 b8bb26 fabd2f fb4934 83a598
         _theme_roles d65d0e d79921 689d6a 504945 504945 504945 d65d0e
         _theme_fg SEG_INK 282828; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$TXT_FG"
         SEG_RIGHT_FG="$SEG_INK"; _theme_fg SEG_RIGHT_DIM 48301b
@@ -1270,7 +1270,7 @@ case "$THEME" in
         CAP2_L=""; CAP2_R="\033[38;2;40;42;54m${SEG_JOIN}"
         ;;
     catppuccin)  # Mocha capsules; service alerts use a dark surface.
-        _theme_palette 1e1e2e cdd6f4 585b70 313244 cdd6f4 585b70 a6e3a1 f9e2af f38ba8 89dceb
+        _theme_palette 1e1e2e cdd6f4 585b70 313244 cdd6f4 7c8098 a6e3a1 f9e2af f38ba8 89dceb
         _theme_roles f5c2e7 cba6f7 89b4fa a6e3a1 313244 313244 f9e2af
         _theme_fg SEG_INK 1e1e2e; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$SEG_INK"
         SEG_RIGHT_FG="$SEG_INK"; _theme_fg SEG_RIGHT_DIM 585b70
@@ -2299,7 +2299,7 @@ if [ "$THEME" = "synthwave" ]; then
         my @tokens = /(?:\e\]8;;.*?(?:\a|\e\\)|\e\[[0-9;]*m|.)/sg;
         my $n = scalar(grep { substr($_, 0, 1) ne "\e" } @tokens) - 1;
         my $i = -1;
-        my @stops = ([255,42,109], [123,44,255], [5,217,232]);
+        my @stops = ([96,18,46], [59,28,112], [5,59,67]);
         for my $token (@tokens) {
             if (substr($token, 0, 1) eq "\e") { print $token; next }
             if ($i < 0) { print $token; $i = 0; next } # leading cap

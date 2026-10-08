@@ -74,7 +74,7 @@ preview() {
         valid "$theme" || { printf 'error: unknown theme: %s\n' "$theme" >&2; return 2; }
     done
     PREVIEW_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-preview.XXXXXX") || return 1
-    local d="$PREVIEW_DIR" repo="$PREVIEW_DIR/project"
+    local d="$PREVIEW_DIR" repo="$PREVIEW_DIR/code/my-project"
     local preview_width="${FZF_PREVIEW_COLUMNS:-${COLUMNS:-130}}"
     mkdir -p "$repo" "$d/home/.claude" "$d/sessions" || return 1
     git -C "$repo" init -q 2>/dev/null && git -C "$repo" symbolic-ref HEAD refs/heads/main 2>/dev/null
