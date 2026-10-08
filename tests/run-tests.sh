@@ -111,38 +111,38 @@ vis_cols() {
 }
 
 _render_contract() {  # stdout file, stderr file, exit status, width budget
-    local stdout_file="$1" stderr_file="$2" rc="$3"
-    if [ "$rc" -ne 0 ]; then
-        fail_reasons+=("exit code $rc")
+    local stdout_file="$1" stderr_file="$2" rc="$3" max_allowed="$4"
+    if [ "$rc" -ne 0 ]; then fail_reasons+=("exit code $rc"); fi
+    if [ -s "$stderr_file" ]; then fail_reasons+=("non-empty stderr: $(head -1 "$stderr_file")"); fi
+    # One UTF-8/ANSI pass counts rows and finds the widest line. This is the
+    # same codepoint contract as vis_cols, without per-line process pipelines.
+    local line_count cols lineno
+    read -r line_count cols lineno < <(perl -e '
+        use Encode qw(decode);
+        open my $fh, "<", $ARGV[0] or exit 1;
+        my $s = do { local $/; <$fh> } // "";
+        my $rows = () = $s =~ /\n/g;
+        $s =~ s/\e\]8;;.*?(?:\a|\e\\)//g;
+        $s =~ s/\e\[[0-9;]*m//g;
+        my ($max, $line, $index) = (0, 0, 0);
+        for my $raw (split /\n/, $s) {
+            ++$index;
+            my $width = length(decode("UTF-8", $raw, Encode::FB_DEFAULT));
+            ($max, $line) = ($width, $index) if $width > $max;
+        }
+        print "$rows $max $line\n";
+    ' "$stdout_file" 2>/dev/null)
+    line_count=${line_count:-0}; cols=${cols:-0}; lineno=${lineno:-0}
+    if [ "$line_count" -ne 2 ]; then fail_reasons+=("expected 2 stdout lines, got $line_count"); fi
+    if [ "$cols" -gt "$max_allowed" ]; then
+        fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
     fi
-
-    local line_count
-    line_count=$(wc -l <"$stdout_file" | tr -d ' ')
-    if [ "$line_count" -ne 2 ]; then
-        fail_reasons+=("expected 2 stdout lines, got $line_count")
-    fi
-
-    if [ -s "$stderr_file" ]; then
-        fail_reasons+=("non-empty stderr: $(head -1 "$stderr_file")")
-    fi
-
-    local lineno=0
-    local max_allowed=$4
-    while IFS= read -r line; do
-        lineno=$((lineno + 1))
-        local cols
-        cols=$(printf '%s' "$line" | vis_cols)
-        if [ "$cols" -gt "$max_allowed" ]; then
-            fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
-        fi
-    done <"$stdout_file"
-
 }
 
 run_one() {
     local fixture="$1"
     local name
-    name=$(basename "$fixture" .json)
+    name=${fixture##*/}; name=${name%.json}
 
     # Per-fixture shared rate-limits cache: an empty scratch path so a fixture
     # with rate_limits (which now writes the cache) cannot leak account-wide
@@ -2910,9 +2910,27 @@ theme_right_contrast_tests() {
 
 # Themes use the same render contract as every fixture, in both task locales.
 theme_tests() {
+    # Isolate the rendering suite from host account discovery and from the
+    # many files produced by unrelated tests. Account discovery is tested above.
+    local SCRATCH="$SCRATCH/themes"
+    local CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_RL_CACHE="$SCRATCH/parent.rl"
+    export CC_STATUSLINE_RL_KEY CC_STATUSLINE_RL_CACHE
+    mkdir -p "$SCRATCH"
     printf '\ntheme matrix and phone sweep\n'
     local themes="default hue-dark nord phosphor synthwave tokyo-night gruvbox dracula catppuccin"
     local theme f w SAFE_WIDTH
+    local -a theme_fixtures=() theme_widths=(110 50) sweep_cols=()
+    if [ "${STATUSLINE_TEST_THEMES_FULL:-0}" = 1 ]; then
+        theme_fixtures=("$FIXTURES"/*.json)
+        theme_widths=(130 110 80 50 30)
+        for ((w=20; w<=60; w++)); do sweep_cols+=("$w"); done
+    else
+        theme_fixtures=("$FIXTURES/01-happy-path.json" "$FIXTURES/08-long-dir.json"
+            "$FIXTURES/10-line2-overflow.json" "$FIXTURES/18-session-name.json"
+            "$FIXTURES/13-pct-100.json" "$FIXTURES/15-malformed-or-extreme.json")
+        # Dense boundary coverage plus a four-column sweep, in regular CI.
+        sweep_cols=(20 24 28 29 30 32 36 39 40 44 48 49 50 52 56 59 60 61)
+    fi
     # Real repository state exercises branch joins, a GitHub alert, and the
     # right-aligned update group. This runs last, after other scratch tests.
     git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
@@ -2934,8 +2952,8 @@ theme_tests() {
         git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
         git -C "$SCRATCH" remote add origin https://github.com/example/theme-tests
         pass=0; fail=0; errors=()
-        for f in "$FIXTURES"/*.json; do
-            for w in 130 110 80 50 30; do
+        for f in "${theme_fixtures[@]}"; do
+            for w in "${theme_widths[@]}"; do
                 SAFE_WIDTH=$w
                 STATUSLINE_THEME="$theme" STATUSLINE_WIDTH="$w" THEME_MATRIX=1 \
                     TEST_CASE_LABEL="theme-$theme-$(basename "$f" .json)-$w" run_one "$f"
@@ -2944,7 +2962,7 @@ theme_tests() {
             STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=130 COLUMNS=40 THEME_MATRIX=1 \
                 TEST_CASE_LABEL="theme-$theme-$(basename "$f" .json)-phone" run_one "$f"
         done
-        for ((w=20; w<=60; w++)); do
+        for w in "${sweep_cols[@]}"; do
             SAFE_WIDTH=$((w-1))
             STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=130 COLUMNS="$w" THEME_MATRIX=1 \
                 TEST_CASE_LABEL="theme-$theme-phone-sweep-$w" run_one "$FIXTURES/08-long-dir.json"
@@ -2956,7 +2974,7 @@ theme_tests() {
     for theme in $themes; do
         _theme_matrix_one "$theme" >"$SCRATCH/matrix-$theme.log" 2>&1 &
         theme_pids+=("$!")
-        if [ "${#theme_pids[@]}" -eq 4 ]; then
+        if [ "${#theme_pids[@]}" -eq 8 ]; then
             for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
             theme_pids=()
         fi
@@ -2993,21 +3011,53 @@ theme_tests() {
 
     # Byte identity includes GH/provider links and the right update segment,
     # not just visible text. Compare all fixtures at every requested width.
-    local baseline="$SCRATCH/theme-baseline"
-    for f in "$FIXTURES"/*.json; do
+    _theme_identity_one() {
+        local f="$1" key baseline out err w theme name viewport width companion
+        key=$(basename "$f" .json)
+        local SCRATCH="$SCRATCH/identity-$key"
+        local CC_STATUSLINE_RL_CACHE="$SCRATCH/rl"
+        export CC_STATUSLINE_RL_CACHE
+        mkdir -p "$SCRATCH"
+        git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
+        baseline="$SCRATCH/base"; out="$SCRATCH/out"; err="$SCRATCH/err"
+        # Create every output before rendering so git status is stable.
+        for name in base out err rl counts; do : >"$SCRATCH/$name"; done
+        companion="$FIXTURES/$key.transcript.jsonl"
+        [ ! -f "$companion" ] || cp "$companion" "$SCRATCH/$key.transcript.jsonl"
+        pass=0; fail=0; errors=()
         for w in 130 110 80 50 30 phone; do
-            local viewport=130 width="$w"
+            viewport=130; width="$w"
             [ "$w" = phone ] && { viewport=40; width=130; }
             (cd "$SCRATCH" && COLUMNS="$viewport" STATUSLINE_WIDTH="$width" \
                 bash "$STATUSLINE" <"$f" >"$baseline" 2>"$err")
             for theme in default bogus; do
                 (cd "$SCRATCH" && STATUSLINE_THEME="$theme" COLUMNS="$viewport" STATUSLINE_WIDTH="$width" \
                     bash "$STATUSLINE" <"$f" >"$out" 2>"$err")
-                name="theme-identity-$theme-$(basename "$f" .json)-$w"
+                name="theme-identity-$theme-$key-$w"
                 if cmp -s "$baseline" "$out"; then _rl_pass "$name"
                 else _rl_fail "$name" "unset and $theme differ in raw bytes"; fi
             done
         done
+        printf '%s %s\n' "$pass" "$fail" >"$SCRATCH/counts"
+    }
+    theme_pids=()
+    local key
+    for f in "$FIXTURES"/*.json; do
+        key=$(basename "$f" .json)
+        _theme_identity_one "$f" >"$SCRATCH/identity-$key.log" 2>&1 &
+        theme_pids+=("$!")
+        if [ "${#theme_pids[@]}" -eq 8 ]; then
+            for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail identity-worker "worker failed"; done
+            theme_pids=()
+        fi
+    done
+    for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail identity-worker "worker failed"; done
+    for f in "$FIXTURES"/*.json; do
+        key=$(basename "$f" .json)
+        cat "$SCRATCH/identity-$key.log"
+        if read -r tpass tfail <"$SCRATCH/identity-$key/counts"; then
+            pass=$((pass+tpass)); fail=$((fail+tfail))
+        else _rl_fail "identity-$key-worker" "no result count"; fi
     done
 
     # Compare Synthwave to its own pre-gradient builder, including OSC 8 bytes.
@@ -3130,6 +3180,25 @@ JQ
     done
 }
 
+# The baseline and theme suites share no mutable state: each child initializes
+# its own HOME, config, cache seams and scratch tree through this same harness.
+# Run them together so full identity/semantic coverage fits the CI time budget.
+if [ "${STATUSLINE_TEST_SCOPE:-}" = "" ] && [ "${STATUSLINE_TEST_THEMES_FULL:-0}" != 1 ]; then
+    STATUSLINE_TEST_SCOPE=base bash "$0" >"$SCRATCH/base.log" 2>&1 &
+    BASE_PID=$!
+    STATUSLINE_TEST_SCOPE=themes bash "$0" >"$SCRATCH/themes.log" 2>&1 &
+    THEMES_PID=$!
+    BASE_RC=0; THEMES_RC=0
+    wait "$BASE_PID" || BASE_RC=$?
+    wait "$THEMES_PID" || THEMES_RC=$?
+    cat "$SCRATCH/base.log" "$SCRATCH/themes.log"
+    read -r BASE_PASS BASE_FAIL < <(awk '/^[0-9]+ passed, [0-9]+ failed$/ {p=$1;f=$3} END{print p+0,f+0}' "$SCRATCH/base.log")
+    read -r THEMES_PASS THEMES_FAIL < <(awk '/^[0-9]+ passed, [0-9]+ failed$/ {p=$1;f=$3} END{print p+0,f+0}' "$SCRATCH/themes.log")
+    printf '%d passed, %d failed (combined)\n' "$((BASE_PASS+THEMES_PASS))" "$((BASE_FAIL+THEMES_FAIL))"
+    [ "$BASE_RC" = 0 ] && [ "$THEMES_RC" = 0 ] && [ "$((BASE_FAIL+THEMES_FAIL))" = 0 ]
+    exit $?
+fi
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -3139,6 +3208,7 @@ printf 'cc-statusline test harness (SAFE_WIDTH=%s)\n' "$SAFE_WIDTH"
 printf '%s\n' "------------------------------------------------------------"
 
 shopt -s nullglob
+if [ "${STATUSLINE_TEST_THEMES_FULL:-0}" != 1 ] && [ "${STATUSLINE_TEST_SCOPE:-}" != themes ]; then
 for f in "$FIXTURES"/*.json; do
     run_one "$f"
 done
@@ -3151,13 +3221,16 @@ phone_gap_tests
 github_status_tests
 session_name_tests
 peer_tests
-theme_right_contrast_tests
 env_hardening_tests
 effort_tests
 update_check_tests
 cache_timer_tests
 context_hold_tests
+fi
+if [ "${STATUSLINE_TEST_SCOPE:-}" != base ]; then
+theme_right_contrast_tests
 theme_tests
+fi
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"

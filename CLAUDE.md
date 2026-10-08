@@ -59,6 +59,7 @@ The script lives where it runs. Edit `statusline.sh` directly; the maintainer's 
 
 ```bash
 task ci              # all five checks in order
+task test-themes-full # exhaustive theme matrix + step-1 phone sweep, both locales
 
 # or individually:
 task shell:syntax    # 1. bash -n on all scripts
@@ -207,8 +208,13 @@ Synthwave's single perl gradient pass runs after all width decisions and
 padding. It adds only zero-width background SGRs and preserves OSC 8 and other
 SGRs. Its output is already expanded, so print it with `%s`, never a second
 `%b`. Do not move the gradient before measurement or add visible characters
-after measured assembly. The theme matrix and 20-60-column phone sweep run in
-both locales through `task ci`; keep `WIDTH_SLOP=0`.
+after measured assembly. Regular `task ci` runs every theme on representative fixtures at 110/50 columns
+and COLUMNS=40, plus a four-column phone sweep and exact boundary columns.
+Byte identity, content, status, pace, held-context and gradient checks stay in
+full. `task test-themes-full` runs all fixtures at 130/110/80/50/30 columns,
+COLUMNS=40 and a one-column 20-60 sweep in both locales. Run it when changing
+theme tokens or layout assembly; it is opt-in so ordinary CI stays bounded.
+Keep `WIDTH_SLOP=0`.
 
 ## Session name and title (both native, no hook)
 

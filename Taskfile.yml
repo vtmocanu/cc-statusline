@@ -42,6 +42,12 @@ tasks:
     cmds:
       - bash tests/run-tests.sh
 
+  test-themes-full:
+    desc: Exhaustive theme fixtures and one-column phone sweep (both locales, opt-in)
+    cmds:
+      - STATUSLINE_TEST_THEMES_FULL=1 bash tests/run-tests.sh
+      - LC_ALL=C STATUSLINE_TEST_THEMES_FULL=1 bash tests/run-tests.sh
+
   test-c-locale:
     desc: Run the test harness under LC_ALL=C (locale regression guard, see CHANGELOG v2.1.3)
     cmds:
