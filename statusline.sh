@@ -1108,9 +1108,16 @@ if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
     [ "$(_clen "$TOPIC")" -gt 40 ] 2>/dev/null && TOPIC="$(_head_cp "$TOPIC" 40)"
 fi
 
+# Unknown names deliberately retain the byte-identical default theme.
+THEME="${STATUSLINE_THEME:-default}"
+case "$THEME" in
+    default|hue-dark|nord|phosphor|synthwave|tokyo-night|gruvbox|dracula|catppuccin) ;;
+    *) THEME=default ;;
+esac
+
 # Check for manual color override
 COLOR_OVERRIDES="$HOME/.claude/statusline-color-overrides.json"
-if [ -f "$COLOR_OVERRIDES" ]; then
+if { [ "$THEME" = "default" ] || [ "$THEME" = "hue-dark" ]; } && [ -f "$COLOR_OVERRIDES" ]; then
     COLOR_IDX=$(jq -r --arg p "$PROJECT_ROOT" '.[$p] // empty' "$COLOR_OVERRIDES" 2>/dev/null || true)
 fi
 COLOR_IDX=${COLOR_IDX:-$((PHASH % 12))}
@@ -1135,34 +1142,79 @@ esac
 SEP_R=$((BG_R * 40 / 100)); SEP_G=$((BG_G * 40 / 100)); SEP_B=$((BG_B * 40 / 100))
 TXT_R=$((BG_R * 15 / 100)); TXT_G=$((BG_G * 15 / 100)); TXT_B=$((BG_B * 15 / 100))
 
-SEP_CH="│"
+# Rendering tokens. Keep the default escape spelling/order byte-identical.
+SEP_CH="│"; SEP2_CH="│"; DOT2_CH="·"
 BG1="\033[48;2;${BG_R};${BG_G};${BG_B}m"
-B="${RST}${BG1}"
-SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
 TXT_FG="\033[38;2;${TXT_R};${TXT_G};${TXT_B}m"
 TXT_BOLD="\033[38;2;${TXT_R};${TXT_G};${TXT_B};1m"
 PROJ_FG="\033[38;2;${BG_R};${BG_G};${BG_B}m"
-
-# ── Line 2 colors (black fill, light gray text, colored % numbers) ──────────
 BG2="\033[48;2;0;0;0m"
-B2="${RST}${BG2}"
-L2_TXT="\033[38;2;170;170;170m"   # light gray
-L2_DIM="\033[38;2;80;80;80m"      # dim gray for separators + resets
-
-CLR_SAGE="\033[38;2;150;210;150m"   # green: good
-CLR_GOLD="\033[38;2;215;195;125m"   # amber: caution
-CLR_CORAL="\033[38;2;225;150;150m"  # coral: warning
-CLR_ICE="\033[38;2;140;180;225m"    # ice blue: prompt cache cold
-# Theme tokens default to the exact original escape sequences and glyphs.
-CAP1_L="${PROJ_FG}${NF_CORNER_TL}"; CAP1_R="${PROJ_FG}${NF_CORNER_TR}"
-CAP2_L="\033[38;2;0;0;0m${NF_CORNER_BL}"; CAP2_R="\033[38;2;0;0;0m${NF_CORNER_BR}"
-SEP2_CH="│"; DOT2_CH="·"
-SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
-BAR_FILL="▰"; BAR_EMPTY="▱"; BAR_PRE=""; BAR_POST=""
-MODE_CLR="\033[1;38;2;150;100;0m"
+L2_TXT="\033[38;2;170;170;170m"
+L2_DIM="\033[38;2;80;80;80m"
+CLR_SAGE="\033[38;2;150;210;150m"
+CLR_GOLD="\033[38;2;215;195;125m"
+CLR_CORAL="\033[38;2;225;150;150m"
+CLR_ICE="\033[38;2;140;180;225m"
 CLR_OK="\033[38;2;100;200;120m"
 CLR_INC="\033[38;2;225;150;100m"
 CLR_BAD="\033[38;2;225;100;100m"
+MODE_CLR="\033[1;38;2;150;100;0m"
+BAR_FILL="▰"; BAR_EMPTY="▱"; BAR_PRE=""; BAR_POST=""
+CAP1_L="${PROJ_FG}${NF_CORNER_TL}"; CAP1_R="${PROJ_FG}${NF_CORNER_TR}"
+CAP2_L="\033[38;2;0;0;0m${NF_CORNER_BL}"; CAP2_R="\033[38;2;0;0;0m${NF_CORNER_BR}"
+
+# Hex conversion and token assignment use bash printf -v, with no forks.
+# All inputs below are trusted palette constants, never user-controlled text.
+_theme_rgb() { printf -v THEME_RGB '%d;%d;%d' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}"; }
+_theme_fg() { _theme_rgb "$2"; printf -v "$1" '%s' "\033[38;2;${THEME_RGB}m"; }
+_theme_palette() {  # bg1, text, separator, bg2, l2 text/dim, good/caution/bad/cold
+    _theme_rgb "$1"; BG1="\033[48;2;${THEME_RGB}m"
+    _theme_fg TXT_FG "$2"; TXT_BOLD="${TXT_FG}\033[1m"
+    _theme_rgb "$3"; IFS=';' read -r SEP_R SEP_G SEP_B <<< "$THEME_RGB"
+    _theme_rgb "$4"; BG2="\033[48;2;${THEME_RGB}m"
+    _theme_fg CAP2_FG "$4"
+    CAP2_L="${CAP2_FG}${NF_CORNER_BL}"; CAP2_R="${CAP2_FG}${NF_CORNER_BR}"
+    _theme_fg L2_TXT "$5"; _theme_fg L2_DIM "$6"
+    _theme_fg CLR_SAGE "$7"; _theme_fg CLR_GOLD "$8"
+    _theme_fg CLR_CORAL "$9"; _theme_fg CLR_ICE "${10}"
+    CLR_OK="$CLR_SAGE"; CLR_INC="$CLR_GOLD"; CLR_BAD="$CLR_CORAL"
+    MODE_CLR="${CLR_GOLD}\033[1m"
+}
+
+# One palette block; derived separators/background resets are built afterward.
+case "$THEME" in
+    hue-dark)  # Project identity inverted onto an 18% tint.
+        BG1="\033[48;2;$((BG_R*18/100));$((BG_G*18/100));$((BG_B*18/100))m"
+        TXT_FG="$PROJ_FG"; TXT_BOLD="${PROJ_FG}\033[1m"
+        SEP_R=$((BG_R*55/100)); SEP_G=$((BG_G*55/100)); SEP_B=$((BG_B*55/100))
+        BG2="\033[48;2;14;14;16m"
+        L2_TXT="\033[38;2;176;176;176m"; L2_DIM="\033[38;2;58;58;58m"
+        CAP1_L="${PROJ_FG}▌"; CAP1_R="${PROJ_FG}▐"
+        CAP2_L="$CAP1_L"; CAP2_R="$CAP1_R"
+        BAR_FILL="▮"; BAR_EMPTY="▯"
+        ;;
+    nord)  # Transparent, restrained Nordic colors.
+        _theme_palette 000000 d8dee9 4c566a 000000 d8dee9 4c566a a3be8c ebcb8b bf616a 88c0d0
+        BG1="\033[49m"; BG2="\033[49m"
+        CAP1_L=""; CAP1_R=""; CAP2_L=""; CAP2_R=""
+        SEP_CH=" "; SEP2_CH=" "; BAR_FILL="─"; BAR_EMPTY="─"
+        ;;
+    phosphor)  # CRT green with amber/red alerts preserved.
+        _theme_palette 001a08 33cc66 145c2c 001a08 33cc66 145c2c 5dff8a d7c37d e19696 33cc66
+        CAP1_L=""; CAP1_R=""; CAP2_L=""; CAP2_R=""
+        SEP_CH=">"; SEP2_CH="|"; BAR_FILL="#"; BAR_EMPTY="."
+        BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
+        ;;
+    synthwave)  # Neon gradient on line 1, dusk on line 2.
+        _theme_palette ff2a6d ffffff ffffff 1a1033 d1c4e9 4a3a6b 05d9e8 f9c80e ff2a6d 05d9e8
+        _theme_fg CAP1_FG ff2a6d; CAP1_L="${CAP1_FG}${NF_CORNER_TL}"
+        _theme_fg CAP1_FG 05d9e8; CAP1_R="${CAP1_FG}${NF_CORNER_TR}"
+        SEP_CH="▸"; SEP2_CH="//"; BAR_FILL="⣿"; BAR_EMPTY="⣀"
+        ;;
+esac
+B="${RST}${BG1}"; B2="${RST}${BG2}"
+SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
+SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
 # Threshold color for a percentage. Default scale: low is good (sage), high is
 # bad (coral). Pass "invert" as $2 for metrics where high is GOOD, e.g. the
 # cache hit rate (green when most of the context is served from cache, coral
