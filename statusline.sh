@@ -1158,6 +1158,7 @@ CLR_ICE="\033[38;2;140;180;225m"
 CLR_OK="\033[38;2;100;200;120m"
 CLR_INC="\033[38;2;225;150;100m"
 CLR_BAD="\033[38;2;225;100;100m"
+UPD_CLR="$CLR_GOLD"
 MODE_CLR="\033[1;38;2;150;100;0m"
 BAR_FILL="▰"; BAR_EMPTY="▱"; BAR_PRE=""; BAR_POST=""
 CAP1_L="${PROJ_FG}${NF_CORNER_TL}"; CAP1_R="${PROJ_FG}${NF_CORNER_TR}"
@@ -1182,7 +1183,7 @@ _theme_palette() {  # bg1, text, separator, bg2, l2 text/dim, good/caution/bad/c
     _theme_fg CLR_SAGE "$7"; _theme_fg CLR_GOLD "$8"
     _theme_fg CLR_CORAL "$9"; _theme_fg CLR_ICE "${10}"
     CLR_OK="$CLR_SAGE"; CLR_INC="$CLR_GOLD"; CLR_BAD="$CLR_CORAL"
-    MODE_CLR="${CLR_GOLD}\033[1m"
+    UPD_CLR="$CLR_GOLD"; MODE_CLR="${CLR_GOLD}\033[1m"
 }
 
 # Segment roles keep their backgrounds separate from the transparent padding.
@@ -1230,7 +1231,7 @@ case "$THEME" in
         _theme_palette 1a1b26 c0caf5 3b4261 1a1b26 a9b1d6 3b4261 9ece6a e0af68 f7768e 7dcfff
         _theme_roles 7aa2f7 bb9af7 3b4261 292e42 292e42 292e42 292e42
         _theme_fg SEG_INK 1a1b26; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
-        SEG_RIGHT_FG="$CLR_ICE"; THEME_STYLE=arrow
+        SEG_RIGHT_FG="$CLR_ICE"; _theme_fg SEG_RIGHT_DIM 7883a3; THEME_STYLE=arrow
         SEP2_CH=$'\xee\x82\xb1'; BAR_FILL="━"; BAR_EMPTY="━"
         CAP2_L=""; CAP2_R="\033[38;2;26;27;38m${SEG_JOIN}"
         ;;
@@ -1238,7 +1239,8 @@ case "$THEME" in
         _theme_palette 282828 ebdbb2 665c54 282828 ebdbb2 665c54 b8bb26 fabd2f fb4934 83a598
         _theme_roles d65d0e d79921 689d6a 504945 504945 504945 d65d0e
         _theme_fg SEG_INK 282828; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$TXT_FG"
-        SEG_RIGHT_FG="$SEG_INK"; THEME_STYLE=arrow
+        SEG_RIGHT_FG="$SEG_INK"; _theme_fg SEG_RIGHT_DIM 48301b
+        UPD_CLR="${SEG_INK}\033[1m"; THEME_STYLE=arrow
         BAR_FILL="█"; BAR_EMPTY="░"; BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
         CAP2_L=""; CAP2_R=""
         ;;
@@ -1246,14 +1248,15 @@ case "$THEME" in
         _theme_palette 282a36 f8f8f2 6272a4 282a36 f8f8f2 6272a4 50fa7b ffb86c ff5555 8be9fd
         _theme_roles bd93f9 ff79c6 44475a 44475a 44475a 44475a 44475a
         _theme_fg SEG_INK 282a36; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
-        SEG_RIGHT_FG="$CLR_ICE"; THEME_STYLE=arrow; SEG_JOIN=$'\xee\x83\x80'
+        SEG_RIGHT_FG="$CLR_ICE"; _theme_fg SEG_RIGHT_DIM a0a4bc; THEME_STYLE=arrow; SEG_JOIN=$'\xee\x83\x80'
         CAP2_L=""; CAP2_R="\033[38;2;40;42;54m${SEG_JOIN}"
         ;;
     catppuccin)  # Mocha capsules; service alerts use a dark surface.
         _theme_palette 1e1e2e cdd6f4 585b70 313244 cdd6f4 585b70 a6e3a1 f9e2af f38ba8 89dceb
         _theme_roles f5c2e7 cba6f7 89b4fa a6e3a1 313244 313244 f9e2af
         _theme_fg SEG_INK 1e1e2e; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$SEG_INK"
-        SEG_RIGHT_FG="$SEG_INK"; THEME_STYLE=pill
+        SEG_RIGHT_FG="$SEG_INK"; _theme_fg SEG_RIGHT_DIM 585b70
+        UPD_CLR="${SEG_INK}\033[1m"; THEME_STYLE=pill
         BAR_FILL="●"; BAR_EMPTY="○"
         CAP2_L="${CAP2_FG}${SEG_PILL_L}"; CAP2_R="${CAP2_FG}${SEG_PILL_R}"
         ;;
@@ -1261,12 +1264,13 @@ esac
 B="${RST}${BG1}"; B2="${RST}${BG2}"
 SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
 SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
+PEER_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
 if [ "$THEME_STYLE" != "flat" ]; then
+    PEER_DIM="$SEG_RIGHT_DIM"
     BG1="\033[49m"  # Padding between left and right groups is transparent.
     CAP1_L=""
     TXT_FG="$SEG_RIGHT_FG"; TXT_BOLD="${TXT_FG}\033[1m"
     B="${RST}\033[48;2;${SEG_RIGHT_BG}m"
-    IFS=';' read -r SEP_R SEP_G SEP_B <<< "$SEG_RIGHT_BG"
     if [ "$THEME_STYLE" = "pill" ]; then
         SEP="${RST}\033[38;2;${SEG_RIGHT_BG}m${SEG_PILL_L}"
         CAP1_R="\033[38;2;${SEG_RIGHT_BG}m${SEG_PILL_R}"
@@ -1472,7 +1476,7 @@ _assemble_l1_seg() {
     if [ "$LAYOUT" != "phone" ]; then
         local tail="$AGENT"
         [ -n "$MODE" ] && tail+="${tail:+ }${MODE_CLR}${MODE}"
-        [ -n "$K8S_CTX" ] && tail+="${tail:+ }${SEG_DIR_FG}${NF_K8S} ${K8S_CTX}"
+        [ -n "$K8S_CTX" ] && tail+="${tail:+ }${L2_TXT}${NF_K8S} ${K8S_CTX}"
         [ -n "$tail" ] && _seg_add "$SEG_TAIL_BG" "$L2_TXT" "$tail"
     fi
     local end="$SEG_JOIN"
@@ -1777,7 +1781,7 @@ if [ "${STATUSLINE_UPDATE_CHECK:-1}" != "0" ]; then
             UPD_LINK_OPEN="\033]8;;https://github.com/vtmocanu/cc-statusline/releases/tag/v${UPD_LATEST#v}\a"
             UPD_LINK_CLOSE='\033]8;;\a'
         fi
-        UPD_SEG="${SEP}${B} ${CLR_GOLD}${UPD_LINK_OPEN}⇡ ${UPD_LATEST#v}${UPD_LINK_CLOSE}${B} "
+        UPD_SEG="${SEP}${B} ${UPD_CLR}${UPD_LINK_OPEN}⇡ ${UPD_LATEST#v}${UPD_LINK_CLOSE}${B} "
     fi
 fi
 
@@ -1912,7 +1916,7 @@ if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
         # fixed color unreadable on some of them, while the palette's own dark
         # text stays legible on all. Busy is bold, idle is the dim separator
         # tone, and a waiting question is reversed (dark chip, light text).
-        _P_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
+        _P_DIM="$PEER_DIM"
         _P_BODY=""
         _p_add() {  # _p_add <count> <style> <glyph> <self-state>: bracket the
             # count this session belongs to, so each session spots its own state
@@ -2267,7 +2271,7 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 } 2>/dev/null || true
 
 # ── Output ───────────────────────────────────────────────────────────────────
-[ "$THEME_STYLE" != "flat" ] && [ -z "$RIGHT_SEG" ] && CAP1_R=""
+[ "$THEME_STYLE" != "flat" ] && [ -z "${RIGHT_SEG:-}" ] && CAP1_R=""
 trap - EXIT  # disarm crash trap before normal output
 printf '\033[0m%b\n' "${L1C}${RST}${CAP1_R}${RST}"
 printf '\033[0m%b\n' "${L2C}${RST}${CAP2_R}${RST}"

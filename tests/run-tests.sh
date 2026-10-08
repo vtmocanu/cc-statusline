@@ -2870,6 +2870,38 @@ context_hold_tests() {
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
 }
 
+# Right-zone text must remain visible on each segmented theme's background.
+theme_right_contrast_tests() {
+    local d="$SCRATCH/theme-right" repo reg fixture out err theme bg idle upd
+    repo="$d/repo"; reg="$d/sessions"; fixture="$d/input.json"
+    out="$d/out"; err="$d/err"
+    mkdir -p "$repo" "$reg"
+    git -C "$repo" init -q -b main 2>/dev/null
+    jq --arg cwd "$repo" '.cwd=$cwd | .session_id="theme-self"' "$FIXTURES/01-happy-path.json" >"$fixture"
+    jq -n --arg cwd "$repo" --argjson pid "$$" \
+        '{cwd:$cwd,pid:$pid,sessionId:"theme-self",status:"busy",name:"self"}' >"$reg/self.json"
+    jq -n --arg cwd "$repo" --argjson pid "$$" \
+        '{cwd:$cwd,pid:$pid,sessionId:"theme-idle",status:"idle",name:"idle"}' >"$reg/idle.json"
+    printf 'v99.0.0\n' >"$d/update"
+    for theme in tokyo-night gruvbox dracula catppuccin; do
+        (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=200 STATUSLINE_HYPERLINKS=0 \
+            CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
+            CC_STATUSLINE_UPDATE_CACHE="$d/update" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+        case "$theme" in
+            tokyo-night) bg="41;46;66" ;;
+            gruvbox) bg="214;93;14" ;;
+            dracula) bg="68;71;90" ;;
+            catppuccin) bg="249;226;175" ;;
+        esac
+        idle=$(head -1 "$out" | perl -CS -ne 'print $1 if /\e\[38;2;([0-9;]+)m\x{25cb}1/')
+        upd=$(head -1 "$out" | perl -CS -ne 'print $1 if /\e\[38;2;([0-9;]+)m(?:\e\[1m)?\x{21e1}/')
+        if [ -s "$err" ]; then _rl_fail "theme-$theme-right-contrast" "non-empty stderr"
+        elif [ -z "$idle" ] || [ "$idle" = "$bg" ]; then _rl_fail "theme-$theme-right-contrast" "idle peer foreground missing or equals background"
+        elif [ -z "$upd" ] || [ "$upd" = "$bg" ]; then _rl_fail "theme-$theme-right-contrast" "update foreground missing or equals background"
+        else _rl_pass "theme-$theme-right-contrast"; fi
+    done
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2891,6 +2923,7 @@ phone_gap_tests
 github_status_tests
 session_name_tests
 peer_tests
+theme_right_contrast_tests
 env_hardening_tests
 effort_tests
 update_check_tests
