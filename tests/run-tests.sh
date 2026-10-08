@@ -3199,6 +3199,172 @@ if [ "${STATUSLINE_TEST_SCOPE:-}" = "" ] && [ "${STATUSLINE_TEST_THEMES_FULL:-0}
     exit $?
 fi
 
+# Packaged chooser behavior and renderer precedence, with isolated config.
+theme_chooser_tests() {
+    printf '\ntheme chooser tests\n'
+    local d="$SCRATCH/chooser" chooser_home cfg out err rc actual base
+    chooser_home="$d/home"; cfg="$d/xdg"; out="$d/out"; err="$d/err"; base="$d/base"
+    local CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_RL_CACHE="$d/render.rl"
+    export CC_STATUSLINE_RL_KEY CC_STATUSLINE_RL_CACHE
+    mkdir -p "$chooser_home/.claude" "$cfg" "$d/tmp"
+    local chooser="$REPO_DIR/cc-statusline-theme" file="$cfg/cc-statusline/theme"
+    _choose() {
+        HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" TMPDIR="$d/tmp" CC_STATUSLINE_DEV_DIR="$REPO_DIR" \
+            "$chooser" "$@" >"$out" 2>"$err"
+        rc=$?
+    }
+    _choose current
+    if [ "$rc" = 0 ] && [ "$(cat "$out")" = 'default (default)' ]; then _rl_pass chooser-current-default
+    else _rl_fail chooser-current-default "unexpected current selection"; fi
+    _choose set nord
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-set
+    else _rl_fail chooser-set "valid theme not saved"; fi
+    _choose current
+    if [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-current-file
+    else _rl_fail chooser-current-file "saved source not reported"; fi
+    _choose list
+    if [ "$(wc -l <"$out" | tr -d ' ')" = 9 ] && _has "$(cat "$out")" '* nord'; then _rl_pass chooser-list
+    else _rl_fail chooser-list "theme list or current marker wrong"; fi
+    STATUSLINE_THEME=dracula _choose current
+    if [ "$(cat "$out")" = 'dracula (env)' ]; then _rl_pass chooser-current-env
+    else _rl_fail chooser-current-env "environment did not win"; fi
+    STATUSLINE_THEME=bogus _choose current
+    if [ "$(cat "$out")" = 'default (env)' ]; then _rl_pass chooser-unknown-env
+    else _rl_fail chooser-unknown-env "invalid environment did not select default"; fi
+    _choose set bogus
+    if [ "$rc" -ne 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-invalid
+    else _rl_fail chooser-invalid "invalid choice accepted or changed saved theme"; fi
+    local mode
+    mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$file")
+    if [ "$mode" = 600 ]; then _rl_pass chooser-file-mode; else _rl_fail chooser-file-mode "saved file mode is $mode"; fi
+
+    # Failed atomic rename leaves the old file intact and no temporary file.
+    local failbin="$d/failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    PATH="$failbin:$PATH" _choose set dracula
+    if [ "$rc" -ne 0 ] && [ "$(cat "$file")" = nord ] && ! compgen -G "$cfg/cc-statusline/.theme.*" >/dev/null; then _rl_pass chooser-atomic-failure
+    else _rl_fail chooser-atomic-failure "failed rename changed file or left temporary state"; fi
+
+    # Real previews use scratch HOME/cache/fetch seams, including under C locale.
+    _choose preview
+    if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$(wc -l <"$out" | tr -d ' ')" = 27 ] \
+        && ! compgen -G "$d/tmp/cc-statusline-preview.*" >/dev/null; then _rl_pass chooser-preview-all
+    else _rl_fail chooser-preview-all "preview contract or cleanup failed: $(head -1 "$err")"; fi
+    _choose preview nord
+    if [ "$rc" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 3 ]; then _rl_pass chooser-preview-one
+    else _rl_fail chooser-preview-one "single preview failed"; fi
+    local sentinel="$d/sentinel" sentinel_dir sentinel_bad=0 fake_fetch="$d/sentinel-fetch"
+    mkdir -p "$sentinel/home" "$sentinel/xdg" "$sentinel/runtime"
+    printf '#!/bin/sh\nprintf "unexpected\\n" >"$CHOOSER_SENTINEL_MARKER"\n' >"$fake_fetch"; chmod +x "$fake_fetch"
+    local -a sentinel_env=("HOME=$sentinel/home" "XDG_CONFIG_HOME=$sentinel/xdg"
+        "XDG_RUNTIME_DIR=$sentinel/runtime" "TMPDIR=$d/tmp" "CC_STATUSLINE_DEV_DIR=$REPO_DIR"
+        "CHOOSER_SENTINEL_MARKER=$sentinel/home/unexpected-fetch"
+        "CC_STATUSLINE_CTX_CACHE=$sentinel/runtime/ctx")
+    local cache_key
+    for cache_key in SVC CODEX_SVC GH RL GPT GPT_CREDITS UPDATE; do
+        sentinel_env+=("CC_STATUSLINE_${cache_key}_CACHE=$sentinel/runtime/$cache_key"
+            "CC_STATUSLINE_${cache_key}_FETCH=$fake_fetch")
+    done
+    env "${sentinel_env[@]}" "$chooser" preview nord >"$out" 2>"$err"
+    rc=$?
+    for sentinel_dir in home xdg runtime; do
+        [ -z "$(ls -A "$sentinel/$sentinel_dir")" ] || sentinel_bad=1
+    done
+    if [ "$rc" = 0 ] && [ "$sentinel_bad" = 0 ] && [ ! -s "$err" ]; then _rl_pass chooser-preview-sentinel
+    else _rl_fail chooser-preview-sentinel "preview touched caller HOME/config/caches or spawned a fetcher"; fi
+    _choose preview bogus
+    if [ "$rc" -ne 0 ]; then _rl_pass chooser-preview-invalid; else _rl_fail chooser-preview-invalid "invalid preview accepted"; fi
+
+    # File first-line/whitespace handling and env precedence match the renderer.
+    _theme_saved_render() {
+        (cd "$SCRATCH" && XDG_CONFIG_HOME="$cfg" STATUSLINE_WIDTH=130 STATUSLINE_LAYOUT=wide \
+            bash "$STATUSLINE" <"$FIXTURES/01-happy-path.json" >"$out" 2>"$err")
+    }
+    STATUSLINE_THEME=nord _theme_saved_render; cp "$out" "$base"
+    printf '  nord \t\ninvalid-second-line\n' >"$file"
+    _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-file-whitespace; else _rl_fail theme-file-whitespace "file and explicit theme differ"; fi
+    STATUSLINE_THEME=default _theme_saved_render; cp "$out" "$base"
+    STATUSLINE_THEME=bogus _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-env-unknown-beats-file; else _rl_fail theme-env-unknown-beats-file "unknown env did not override file"; fi
+    STATUSLINE_THEME='' _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-env-empty-beats-file; else _rl_fail theme-env-empty-beats-file "empty env did not override file"; fi
+    printf 'bogus\n' >"$file"; _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-file-garbage; else _rl_fail theme-file-garbage "garbage file did not select default"; fi
+    printf '\033[31mnord\n' >"$file"; _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-file-control-bytes; else _rl_fail theme-file-control-bytes "control bytes selected a theme"; fi
+    _choose reset
+    if [ "$rc" = 0 ] && [ ! -e "$file" ]; then _rl_pass chooser-reset; else _rl_fail chooser-reset "saved theme not removed"; fi
+    _choose --help
+    if [ "$rc" = 0 ] && _has "$(cat "$out")" 'Usage:'; then _rl_pass chooser-help; else _rl_fail chooser-help "help failed"; fi
+    printf '{"statusLine":{"command":"STATUSLINE_THEME=dracula cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
+    _choose set nord
+    if [ "$rc" = 0 ] && _has "$(cat "$err")" 'overrides the saved theme'; then _rl_pass chooser-settings-warning
+    else _rl_fail chooser-settings-warning "settings override warning absent"; fi
+    : >"$chooser_home/.claude/settings.json"
+
+    # Exercise the fzf route with a controlled selection, no terminal needed.
+    local fzfbin="$d/fzfbin"
+    mkdir -p "$fzfbin"
+    printf '#!/bin/sh\ncat >/dev/null\nprintf "dracula\\n"\n' >"$fzfbin/fzf"; chmod +x "$fzfbin/fzf"
+    PATH="$fzfbin:$PATH" _choose
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = dracula ]; then _rl_pass chooser-fzf
+    else _rl_fail chooser-fzf "fzf selection not saved"; fi
+
+    # A PATH containing only existing dependencies forces the numbered menu.
+    local menubin="$d/menubin" cmd real
+    mkdir -p "$menubin"
+    for cmd in bash jq perl git dirname basename cat mktemp mkdir rm mv timeout date cksum cut awk head grep wc tr; do
+        real=$(command -v "$cmd") || continue
+        ln -s "$real" "$menubin/$cmd"
+    done
+    PATH="$menubin" _choose <<< '3'
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-numbered-menu
+    else _rl_fail chooser-numbered-menu "numbered selection not saved"; fi
+
+    # Both explicit dev override and the dev-dir file resolve the renderer.
+    printf '%s\n' "$REPO_DIR" >"$cfg/cc-statusline/dev-dir"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" current >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-dev-file
+    else _rl_fail chooser-dev-file "dev-dir file resolution failed"; fi
+    local dev="$d/mock-dev"
+    mkdir -p "$dev"
+    printf '#!/bin/sh\nprintf "default\\nnord\\n"\n' >"$dev/statusline.sh"; chmod +x "$dev/statusline.sh"
+    printf '%s\n' "$dev" >"$cfg/cc-statusline/dev-dir"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" list >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 2 ]; then _rl_pass chooser-dev-renderer-names
+    else _rl_fail chooser-dev-renderer-names "chooser did not use selected renderer's names"; fi
+    printf '%s\ngarbage\n' "$dev" >"$cfg/cc-statusline/dev-dir"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" list >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 9 ]; then _rl_pass chooser-dev-file-multiline
+    else _rl_fail chooser-dev-file-multiline "malformed dev-dir differs from brew wrapper fallback"; fi
+
+    # Exercise the installer archive flow using the exact working-tree scripts
+    # in a disposable checkout. No host install or release tags are involved.
+    local repo="$d/install-repo" prefix="$d/install-prefix" git_home="$d/git-home"
+    mkdir -p "$repo" "$git_home"
+    cp "$REPO_DIR"/*.sh "$REPO_DIR/cc-statusline-theme" "$REPO_DIR/VERSION" "$repo/"
+    HOME="$git_home" git -C "$repo" init -q 2>/dev/null
+    HOME="$git_home" git -C "$repo" add .
+    HOME="$git_home" git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm fixture
+    HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ -x "$prefix/cc-statusline-theme" ]; then _rl_pass chooser-install
+    else _rl_fail chooser-install "installer did not package chooser: $(head -1 "$err")"; fi
+    HOME="$chooser_home" XDG_CONFIG_HOME="$d/install-config" CC_STATUSLINE_DEV_DIR='' "$prefix/cc-statusline-theme" current >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(cat "$out")" = 'default (default)' ]; then _rl_pass chooser-installed-sibling
+    else _rl_fail chooser-installed-sibling "installed chooser cannot resolve sibling renderer"; fi
+    # An older archived HEAD without the chooser must still install successfully.
+    HOME="$git_home" git -C "$repo" rm -q --cached cc-statusline-theme
+    HOME="$git_home" git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm older-fixture
+    HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ ! -e "$prefix/cc-statusline-theme" ]; then _rl_pass chooser-install-old-head
+    else _rl_fail chooser-install-old-head "older archive failed or retained incompatible chooser"; fi
+    HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" --uninstall >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ ! -e "$prefix" ]; then _rl_pass chooser-uninstall
+    else _rl_fail chooser-uninstall "installer did not remove prefix"; fi
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -3230,6 +3396,7 @@ fi
 if [ "${STATUSLINE_TEST_SCOPE:-}" != base ]; then
 theme_right_contrast_tests
 theme_tests
+theme_chooser_tests
 fi
 
 printf '%s\n' "------------------------------------------------------------"

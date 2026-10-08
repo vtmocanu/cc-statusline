@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version)
             VERSION="${2:-}"
-            [ -z "$VERSION" ] && { err "--version requires a tag (e.g. v2.0.0)"; exit 1; }
+            [ -z "$VERSION" ] && { err "--version requires a tag (e.g. v3.6.0)"; exit 1; }
             shift 2
             ;;
         --uninstall)
@@ -121,6 +121,13 @@ install -m 0755 "$STAGE_DIR/claude-usage-fetch.sh"  "$INSTALL_DIR/claude-usage-f
 install -m 0755 "$STAGE_DIR/codex-usage-fetch.sh"   "$INSTALL_DIR/codex-usage-fetch.sh"
 install -m 0755 "$STAGE_DIR/gpt-credits-fetch.sh"   "$INSTALL_DIR/gpt-credits-fetch.sh"
 install -m 0755 "$STAGE_DIR/cc-statusline-update-fetch.sh" "$INSTALL_DIR/cc-statusline-update-fetch.sh"
+# Older tags predate the chooser. Preserve rollback to those tags and remove
+# a newer chooser that would otherwise target their unsupported renderer.
+if [ -f "$STAGE_DIR/cc-statusline-theme" ]; then
+    install -m 0755 "$STAGE_DIR/cc-statusline-theme" "$INSTALL_DIR/cc-statusline-theme"
+else
+    rm -f "$INSTALL_DIR/cc-statusline-theme"
+fi
 # VERSION is the human semver used in the scripts' User-Agent. Absent in tags
 # that predate it (the scripts then fall back to "dev"), so guard the copy.
 [ -f "$STAGE_DIR/VERSION" ] && install -m 0644 "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"
@@ -153,6 +160,9 @@ name (its /rename value or auto-generated title). No hook or extra setup is
 needed; hide it with STATUSLINE_TOPIC=0, and the @handle with
 STATUSLINE_SESSION_NAME=0.
 
-To roll back to a previous version: ./install.sh --version v2.0.0
+Choose a theme (saved for the next render): $INSTALL_DIR/cc-statusline-theme
+Set one directly:                         $INSTALL_DIR/cc-statusline-theme set nord
+
+To roll back to a previous version: ./install.sh --version v3.6.0
 To uninstall:                       ./install.sh --uninstall
 EOF

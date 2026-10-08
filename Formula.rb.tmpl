@@ -19,13 +19,13 @@ class CcStatusline < Formula
   uses_from_macos "perl"
 
   def install
-    # Keep the six scripts siblings in libexec: statusline.sh resolves the
+    # Keep the scripts siblings in libexec: statusline.sh resolves the
     # helpers relative to its own (non-symlink-resolved) dirname, and network
     # fetchers read VERSION from their dir or parent for the User-Agent. A bare
     # bin symlink would break both, hence the wrapper.
     libexec.install "statusline.sh", "claude-status-fetch.sh", "claude-usage-fetch.sh",
                     "codex-usage-fetch.sh", "gpt-credits-fetch.sh",
-                    "cc-statusline-update-fetch.sh", "VERSION"
+                    "cc-statusline-update-fetch.sh", "cc-statusline-theme", "VERSION"
 
     (bin/"cc-statusline").write <<~SH
       #!/bin/bash
@@ -52,6 +52,24 @@ class CcStatusline < Formula
       fi
       exec "#{opt_libexec}/statusline.sh" "$@"
     SH
+
+    (bin/"cc-statusline-theme").write <<~SH
+      #!/bin/bash
+      PATH="#{HOMEBREW_PREFIX}/bin:$PATH"
+      export PATH
+      dev_dir="${CC_STATUSLINE_DEV_DIR:-}"
+      if [ -z "$dev_dir" ]; then
+        dev_file="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/dev-dir"
+        if [ -f "$dev_file" ]; then
+          dev_dir="$(cat "$dev_file" 2>/dev/null)"
+        fi
+      fi
+      if [ -n "$dev_dir" ] && [ -x "$dev_dir/cc-statusline-theme" ]; then
+        exec "$dev_dir/cc-statusline-theme" "$@"
+      fi
+      exec "#{opt_libexec}/cc-statusline-theme" "$@"
+    SH
+
   end
 
   def caveats
@@ -67,6 +85,13 @@ class CcStatusline < Formula
       The descriptive session title on line 1 comes from Claude Code's native
       session name; no hook is required. Hide it with STATUSLINE_TOPIC=0, and the
       @handle with STATUSLINE_SESSION_NAME=0.
+
+      Run cc-statusline-theme to choose a theme with live previews, or:
+
+        cc-statusline-theme set tokyo-night
+
+      The saved choice takes effect on the next render. STATUSLINE_THEME in
+      your statusline command overrides it. fzf is optional.
 
       Dev mode (render a working tree instead of the brewed copy):
 
@@ -91,5 +116,9 @@ class CcStatusline < Formula
           "CC_STATUSLINE_NOW=1700000000 STATUSLINE_PROFILE=0 KUBECONFIG=/dev/null"
     output = pipe_output("env #{env} #{bin}/cc-statusline", fixture, 0)
     assert_equal 2, output.lines.length, "expected exactly 2 statusline rows"
+    assert_match "default", shell_output("#{bin}/cc-statusline-theme list")
+    shell_output("#{bin}/cc-statusline-theme set nord")
+    assert_match "nord (file)", shell_output("#{bin}/cc-statusline-theme current")
+    shell_output("#{bin}/cc-statusline-theme reset")
   end
 end

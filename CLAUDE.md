@@ -25,6 +25,7 @@ Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 
 ```
 cc-statusline/
+├── cc-statusline-theme              Packaged chooser, real renderer previews and atomic XDG theme selection
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
 ├── claude-status-fetch.sh            Background helper for Statuspage-compatible JSON. Defaults to Claude's summary; also reads GitHub's summary and, for opt-in GPT sessions, the exact OpenAI `Codex API` component into separate caches
 ├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
@@ -196,6 +197,15 @@ Two paths cost more, both bounded and both off the common path. A viewport that 
 `WIDE_GLYPH_MARGIN` (env `STATUSLINE_GLYPH_MARGIN`, default 3) keeps a small real-terminal cushion for Nerd Font glyphs that render double-width; see `KNOWN_ISSUES.md`.
 
 ### Theme rendering tokens
+
+`statusline.sh --list-themes` is the chooser's source of names. Theme precedence
+is the environment (including an explicitly empty value), then the first line
+of `$XDG_CONFIG_HOME/cc-statusline/theme`, then default; unknown values choose
+default. Whitespace is stripped from the file using bash builtins. Tests isolate
+the theme file alongside the layout file. The chooser resolves the same dev
+override as the brew wrapper and previews with scratch HOME/config/caches,
+disabled fetchers and pinned time. `install.sh` retains old-tag rollback by
+removing the chooser when that archived tag predates it.
 
 `STATUSLINE_THEME` selects a palette in one block, followed by a derive step
 for background resets, caps and separators. Default tokens must reproduce the

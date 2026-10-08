@@ -3,6 +3,20 @@ set -uo pipefail  # no -e: external commands (git, kubectl, jq) can fail; silent
 trap 'printf "\n"' EXIT  # ensure at least empty output on crash
 [ "${STATUSLINE_DEBUG:-}" = "1" ] && exec 2>/tmp/statusline-debug.log
 
+# One source of theme names for validation and the packaged chooser.
+THEME_NAMES=(default hue-dark nord phosphor synthwave tokyo-night gruvbox dracula catppuccin)
+_theme_valid() {
+    local name
+    for name in "${THEME_NAMES[@]}"; do [ "$1" = "$name" ] && return 0; done
+    return 1
+}
+if [ "${1:-}" = "--list-themes" ]; then
+    trap - EXIT
+    printf '%s\n' "${THEME_NAMES[@]}"
+    exit 0
+fi
+
+
 # ── Portable helpers (BSD/macOS vs GNU/Linux) ───────────────────────────────
 # File mtime as Unix epoch. `date -r FILE +%s` works on both BSD and GNU.
 # Returns 0 on missing file or error.
@@ -1109,11 +1123,15 @@ if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
 fi
 
 # Unknown names deliberately retain the byte-identical default theme.
-THEME="${STATUSLINE_THEME:-default}"
-case "$THEME" in
-    default|hue-dark|nord|phosphor|synthwave|tokyo-night|gruvbox|dracula|catppuccin) ;;
-    *) THEME=default ;;
-esac
+THEME="${STATUSLINE_THEME-default}"
+if [ "${STATUSLINE_THEME+x}" != "x" ]; then
+    THEME_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme"
+    if [ -f "$THEME_FILE" ]; then
+        { IFS= read -r THEME <"$THEME_FILE"; } 2>/dev/null || true
+        THEME="${THEME//[[:space:]]/}"
+    fi
+fi
+_theme_valid "$THEME" || THEME=default
 
 # Check for manual color override
 COLOR_OVERRIDES="$HOME/.claude/statusline-color-overrides.json"

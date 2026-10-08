@@ -154,7 +154,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STATUSLINE_THEME` | `default` | Select a built-in theme (see Themes below). Unset or unknown names use `default`. |
+| `STATUSLINE_THEME` | `default` | Select a built-in theme (see Themes below). Overrides the saved theme file; unknown or empty values use `default`. |
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line, and a hard cap: when Claude Code reports a narrower viewport (see below), the render follows the viewport instead. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
 | `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
@@ -188,7 +188,31 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 
 ### Themes
 
-Set `STATUSLINE_THEME` in your statusline command, for example:
+Run the packaged chooser to change themes on the next render:
+
+```bash
+cc-statusline-theme                  # fzf picker, or numbered menu
+cc-statusline-theme preview          # isolated previews of every theme
+cc-statusline-theme set tokyo-night
+cc-statusline-theme current          # theme and source (env, file, or default)
+cc-statusline-theme list
+cc-statusline-theme reset
+```
+
+The chooser ships with Homebrew. With `install.sh`, run it from the install
+directory (normally `~/.local/share/cc-statusline/cc-statusline-theme`). fzf is
+optional; previews use the actual renderer with sample data and isolated caches,
+without network fetches. The chooser honors the same dev override as the statusline.
+
+The saved choice lives in
+`${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme`. The first line is read
+and whitespace removed. Selection precedence is `STATUSLINE_THEME` environment,
+then the saved file, then `default`. Unknown or empty values select `default`.
+An environment value, even empty or unknown, overrides the file. The chooser
+warns when `statusLine.command` in `~/.claude/settings.json` sets that variable.
+`current` reports the choice effective in the chooser's own environment.
+
+You can also set `STATUSLINE_THEME` in your statusline command, for example:
 
 ```bash
 STATUSLINE_THEME=tokyo-night cc-statusline

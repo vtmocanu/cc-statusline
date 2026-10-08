@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Select a cc-statusline theme and preview the actual renderer without fetches.
+set -uo pipefail
+
+usage() {
+    cat <<'HELP'
+Usage: cc-statusline-theme [list | current | set NAME | reset | preview [NAME...] | --help]
+
+With no arguments, choose interactively (fzf when available, numbered menu otherwise).
+The saved theme takes effect on the next statusline render. STATUSLINE_THEME overrides it.
+HELP
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline"
+THEME_FILE="$CONFIG_DIR/theme"
+SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 1
+SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
+DEV_DIR="${CC_STATUSLINE_DEV_DIR:-}"
+if [ -z "$DEV_DIR" ] && [ -f "$CONFIG_DIR/dev-dir" ]; then
+    DEV_DIR=$(cat "$CONFIG_DIR/dev-dir" 2>/dev/null || true)
+fi
+RENDERER="$SELF_DIR/statusline.sh"
+if [ -n "$DEV_DIR" ] && [ -x "$DEV_DIR/statusline.sh" ]; then RENDERER="$DEV_DIR/statusline.sh"; fi
+[ -f "$RENDERER" ] || { printf 'error: statusline.sh not found\n' >&2; exit 1; }
+THEMES=()
+while IFS= read -r name; do
+    [ -n "$name" ] && THEMES+=("$name")
+done < <(STATUSLINE_DEBUG=0 bash "$RENDERER" --list-themes)
+[ "${#THEMES[@]}" -gt 0 ] || { printf 'error: renderer does not report themes\n' >&2; exit 1; }
+valid() {
+    local name
+    for name in "${THEMES[@]}"; do [ "$1" = "$name" ] && return 0; done
+    return 1
+}
+current() {
+    CURRENT_THEME=default; CURRENT_SOURCE=default
+    if [ "${STATUSLINE_THEME+x}" = x ]; then
+        CURRENT_THEME="$STATUSLINE_THEME"; CURRENT_SOURCE="env"
+    elif [ -f "$THEME_FILE" ]; then
+        { IFS= read -r CURRENT_THEME <"$THEME_FILE"; } 2>/dev/null || true
+        CURRENT_THEME="${CURRENT_THEME//[[:space:]]/}"; CURRENT_SOURCE="file"
+    fi
+    valid "$CURRENT_THEME" || CURRENT_THEME=default
+}
+warn_override() {
+    local command
+    command=$(jq -r '.statusLine.command // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
+    if [[ "$command" =~ (^|[[:space:]])STATUSLINE_THEME= ]]; then
+        printf 'warning: statusLine.command sets STATUSLINE_THEME and overrides the saved theme\n' >&2
+    fi
+}
+PREVIEW_DIR=""; THEME_TMP=""
+cleanup() {
+    [ -z "$THEME_TMP" ] || rm -f "$THEME_TMP"
+    [ -z "$PREVIEW_DIR" ] || rm -rf "$PREVIEW_DIR"
+}
+trap cleanup EXIT
+save() {
+    valid "$1" || { printf 'error: unknown theme: %s\n' "$1" >&2; return 2; }
+    mkdir -p "$CONFIG_DIR" || return 1
+    THEME_TMP=$(mktemp "$CONFIG_DIR/.theme.XXXXXX") || return 1
+    if ! printf '%s\n' "$1" >"$THEME_TMP" || ! mv -f "$THEME_TMP" "$THEME_FILE"; then
+        printf 'error: could not save theme\n' >&2; return 1
+    fi
+    THEME_TMP=""
+    printf 'Theme: %s (saved, takes effect on the next render)\n' "$1"
+}
+preview() {
+    local theme
+    local -a selected=()
+    if [ "$#" -eq 0 ]; then selected=("${THEMES[@]}"); else selected=("$@"); fi
+    for theme in "${selected[@]}"; do
+        valid "$theme" || { printf 'error: unknown theme: %s\n' "$theme" >&2; return 2; }
+    done
+    PREVIEW_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-preview.XXXXXX") || return 1
+    local d="$PREVIEW_DIR" repo="$PREVIEW_DIR/project"
+    local preview_width="${FZF_PREVIEW_COLUMNS:-${COLUMNS:-130}}"
+    mkdir -p "$repo" "$d/home/.claude" "$d/sessions" || return 1
+    git -C "$repo" init -q 2>/dev/null && git -C "$repo" symbolic-ref HEAD refs/heads/main 2>/dev/null
+    jq -n --arg cwd "$repo" \
+        '{model:{display_name:"Claude Opus 4.6",id:"opus"},cwd:$cwd,
+          session_id:"theme-preview",session_name:"Select a theme",effort:{level:"xhigh"},
+          agent:{name:"assistant"},mode:"plan",context_window:{remaining_percentage:62,
+          context_window_size:1000000,current_usage:{input_tokens:5000,output_tokens:1000,
+          cache_creation_input_tokens:0,cache_read_input_tokens:50000}},
+          cost:{total_duration_ms:2520000,total_cost_usd:3.17},
+          rate_limits:{five_hour:{used_percentage:22,resets_at:1700010000},
+          seven_day:{used_percentage:71,resets_at:1700302400}}}' >"$d/input" || return 1
+    jq -n --arg cwd "$repo" --argjson pid "$$" \
+        '{cwd:$cwd,pid:$pid,sessionId:"theme-preview",status:"busy",name:"preview"}' >"$d/sessions/self.json"
+    jq -n --arg cwd "$repo" --argjson pid "$$" \
+        '{cwd:$cwd,pid:$pid,sessionId:"preview-idle",status:"idle",name:"idle"}' >"$d/sessions/idle.json"
+    printf 'operational\n' >"$d/svc"; printf 'incident:preview\n' >"$d/gh"; printf 'v99.0.0\n' >"$d/update"
+    for theme in "${selected[@]}"; do
+        printf '%s\n' "$theme"
+        (cd "$repo" && HOME="$d/home" XDG_CONFIG_HOME="$d/xdg" XDG_RUNTIME_DIR="$d/runtime" \
+            KUBECONFIG=/dev/null STATUSLINE_THEME="$theme" STATUSLINE_LAYOUT=auto \
+            STATUSLINE_WIDTH="$preview_width" COLUMNS="$preview_width" STATUSLINE_DEBUG=0 \
+            STATUSLINE_PROFILE=0 STATUSLINE_RL_SHARE=0 STATUSLINE_GPT_LIMITS=0 \
+            CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_NOW=1700000000 CC_STATUSLINE_CTX_CACHE="$d/ctx" \
+            CC_STATUSLINE_SESSIONS_DIR="$d/sessions" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
+            CC_STATUSLINE_SVC_CACHE="$d/svc" CC_STATUSLINE_SVC_FETCH="$d/no-fetch" \
+            CC_STATUSLINE_CODEX_SVC_CACHE="$d/no-codex-svc" CC_STATUSLINE_CODEX_SVC_FETCH="$d/no-fetch" \
+            CC_STATUSLINE_GH_CACHE="$d/gh" CC_STATUSLINE_GH_FETCH="$d/no-fetch" \
+            CC_STATUSLINE_RL_CACHE="$d/rl" CC_STATUSLINE_RL_FETCH="$d/no-fetch" \
+            CC_STATUSLINE_GPT_CACHE="$d/no-gpt" CC_STATUSLINE_GPT_FETCH="$d/no-fetch" \
+            CC_STATUSLINE_GPT_CREDITS_CACHE="$d/no-credits" CC_STATUSLINE_GPT_CREDITS_FETCH="$d/no-fetch" \
+            CC_STATUSLINE_UPDATE_CACHE="$d/update" CC_STATUSLINE_UPDATE_FETCH="$d/no-fetch" \
+            bash "$RENDERER" <"$d/input") || return 1
+    done
+}
+picker() {
+    local choice command i
+    if command -v fzf >/dev/null 2>&1; then
+        printf -v command '%q preview {}' "$SELF"
+        choice=$(printf '%s\n' "${THEMES[@]}" | fzf --prompt='Theme: ' --preview="$command") || return 0
+        [ -n "$choice" ] && save "$choice"
+    else
+        preview || return 1
+        for ((i=0; i<${#THEMES[@]}; i++)); do printf '%d) %s\n' "$((i+1))" "${THEMES[$i]}"; done
+        printf 'Choose a theme number (empty to cancel): ' >&2
+        IFS= read -r choice || return 0
+        [ -n "$choice" ] || return 0
+        for ((i=0; i<${#THEMES[@]}; i++)); do
+            if [ "$choice" = "$((i+1))" ]; then save "${THEMES[$i]}"; return; fi
+        done
+        printf 'error: invalid theme number\n' >&2; return 2
+    fi
+}
+warn_override
+case "${1:-}" in
+    '') picker ;;
+    current) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current; printf '%s (%s)\n' "$CURRENT_THEME" "$CURRENT_SOURCE" ;;
+    list)
+        [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current
+        for name in "${THEMES[@]}"; do
+            if [ "$name" = "$CURRENT_THEME" ]; then printf '* %s\n' "$name"; else printf '  %s\n' "$name"; fi
+        done
+        ;;
+    set) [ "$#" -eq 2 ] || { usage >&2; exit 2; }; save "$2" ;;
+    reset) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; rm -f "$THEME_FILE" || exit 1; printf 'Saved theme removed\n' ;;
+    preview) shift; preview "$@" ;;
+    *) usage >&2; exit 2 ;;
+esac
