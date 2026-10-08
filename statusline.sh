@@ -2273,5 +2273,30 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 # ── Output ───────────────────────────────────────────────────────────────────
 [ "$THEME_STYLE" != "flat" ] && [ -z "${RIGHT_SEG:-}" ] && CAP1_R=""
 trap - EXIT  # disarm crash trap before normal output
-printf '\033[0m%b\n' "${L1C}${RST}${CAP1_R}${RST}"
+if [ "$THEME" = "synthwave" ]; then
+    # After every width decision and padding step, add only zero-width SGRs.
+    # Preserve foreground/style and OSC 8 tokens; never slice their payloads.
+    SYNTH_LINE=$(printf '%b' "$L1C" | perl -CS -0777 -ne '
+        s/\e\[48;2;[0-9]+;[0-9]+;[0-9]+m//g;
+        my @tokens = /(?:\e\]8;;.*?(?:\a|\e\\)|\e\[[0-9;]*m|.)/sg;
+        my $n = scalar(grep { substr($_, 0, 1) ne "\e" } @tokens) - 1;
+        my $i = -1;
+        my @stops = ([255,42,109], [123,44,255], [5,217,232]);
+        for my $token (@tokens) {
+            if (substr($token, 0, 1) eq "\e") { print $token; next }
+            if ($i < 0) { print $token; $i = 0; next } # leading cap
+            my $t = $n > 1 ? $i / ($n - 1) : 0;
+            my $half = $t < 0.5 ? 0 : 1;
+            my $u = $t < 0.5 ? 2*$t : 2*$t-1;
+            my @rgb = map { int($stops[$half][$_] +
+                ($stops[$half+1][$_]-$stops[$half][$_])*$u) } 0..2;
+            print "\e[48;2;", join(";", @rgb), "m", $token;
+            ++$i;
+        }
+    ' 2>/dev/null) || SYNTH_LINE=$(printf '%b' "$L1C")
+    # The perl result is already expanded. A second %b would interpret content.
+    printf '\033[0m%s%b\n' "$SYNTH_LINE" "${RST}${CAP1_R}${RST}"
+else
+    printf '\033[0m%b\n' "${L1C}${RST}${CAP1_R}${RST}"
+fi
 printf '\033[0m%b\n' "${L2C}${RST}${CAP2_R}${RST}"
