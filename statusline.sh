@@ -1135,9 +1135,10 @@ esac
 SEP_R=$((BG_R * 40 / 100)); SEP_G=$((BG_G * 40 / 100)); SEP_B=$((BG_B * 40 / 100))
 TXT_R=$((BG_R * 15 / 100)); TXT_G=$((BG_G * 15 / 100)); TXT_B=$((BG_B * 15 / 100))
 
+SEP_CH="│"
 BG1="\033[48;2;${BG_R};${BG_G};${BG_B}m"
 B="${RST}${BG1}"
-SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m│"
+SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
 TXT_FG="\033[38;2;${TXT_R};${TXT_G};${TXT_B}m"
 TXT_BOLD="\033[38;2;${TXT_R};${TXT_G};${TXT_B};1m"
 PROJ_FG="\033[38;2;${BG_R};${BG_G};${BG_B}m"
@@ -1152,6 +1153,16 @@ CLR_SAGE="\033[38;2;150;210;150m"   # green: good
 CLR_GOLD="\033[38;2;215;195;125m"   # amber: caution
 CLR_CORAL="\033[38;2;225;150;150m"  # coral: warning
 CLR_ICE="\033[38;2;140;180;225m"    # ice blue: prompt cache cold
+# Theme tokens default to the exact original escape sequences and glyphs.
+CAP1_L="${PROJ_FG}${NF_CORNER_TL}"; CAP1_R="${PROJ_FG}${NF_CORNER_TR}"
+CAP2_L="\033[38;2;0;0;0m${NF_CORNER_BL}"; CAP2_R="\033[38;2;0;0;0m${NF_CORNER_BR}"
+SEP2_CH="│"; DOT2_CH="·"
+SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
+BAR_FILL="▰"; BAR_EMPTY="▱"; BAR_PRE=""; BAR_POST=""
+MODE_CLR="\033[1;38;2;150;100;0m"
+CLR_OK="\033[38;2;100;200;120m"
+CLR_INC="\033[38;2;225;150;100m"
+CLR_BAD="\033[38;2;225;100;100m"
 # Threshold color for a percentage. Default scale: low is good (sage), high is
 # bad (coral). Pass "invert" as $2 for metrics where high is GOOD, e.g. the
 # cache hit rate (green when most of the context is served from cache, coral
@@ -1197,14 +1208,14 @@ else TIME="${S}s"
 fi
 
 # Color-code elapsed time
-if   [ "$H" -gt 2 ]; then TIME_CLR="\033[38;2;225;150;150m"   # coral: 3h+
-elif [ "$H" -gt 0 ]; then TIME_CLR="\033[38;2;215;195;125m"   # gold: 1-3h
-else                      TIME_CLR="\033[38;2;150;210;150m"   # sage: <1h
+if   [ "$H" -gt 2 ]; then TIME_CLR="$CLR_CORAL"   # coral: 3h+
+elif [ "$H" -gt 0 ]; then TIME_CLR="$CLR_GOLD"   # gold: 1-3h
+else                      TIME_CLR="$CLR_SAGE"   # sage: <1h
 fi
 
 # ── Bar builder ─────────────────────────────────────────────────────────────
 make_bar() {
-    local pct=${1:-0} width=${2:-5} fill_clr="$3" empty_clr="$4" bar=""
+    local pct=${1:-0} width=${2:-5} fill_clr="$3" empty_clr="$4" bar="$BAR_PRE"
     pct=${pct%%.*}  # safety: strip decimal
     case "$pct" in ''|*[!0-9]*) pct=0 ;; esac  # non-numeric -> 0 (set -u arith)
     local filled=$((pct * width / 100))
@@ -1212,9 +1223,9 @@ make_bar() {
     [ "$filled" -gt "$width" ] && filled=$width
     [ "$filled" -lt 0 ] && filled=0
     local empty=$((width - filled))
-    for ((i=0; i<filled; i++)); do bar+="${fill_clr}▰"; done
-    for ((i=0; i<empty; i++));  do bar+="${empty_clr}▱"; done
-    printf "%b" "$bar"
+    for ((i=0; i<filled; i++)); do bar+="${fill_clr}${BAR_FILL}"; done
+    for ((i=0; i<empty; i++));  do bar+="${empty_clr}${BAR_EMPTY}"; done
+    printf "%b" "${bar}${BAR_POST}"
 }
 
 # ── Rate limit reset formatter (takes Unix epoch) ─────────────────────────
@@ -1280,8 +1291,8 @@ pace_arrow() {
     [ "$floor" -lt 900 ] && floor=900
     [ "$elapsed" -le "$floor" ] 2>/dev/null && return
     local projected=$(( used * duration / elapsed ))
-    if   [ "$projected" -gt 115 ]; then printf '\033[38;2;225;150;150m↑'
-    elif [ "$projected" -gt 85  ]; then printf '\033[38;2;215;195;125m→'
+    if   [ "$projected" -gt 115 ]; then printf '%b↑' "$CLR_CORAL"
+    elif [ "$projected" -gt 85  ]; then printf '%b→' "$CLR_GOLD"
     fi
 }
 
@@ -1306,12 +1317,12 @@ measure_cols() {
 # width) rather than a hand-maintained character-count estimate: that is what
 # removes the old off-by-2 between the initial estimate (seed 5) and the
 # recalculation paths after each truncation (which re-seeded to 2).
-L1_PREFIX="${RST}${PROJ_FG}${NF_CORNER_TL}${BG1}"
+L1_PREFIX="${RST}${CAP1_L}${BG1}"
 # GitHub service-status icon (empty unless the repo has a github.com remote and
 # STATUSLINE_GITHUB_STATUS is not 0; populated in the GitHub-status block below,
 # before assemble_l1 is first called). Declared here so the function never
 # references an unset var under set -u regardless of ordering.
-GH_SEG=""
+GH_SEG=""; GH_GLYPH=""
 assemble_l1() {
     L1C="${L1_PREFIX}"
     # Phone: folder + branch only. Topic, agent, mode and k8s are the first
@@ -1336,7 +1347,7 @@ assemble_l1() {
     fi
     L1C+="$GH_SEG"
     [ -n "$AGENT" ] && L1C+=" ${TXT_FG}${AGENT}${B}"
-    [ -n "$MODE" ]  && L1C+=" ${SEP}${B} \033[1;38;2;150;100;0m${MODE}${B}"
+    [ -n "$MODE" ]  && L1C+=" ${SEP}${B} ${MODE_CLR}${MODE}${B}"
     [ -n "$K8S_CTX" ] && L1C+=" ${SEP}${B} ${TXT_FG}${NF_K8S} ${K8S_CTX}${B}"
     L1C+=" "
 }
@@ -1351,7 +1362,7 @@ CTX_BAR=$(make_bar "$PCT" 7 "$CTX_CLR" "$L2_DIM")
 case $EFFORT in
     max|xhigh|high) EFFORT_CLR="$CLR_SAGE" ;;            # sage: thinking hard
     low)            EFFORT_CLR="$CLR_CORAL" ;;           # coral: warning
-    *)              EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray: medium/unknown
+    *)              EFFORT_CLR="$L2_TXT" ;;  # gray: medium/unknown
 esac
 
 # ── Session usage value beside the clock ───────────────────────────────────
@@ -1364,7 +1375,7 @@ COST_SEG=""
 if [ "$GPT_ACTIVE" != "1" ] && [ "${STATUSLINE_COST:-1}" != "0" ] \
     && [ "$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
     COST_FMT=$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{ if (c>0 && c<0.005) printf "<0.01"; else printf "%.2f", c }' 2>/dev/null)
-    COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}\$${COST_FMT}${B2}"
+    COST_SEG=" ${DOT2} ${L2_TXT}\$${COST_FMT}${B2}"
 elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
     CREDITS_FMT=$(LC_ALL=C awk -v u="$GPT_CREDITS_UNITS" 'BEGIN {
         if      (u >= 999995000000000000) printf "%.2fT", u / 1000000000000000000
@@ -1374,12 +1385,12 @@ elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
         else                              printf "%.2f",  u / 1000000
     }' 2>/dev/null)
     [[ "$CREDITS_FMT" =~ ^[0-9]+\.[0-9]{2}[kMBT]?$ ]] \
-        && COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}${CREDITS_FMT} cr${B2}"
+        && COST_SEG=" ${DOT2} ${L2_TXT}${CREDITS_FMT} cr${B2}"
 fi
 
-L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2}"
-[ -n "$PROFILE_LABEL" ] && L2C+=" ${L2_DIM}·${B2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
-L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2}${COST_SEG} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
+L2C="${RST}${CAP2_L}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${DOT2} ${EFFORT_CLR}${EFFORT}${B2}"
+[ -n "$PROFILE_LABEL" ] && L2C+=" ${DOT2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
+L2C+=" ${SEP2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2}${COST_SEG} ${SEP2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
 
 # ── Rate-limit detail candidates (full / compact / minimal) ────────────────
 # Build all three tiers up front so the widest one that actually FITS can be
@@ -1407,23 +1418,23 @@ if [ "$RATE_READY" = "1" ]; then
         [ "$PACE_ON" = "1" ] && FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" "$FIVE_DURATION" "$NOW")
         FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
         FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
-        RATE_FULL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_FULL=" ${SEP2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
         [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_TXT}${FIVE_TIME}${B2}"
-        RATE_COMPACT=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-        RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_COMPACT=" ${SEP2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_MINIMAL=" ${SEP2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
     fi
     if [ -n "${SEVEN_PCT:-}" ]; then
         SEVEN_CLR=$(pct_color "$SEVEN_PCT")
         [ "$PACE_ON" = "1" ] && SEVEN_ARROW=$(pace_arrow "$SEVEN_PCT" "$SEVEN_RESET_TS" "$SEVEN_DURATION" "$NOW")
         SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
         SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
-        RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        RATE_FULL+=" ${SEP2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_TXT}${SEVEN_TIME}${B2}"
-        RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        RATE_COMPACT+=" ${SEP2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         if [ -n "${FIVE_PCT:-}" ]; then
             RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         else
-            RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            RATE_MINIMAL=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         fi
     fi
 fi
@@ -1540,10 +1551,10 @@ fi
 SVC_SEG=""
 if [ -f "$SVC_CACHE" ]; then
     case "$(head -1 "$SVC_CACHE" 2>/dev/null)" in
-        operational)                     SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;100;200;120m${SVC_LINK_OPEN}✓${SVC_LINK_CLOSE}${B2}" ;;
-        incident:*)                      SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;150;100m${SVC_LINK_OPEN}⚠${SVC_LINK_CLOSE}${B2}" ;;
-        degraded_performance:*)          SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;215;195;125m${SVC_LINK_OPEN}~${SVC_LINK_CLOSE}${B2}" ;;
-        partial_outage:*|major_outage:*) SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;100;100m${SVC_LINK_OPEN}✗${SVC_LINK_CLOSE}${B2}" ;;
+        operational)                     SVC_SEG=" ${SEP2} ${CLR_OK}${SVC_LINK_OPEN}✓${SVC_LINK_CLOSE}${B2}" ;;
+        incident:*)                      SVC_SEG=" ${SEP2} ${CLR_INC}${SVC_LINK_OPEN}⚠${SVC_LINK_CLOSE}${B2}" ;;
+        degraded_performance:*)          SVC_SEG=" ${SEP2} ${CLR_GOLD}${SVC_LINK_OPEN}~${SVC_LINK_CLOSE}${B2}" ;;
+        partial_outage:*|major_outage:*) SVC_SEG=" ${SEP2} ${CLR_BAD}${SVC_LINK_OPEN}✗${SVC_LINK_CLOSE}${B2}" ;;
     esac
 fi
 
@@ -1799,11 +1810,12 @@ if [ "${STATUSLINE_GITHUB_STATUS:-1}" != "0" ]; then
         fi
         if [ -f "$GH_CACHE" ]; then
             case "$(head -1 "$GH_CACHE" 2>/dev/null)" in
-                operational)                     GH_SEG=" ${SEP}${B} \033[38;2;100;200;120m${GH_LINK_OPEN}✓${GH_LINK_CLOSE}${B}" ;;
-                incident:*)                      GH_SEG=" ${SEP}${B} \033[38;2;225;150;100m${GH_LINK_OPEN}⚠${GH_LINK_CLOSE}${B}" ;;
-                degraded_performance:*)          GH_SEG=" ${SEP}${B} \033[38;2;215;195;125m${GH_LINK_OPEN}~${GH_LINK_CLOSE}${B}" ;;
-                partial_outage:*|major_outage:*) GH_SEG=" ${SEP}${B} \033[38;2;225;100;100m${GH_LINK_OPEN}✗${GH_LINK_CLOSE}${B}" ;;
+                operational)                     GH_GLYPH="${CLR_OK}${GH_LINK_OPEN}✓${GH_LINK_CLOSE}" ;;
+                incident:*)                      GH_GLYPH="${CLR_INC}${GH_LINK_OPEN}⚠${GH_LINK_CLOSE}" ;;
+                degraded_performance:*)          GH_GLYPH="${CLR_GOLD}${GH_LINK_OPEN}~${GH_LINK_CLOSE}" ;;
+                partial_outage:*|major_outage:*) GH_GLYPH="${CLR_BAD}${GH_LINK_OPEN}✗${GH_LINK_CLOSE}" ;;
             esac
+            [ -n "$GH_GLYPH" ] && GH_SEG=" ${SEP}${B} ${GH_GLYPH}${B}"
         fi
     fi
 fi
@@ -1817,7 +1829,7 @@ fi
 # and cache are dropped: on a phone they cost more columns than they earn.
 # ↻ costs one column and stops the countdown reading as a second percentage.
 _apply_phone_l2() {
-    L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2}"
+    L2C="${RST}${CAP2_L}${BG2}"
     local PH_SEP=""
     if [ -n "$PROFILE_LABEL" ]; then
         # The badge sits in the line-2 BASE, which no tier can shed, so a long
@@ -1832,7 +1844,7 @@ _apply_phone_l2() {
         local lbl="$PROFILE_LABEL"
         [ "$(_clen "$lbl")" -gt 8 ] && lbl="$(_head_cp "$lbl" 7)…"
         L2C+=" ${PROFILE_FG}${lbl}${B2}"
-        PH_SEP=" ${L2_DIM}│${B2}"
+        PH_SEP=" ${SEP2}"
     fi
     CACHE_SEG=""; TIMER_SEG=""
     if [ "$RATE_READY" = "1" ]; then
@@ -1844,15 +1856,15 @@ _apply_phone_l2() {
         if [ -n "$CTX_PH" ]; then
             RATE_FULL="$CTX_PH"; RATE_COMPACT="$CTX_PH"; RATE_MINIMAL=""
             if [ -n "${FIVE_PCT:-}" ]; then
-                RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                RATE_FULL+=" ${SEP2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
                 [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-                RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                RATE_COMPACT+=" ${SEP2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
                 RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
             fi
             if [ -n "${SEVEN_PCT:-}" ]; then
-                RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                RATE_FULL+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
-                RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                RATE_COMPACT+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 if [ -n "${FIVE_PCT:-}" ]; then
                     RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 else
@@ -1870,8 +1882,8 @@ _apply_phone_l2() {
             fi
             if [ -n "${SEVEN_PCT:-}" ]; then
                 if [ -n "$RATE_FULL" ]; then
-                    RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-                    RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                    RATE_FULL+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                    RATE_COMPACT+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 else
                     RATE_FULL="${PH_SEP} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                     RATE_COMPACT="$RATE_FULL"
@@ -2097,7 +2109,6 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 } 2>/dev/null || true
 
 # ── Output ───────────────────────────────────────────────────────────────────
-L2_END_FG="\033[38;2;0;0;0m"
 trap - EXIT  # disarm crash trap before normal output
-printf '\033[0m%b\n' "${L1C}${RST}${PROJ_FG}${NF_CORNER_TR}${RST}"
-printf '\033[0m%b\n' "${L2C}${RST}${L2_END_FG}${NF_CORNER_BR}${RST}"
+printf '\033[0m%b\n' "${L1C}${RST}${CAP1_R}${RST}"
+printf '\033[0m%b\n' "${L2C}${RST}${CAP2_R}${RST}"
