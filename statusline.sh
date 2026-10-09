@@ -2244,7 +2244,10 @@ L2C+=" "
 # (e.g. "/dev/tty: Device not configured" in non-tty contexts), not just
 # printf's own stderr.
 _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
-{ printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
+# Preview callers suppress this out-of-band write to their controlling TTY.
+if [ "${STATUSLINE_TAB_TITLE:-1}" != "0" ]; then
+    { printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
+fi
 
 # ── Pad shorter line to match longer ────────────────────────────────────────
 # The right-aligned segments (peer sessions PEER_SEG, then the update indicator

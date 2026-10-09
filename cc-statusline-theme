@@ -67,7 +67,8 @@ save() {
     printf 'Theme: %s (saved, takes effect on the next render)\n' "$1"
 }
 preview() {
-    local theme
+    local theme heading="$1" rendered
+    shift
     local -a selected=()
     if [ "$#" -eq 0 ]; then selected=("${THEMES[@]}"); else selected=("$@"); fi
     for theme in "${selected[@]}"; do
@@ -93,10 +94,10 @@ preview() {
         '{cwd:$cwd,pid:$pid,sessionId:"preview-idle",status:"idle",name:"idle"}' >"$d/sessions/idle.json"
     printf 'operational\n' >"$d/svc"; printf 'incident:preview\n' >"$d/gh"; printf 'v99.0.0\n' >"$d/update"
     for theme in "${selected[@]}"; do
-        printf '%s\n' "$theme"
-        (cd "$repo" && HOME="$d/home" XDG_CONFIG_HOME="$d/xdg" XDG_RUNTIME_DIR="$d/runtime" \
+        [ "$heading" = 0 ] || printf '%s\n' "$theme"
+        rendered=$(cd "$repo" && HOME="$d/home" XDG_CONFIG_HOME="$d/xdg" XDG_RUNTIME_DIR="$d/runtime" \
             KUBECONFIG=/dev/null STATUSLINE_THEME="$theme" STATUSLINE_LAYOUT=auto \
-            STATUSLINE_WIDTH="$preview_width" COLUMNS="$preview_width" STATUSLINE_DEBUG=0 \
+            STATUSLINE_WIDTH="$preview_width" COLUMNS="$preview_width" STATUSLINE_DEBUG=0 STATUSLINE_TAB_TITLE=0 \
             STATUSLINE_PROFILE=0 STATUSLINE_RL_SHARE=0 STATUSLINE_GPT_LIMITS=0 \
             CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_NOW=1700000000 CC_STATUSLINE_CTX_CACHE="$d/ctx" \
             CC_STATUSLINE_SESSIONS_DIR="$d/sessions" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
@@ -108,16 +109,22 @@ preview() {
             CC_STATUSLINE_GPT_CREDITS_CACHE="$d/no-credits" CC_STATUSLINE_GPT_CREDITS_FETCH="$d/no-fetch" \
             CC_STATUSLINE_UPDATE_CACHE="$d/update" CC_STATUSLINE_UPDATE_FETCH="$d/no-fetch" \
             bash "$RENDERER" <"$d/input") || return 1
+        if [ "$heading" = 0 ]; then
+            # No final newline: fzf must not advance into a third preview row.
+            printf '%s' "$rendered"
+        else
+            printf '%s\n' "$rendered"
+        fi
     done
 }
 picker() {
     local choice command i
     if command -v fzf >/dev/null 2>&1; then
-        printf -v command '%q preview {}' "$SELF"
-        choice=$(printf '%s\n' "${THEMES[@]}" | fzf --prompt='Theme: ' --preview="$command") || return 0
+        printf -v command '%q --fzf-preview {}' "$SELF"
+        choice=$(printf '%s\n' "${THEMES[@]}" | fzf --prompt='Theme: ' --layout=reverse --preview-window=down,2,border-top,noinfo --preview="$command") || return 0
         [ -n "$choice" ] && save "$choice"
     else
-        preview || return 1
+        preview 1 || return 1
         for ((i=0; i<${#THEMES[@]}; i++)); do printf '%d) %s\n' "$((i+1))" "${THEMES[$i]}"; done
         printf 'Choose a theme number (empty to cancel): ' >&2
         IFS= read -r choice || return 0
@@ -128,7 +135,7 @@ picker() {
         printf 'error: invalid theme number\n' >&2; return 2
     fi
 }
-warn_override
+[ "${1:-}" = --fzf-preview ] || warn_override
 case "${1:-}" in
     '') picker ;;
     current) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current; printf '%s (%s)\n' "$CURRENT_THEME" "$CURRENT_SOURCE" ;;
@@ -140,6 +147,7 @@ case "${1:-}" in
         ;;
     set) [ "$#" -eq 2 ] || { usage >&2; exit 2; }; save "$2" ;;
     reset) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; rm -f "$THEME_FILE" || exit 1; printf 'Saved theme removed\n' ;;
-    preview) shift; preview "$@" ;;
+    preview) shift; preview 1 "$@" ;;
+    --fzf-preview) [ "$#" -eq 2 ] || exit 2; preview 0 "$2" ;;
     *) usage >&2; exit 2 ;;
 esac

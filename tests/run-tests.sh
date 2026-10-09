@@ -3315,10 +3315,50 @@ theme_chooser_tests() {
     # Exercise the fzf route with a controlled selection, no terminal needed.
     local fzfbin="$d/fzfbin"
     mkdir -p "$fzfbin"
-    printf '#!/bin/sh\ncat >/dev/null\nprintf "dracula\\n"\n' >"$fzfbin/fzf"; chmod +x "$fzfbin/fzf"
-    PATH="$fzfbin:$PATH" _choose
+    cat >"$fzfbin/fzf" <<'FZF'
+#!/bin/sh
+printf '%s\n' "$@" >"$CHOOSER_FZF_ARGS"
+cat >/dev/null
+printf 'dracula\n'
+FZF
+    chmod +x "$fzfbin/fzf"
+    CHOOSER_FZF_ARGS="$d/fzf.args" PATH="$fzfbin:$PATH" _choose
     if [ "$rc" = 0 ] && [ "$(cat "$file")" = dracula ]; then _rl_pass chooser-fzf
     else _rl_fail chooser-fzf "fzf selection not saved"; fi
+
+    local fzf_args
+    fzf_args=$(cat "$d/fzf.args")
+    if _has "$fzf_args" '--layout=reverse' && _has "$fzf_args" '--preview-window=down,2,border-top,noinfo' \
+        && _has "$fzf_args" '--fzf-preview {}'; then _rl_pass chooser-fzf-stacked-panes
+    else _rl_fail chooser-fzf-stacked-panes "list/preview layout arguments wrong"; fi
+    printf '{"statusLine":{"command":"STATUSLINE_THEME=dracula cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
+    FZF_PREVIEW_COLUMNS=130 COLUMNS=40 _choose --fzf-preview nord
+    : >"$chooser_home/.claude/settings.json"
+    local fail_reasons=() canonical="$d/fzf-canonical"
+    # fzf gets two records with one separator and no final blank row. Append
+    # a newline only for the regular file-based two-line width contract.
+    [ "$(wc -l <"$out" | tr -d ' ')" = 1 ] || fail_reasons+=("unexpected preview line endings")
+    printf '%s\n' "$(cat "$out")" >"$canonical"
+    _render_contract "$canonical" "$err" "$rc" 129
+    if [ "${#fail_reasons[@]}" -eq 0 ] && _has "$(_rl_l2 "$canonical")" 'Claude Opus 4.6'; then
+        _rl_pass chooser-fzf-two-row-wide-preview
+    else _rl_fail chooser-fzf-two-row-wide-preview "preview heading, width source or render contract wrong: ${fail_reasons[*]}"; fi
+
+    local titledev="$d/title-dev"
+    mkdir -p "$titledev"
+    cat >"$titledev/statusline.sh" <<'TITLE'
+#!/usr/bin/env bash
+if [ "${1:-}" != --list-themes ]; then
+    printf '%s\n' "${STATUSLINE_TAB_TITLE:-unset}" >"$CHOOSER_TITLE_LOG"
+fi
+exec bash "$CHOOSER_REAL_RENDERER" "$@"
+TITLE
+    chmod +x "$titledev/statusline.sh"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" TMPDIR="$d/tmp" CC_STATUSLINE_DEV_DIR="$titledev" \
+        CHOOSER_TITLE_LOG="$d/title-flag" CHOOSER_REAL_RENDERER="$STATUSLINE" \
+        "$chooser" --fzf-preview nord >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(cat "$d/title-flag")" = 0 ] && [ ! -s "$err" ]; then _rl_pass chooser-preview-no-tab-title
+    else _rl_fail chooser-preview-no-tab-title "preview did not suppress the terminal title write"; fi
 
     # A PATH containing only existing dependencies forces the numbered menu.
     local menubin="$d/menubin" cmd real
@@ -3367,7 +3407,7 @@ theme_chooser_tests() {
     HOME="$git_home" git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm older-fixture
     HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" >"$out" 2>"$err"
     if [ "$?" = 0 ] && [ ! -e "$prefix/cc-statusline-theme" ]; then _rl_pass chooser-install-old-head
-    else _rl_fail chooser-install-old-head "older archive failed or retained incompatible chooser"; fi
+    else _rl_fail chooser-install-old-head "older archive failed or retained incompatible chooser: $(head -1 "$err")"; fi
     HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" --uninstall >"$out" 2>"$err"
     if [ "$?" = 0 ] && [ ! -e "$prefix" ]; then _rl_pass chooser-uninstall
     else _rl_fail chooser-uninstall "installer did not remove prefix"; fi
