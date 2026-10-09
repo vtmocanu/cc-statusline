@@ -97,10 +97,15 @@ PREV_REF=""
 [ -f "$INSTALL_DIR/.version" ] && PREV_REF=$(cat "$INSTALL_DIR/.version" 2>/dev/null || true)
 
 # Stage the chosen ref into a temp dir via `git archive` (no working-tree mutation).
-STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-install.XXXXXX")
-trap 'rm -rf "$STAGE_DIR"' EXIT
+# A file avoids SIGPIPE when tar closes a valid stream before Git finishes its
+# trailing padding. Check both steps before replacing any installed file.
+STAGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-install.XXXXXX")
+trap 'rm -rf "$STAGE_ROOT"' EXIT
+STAGE_DIR="$STAGE_ROOT/tree"
+mkdir -p "$STAGE_DIR"
 
-if ! git -C "$REPO_DIR" archive --format=tar "$REF" | tar -x -C "$STAGE_DIR"; then
+if ! git -C "$REPO_DIR" archive --format=tar --output="$STAGE_ROOT/source.tar" "$REF" \
+    || ! tar -x -f "$STAGE_ROOT/source.tar" -C "$STAGE_DIR"; then
     err "git archive failed for ref $REF"
     exit 1
 fi
