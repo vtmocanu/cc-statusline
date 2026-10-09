@@ -148,6 +148,16 @@ fi
 
 cat <<EOF
 
+cc-statusline now supports themes. The default is tokyo-auto (Tokyo Night,
+or Tokyo Day when your OS is in light mode). Choose one with live previews:
+
+  "$INSTALL_DIR/cc-statusline-theme"
+
+Or directly: "$INSTALL_DIR/cc-statusline-theme" set <name>
+List themes: "$INSTALL_DIR/cc-statusline-theme" list
+Previous look: "$INSTALL_DIR/cc-statusline-theme" set classic
+fzf is optional. STATUSLINE_THEME in statusLine.command overrides the saved choice.
+
 Add the following to ~/.claude/settings.json:
 
   "statusLine": {
@@ -160,13 +170,9 @@ refreshInterval re-runs the statusline every N seconds so idle sessions keep
 fresh reset times, service health, and rate-limit bars (requires a recent
 Claude Code). Remove the line to update only on activity.
 
-The descriptive session title on line 1 comes from Claude Code's native session
-name (its /rename value or auto-generated title). No hook or extra setup is
-needed; hide it with STATUSLINE_TOPIC=0, and the @handle with
+Auto session descriptions are remembered across user renames. No hook or extra
+setup is needed; hide them with STATUSLINE_TOPIC=0, and the @handle with
 STATUSLINE_SESSION_NAME=0.
-
-Choose a theme (saved for the next render): $INSTALL_DIR/cc-statusline-theme
-Set one directly:                         $INSTALL_DIR/cc-statusline-theme set nord
 
 To roll back to a previous version: ./install.sh --version v3.6.0
 To uninstall:                       ./install.sh --uninstall

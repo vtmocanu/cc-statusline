@@ -74,6 +74,15 @@ class CcStatusline < Formula
 
   def caveats
     <<~EOS
+      cc-statusline now supports themes. The default is tokyo-auto (Tokyo Night,
+      or Tokyo Day when your OS is in light mode). Choose one with live previews:
+
+        cc-statusline-theme
+
+      Or directly: cc-statusline-theme set <name> (cc-statusline-theme list)
+      Previous look: cc-statusline-theme set classic
+      fzf is optional. STATUSLINE_THEME in statusLine.command overrides the saved choice.
+
       Point Claude Code at the statusline in ~/.claude/settings.json:
 
         "statusLine": {
@@ -82,16 +91,9 @@ class CcStatusline < Formula
           "refreshInterval": 60
         }
 
-      The descriptive session title on line 1 comes from Claude Code's native
-      session name; no hook is required. Hide it with STATUSLINE_TOPIC=0, and the
+      Auto session descriptions are remembered across user renames; no hook
+      is required. Hide it with STATUSLINE_TOPIC=0, and the
       @handle with STATUSLINE_SESSION_NAME=0.
-
-      Run cc-statusline-theme to choose a theme with live previews, or:
-
-        cc-statusline-theme set tokyo-night
-
-      The saved choice takes effect on the next render. STATUSLINE_THEME in
-      your statusline command overrides it. fzf is optional.
 
       Dev mode (render a working tree instead of the brewed copy):
 
@@ -113,12 +115,14 @@ class CcStatusline < Formula
           "CC_STATUSLINE_SVC_FETCH=#{testpath}/no-such-fetcher.sh " \
           "CC_STATUSLINE_UPDATE_CACHE=#{testpath}/update-cache " \
           "CC_STATUSLINE_UPDATE_FETCH=#{testpath}/no-such-update-fetcher.sh " \
+          "CC_STATUSLINE_APPEARANCE=dark CC_STATUSLINE_APPEARANCE_CACHE=#{testpath}/appearance " \
+          "CC_STATUSLINE_TITLE_CACHE=#{testpath}/titles " \
           "CC_STATUSLINE_NOW=1700000000 STATUSLINE_PROFILE=0 KUBECONFIG=/dev/null"
     output = pipe_output("env #{env} #{bin}/cc-statusline", fixture, 0)
     assert_equal 2, output.lines.length, "expected exactly 2 statusline rows"
-    assert_match "default", shell_output("#{bin}/cc-statusline-theme list")
-    shell_output("#{bin}/cc-statusline-theme set nord")
-    assert_match "nord (file)", shell_output("#{bin}/cc-statusline-theme current")
-    shell_output("#{bin}/cc-statusline-theme reset")
+    assert_match "default", shell_output("env #{env} #{bin}/cc-statusline-theme list")
+    shell_output("env #{env} #{bin}/cc-statusline-theme set nord")
+    assert_match "nord (file)", shell_output("env #{env} #{bin}/cc-statusline-theme current")
+    shell_output("env #{env} #{bin}/cc-statusline-theme reset")
   end
 end
