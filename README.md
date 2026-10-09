@@ -225,7 +225,7 @@ Choices are saved atomically to
 `${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme` and apply on the next
 redraw: immediately in active sessions, or at your configured
 `statusLine.refreshInterval` in idle sessions. Without a refresh interval, idle
-sessions update on your next message. Keep your existing refresh interval.
+sessions update on your next message.
 
 An explicit `STATUSLINE_THEME` assignment in `statusLine.command` wins over the
 saved file. The chooser recognizes leading literal assignments, optionally
@@ -248,7 +248,7 @@ STATUSLINE_THEME=tokyo-night cc-statusline
 
 | Theme | Appearance |
 |-------|------------|
-| `classic` | Current project hue, slanted caps, black second line. |
+| `classic` | The original look: per-project hue, slanted caps, black second line. |
 | `hue-dark` | Project hue on a dark tint, with vertical edge caps. |
 | `nord` | Transparent backgrounds and a restrained Nordic palette. |
 | `phosphor` | CRT green and ASCII bars, with distinct amber/red alerts. |
@@ -350,7 +350,7 @@ When more than one Claude Code session works in the same repository, line 1 show
 
 Zero counts are left out, and the whole segment is hidden when a session is alone in its repo. The count your own session belongs to is bracketed (`[⚙N]`, `[◷N]` or `[○N]`), so each session shows where it stands; it is never counted as `?`, since you are already looking at it. "Same repo" follows `git worktree list`, so sessions in linked worktrees at other paths count too. Codex threads attached as session peers are not counted; they are Codex runs, not Claude Code sessions.
 
-The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Every session in the repo shows the same total, but not always the same split: a session waiting on you counts itself as `○` while the others count it as `?`, so with two idle sessions where only A asked something, A shows `[○2]` and B shows `?1 [○1]`. Each statusline counts at its own redraw, so two sessions can briefly disagree by one. Idle counts update at the configured `refreshInterval`, or on your next message when it is absent. Counts follow the directory and branch on phones. When space runs out, counts are dropped whole after Kubernetes context on wide layouts and first on phones. Only the upgrade notice stays right-aligned. Disable with `STATUSLINE_PEERS=0`.
+The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Every session in the repo shows the same total, but not always the same split: a session waiting on you counts itself as `○` while the others count it as `?`, so with two idle sessions where only A asked something, A shows `[○2]` and B shows `?1 [○1]`. Each statusline also counts at its own redraw, so two sessions can briefly disagree by one; set `refreshInterval` on your `statusLine` so idle sessions redraw (60 seconds is plenty). Counts follow the directory and branch on phones. When space runs out, counts are dropped whole after Kubernetes context on wide layouts and first on phones. Only the upgrade notice stays right-aligned. Disable with `STATUSLINE_PEERS=0`.
 
 ### Per-account usage fetcher
 
