@@ -27,7 +27,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **GitHub service status**: line-1 icon (same glyphs/colors as the provider one), shown on repos with a `github.com` remote; on by default, disable with `STATUSLINE_GITHUB_STATUS=0`
 - **Clickable status icons**: both service-status icons are OSC 8 hyperlinks (GitHub icon to `githubstatus.com`, provider icon to `status.claude.com` or `status.openai.com`), so Cmd+click (macOS) / Ctrl+click opens the status page in a supporting terminal; on by default, disable with `STATUSLINE_HYPERLINKS=0`
 - **Update indicator**: a gold `⇡ X.Y.Z` at the right edge of line 1 when a newer cc-statusline release exists (checked hourly against GitHub, hyperlinked to the release page); hidden entirely when you are current, disable with `STATUSLINE_UPDATE_CHECK=0`
-- **Sessions in this repo**: right-aligned on line 1 when another Claude Code session works in the same repository, a repo-wide count of every session by state (`⚙` busy, `◷` background shells running, `?` waiting on your answer, `○` idle), with the count your own session belongs to bracketed; disable with `STATUSLINE_PEERS=0`
+- **Sessions in this repo**: after the `@handle` on line 1 when another Claude Code session works in the same repository, a repo-wide count of every session by state (`⚙` busy, `◷` background shells running, `?` waiting on your answer, `○` idle), with the count your own session belongs to bracketed; disable with `STATUSLINE_PEERS=0`
 - **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
 - **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
 - **Tab title**: sets the terminal tab title from the session title or directory
@@ -162,7 +162,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_CACHE_TIMER` | `1` | Set to `0` to hide the prompt-cache cooldown timer on line 2 (fire + minutes left while warm, snowflake + tokens to re-cache once cold), independent of `STATUSLINE_CACHE`. When line 2 is short on room it keeps the timer and drops the hit rate first. Claude Code redraws when the cache expires, but the minutes only count down while idle with `refreshInterval` set. Hidden on GPT panes. |
 | `STATUSLINE_CTX` | `1` | Set to `0` to hide the context-fill segment (`ctx NN%`) on the phone/slim layout's line 2. Shown before the rate limits with the same color thresholds; the first line-2 segment to shed as the viewport tightens. The wide layout's context readout is unaffected. |
 | `STATUSLINE_SESSION_NAME` | `1` | Set to `0` to hide the `@handle` (the addressable session name peers message, read from Claude Code's per-session registry) at the start of line 1. |
-| `STATUSLINE_PEERS` | `1` | Set to `0` to hide the repo-wide session counts right-aligned on line 1 (see [Sessions in this repo](#sessions-in-this-repo)). |
+| `STATUSLINE_PEERS` | `1` | Set to `0` to hide the repo-wide session counts after the `@handle` on line 1 (see [Sessions in this repo](#sessions-in-this-repo)). |
 | `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
 | `STATUSLINE_HYPERLINKS` | `1` | Set to `0` to disable the OSC 8 hyperlinks on the service-status icons (GitHub plus the active Claude/OpenAI provider). Needs a terminal that supports OSC 8 (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the escape is swallowed and the icon shows as plain text. |
@@ -308,7 +308,7 @@ Earlier versions synthesized the title with an opt-in `UserPromptSubmit` hook th
 
 ### Sessions in this repo
 
-When more than one Claude Code session works in the same repository, line 1 shows a repo-wide count of all of them, your own included, at its right edge, for example `[⚙2] ◷1 ?1 ○2`:
+When more than one Claude Code session works in the same repository, line 1 shows a repo-wide count of all of them, your own included, after the `@handle` (or first when the handle is hidden), for example `[⚙2] ◷1 ?1 ○2`:
 
 | Glyph | Meaning |
 |---|---|
@@ -319,7 +319,7 @@ When more than one Claude Code session works in the same repository, line 1 show
 
 Zero counts are left out, and the whole segment is hidden when a session is alone in its repo. The count your own session belongs to is bracketed (`[⚙N]`, `[◷N]` or `[○N]`), so each session shows where it stands; it is never counted as `?`, since you are already looking at it. "Same repo" follows `git worktree list`, so sessions in linked worktrees at other paths count too. Codex threads attached as session peers are not counted; they are Codex runs, not Claude Code sessions.
 
-The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Every session in the repo shows the same total, but not always the same split: a session waiting on you counts itself as `○` while the others count it as `?`, so with two idle sessions where only A asked something, A shows `[○2]` and B shows `?1 [○1]`. Each statusline also counts at its own redraw, so two sessions can briefly disagree by one; set `refreshInterval` on your `statusLine` so idle sessions redraw (60 seconds is plenty). The segment sits in line 1's spare columns next to the update indicator and is dropped, never truncated, when it does not fit. Disable with `STATUSLINE_PEERS=0`.
+The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Every session in the repo shows the same total, but not always the same split: a session waiting on you counts itself as `○` while the others count it as `?`, so with two idle sessions where only A asked something, A shows `[○2]` and B shows `?1 [○1]`. Each statusline also counts at its own redraw, so two sessions can briefly disagree by one; set `refreshInterval` on your `statusLine` so idle sessions redraw (60 seconds is plenty). Counts follow the directory and branch on phones. When space runs out, counts are dropped whole after Kubernetes context on wide layouts and first on phones. Only the upgrade notice stays right-aligned. Disable with `STATUSLINE_PEERS=0`.
 
 ### Per-account usage fetcher
 

@@ -1283,8 +1283,13 @@ B="${RST}${BG1}"; B2="${RST}${BG2}"
 SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
 SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
 PEER_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
+PEER_FG="$TXT_FG"; PEER_BOLD="$TXT_BOLD"; PEER_B="$B"
 if [ "$THEME_STYLE" != "flat" ]; then
-    PEER_DIM="$SEG_RIGHT_DIM"
+    SEG_PEER_BG="$SEG_TAIL_BG"
+    PEER_FG="$L2_TXT"; PEER_BOLD="${PEER_FG}\033[1m"
+    PEER_B="${RST}\033[48;2;${SEG_PEER_BG}m"
+    PEER_DIM="$L2_DIM"
+    case "$THEME" in tokyo-night|dracula) PEER_DIM="$SEG_RIGHT_DIM" ;; esac
     BG1="\033[49m"  # Padding between left and right groups is transparent.
     CAP1_L=""
     TXT_FG="$SEG_RIGHT_FG"; TXT_BOLD="${TXT_FG}\033[1m"
@@ -1480,6 +1485,7 @@ _assemble_l1_seg() {
     L1C="${RST}"; SEG_PREV_BG=""
     if [ "$LAYOUT" != "phone" ]; then
         [ -n "$SESSION_HANDLE" ] && _seg_add "$SEG_HANDLE_BG" "${SEG_INK}\033[1m" "@${SESSION_HANDLE}"
+        [ -n "$PEER_SEG" ] && _seg_add "$SEG_PEER_BG" "$PEER_FG" "$PEER_SEG"
         [ -n "$TOPIC" ] && _seg_add "$SEG_TOPIC_BG" "${SEG_INK}\033[1m" "$TOPIC"
     fi
     _seg_add "$SEG_DIR_BG" "$SEG_DIR_FG" "${NF_FOLDER} ${DIR}"
@@ -1490,6 +1496,7 @@ _assemble_l1_seg() {
         [ "$THEME_STYLE" = "pill" ] && [ -n "$status" ] && status=" ${SEG_INK}${GIT_STATUS}"
         _seg_add "$SEG_BRANCH_BG" "$SEG_BRANCH_FG" "${NF_GIT} ${BRANCH}${status}"
     fi
+    [ "$LAYOUT" = "phone" ] && [ -n "$PEER_SEG" ] && _seg_add "$SEG_PEER_BG" "$PEER_FG" "$PEER_SEG"
     [ -n "$GH_GLYPH" ] && _seg_add "$SEG_STATUS_BG" "$CLR_OK" "$GH_GLYPH"
     if [ "$LAYOUT" != "phone" ]; then
         local tail="$AGENT"
@@ -1505,7 +1512,8 @@ _assemble_l1_seg() {
 assemble_l1() {
     if [ "$THEME_STYLE" != "flat" ]; then _assemble_l1_seg; return; fi
     L1C="${L1_PREFIX}"
-    # Phone: folder + branch only. Topic, agent, mode and k8s are the first
+    # Phone: folder + branch, with peer counts only while they fit.
+    # Topic, agent, mode and k8s are the first
     # things a narrow viewport cannot afford, and the folder answers "which
     # session am I looking at" more reliably than any of them.
     if [ "$LAYOUT" = "phone" ]; then
@@ -1514,11 +1522,14 @@ assemble_l1() {
             L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
             [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
         fi
+        [ -n "$PEER_SEG" ] && L1C+=" ${PEER_SEG}${B}"
         L1C+="$GH_SEG"
         L1C+=" "
         return
     fi
-    [ -n "$SESSION_HANDLE" ] && L1C+=" ${TXT_BOLD}@${SESSION_HANDLE}${B} ${SEP}${B}"
+    [ -n "$SESSION_HANDLE" ] && L1C+=" ${TXT_BOLD}@${SESSION_HANDLE}${B}"
+    [ -n "$PEER_SEG" ] && L1C+=" ${PEER_SEG}${B}"
+    if [ -n "$SESSION_HANDLE" ] || [ -n "$PEER_SEG" ]; then L1C+=" ${SEP}${B}"; fi
     [ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
     L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
     if [ -n "$BRANCH" ]; then
@@ -1803,7 +1814,7 @@ if [ "${STATUSLINE_UPDATE_CHECK:-1}" != "0" ]; then
     fi
 fi
 
-# ── Peer sessions in this repo (line 1, right-aligned) ──────────────────────
+# ── Peer sessions in this repo (line 1, after the handle) ──────────────────────
 # On by default; opt OUT with STATUSLINE_PEERS=0. Counts EVERY live session
 # working in the same repository, this one included, by state, so all of the
 # repo's sessions show the same repo-wide total (up to each one's own render
@@ -1834,8 +1845,9 @@ fi
 # linked worktrees at any path, with no per-peer git call. Unknown .status
 # values are ignored. An idle peer's transcript is found by session id under
 # ~/.claude/projects/*/ (no reliance on how Claude Code names those folders) and
-# only its last 300 lines are read. Placed in the padding pass at the bottom,
-# like the update indicator: dropped, never truncated, when it does not fit.
+# only its last 300 lines are read. Counts follow the handle (or lead when it
+# is hidden). Phone counts follow directory/branch. The whole segment drops
+# after K8S on wide layouts and first on phones; it is never sliced.
 # Test seams: CC_STATUSLINE_SESSIONS_DIR, CC_STATUSLINE_PROJECTS_DIR.
 PEER_SEG=""
 if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
@@ -1932,7 +1944,8 @@ if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
         fi
         # Weight, not hue, carries urgency: the 12 project backgrounds make any
         # fixed color unreadable on some of them, while the palette's own dark
-        # text stays legible on all. Busy is bold, idle is the dim separator
+        # text stays legible on all. Segment themes use a dark peer surface
+        # with its own light ink. Busy is bold, idle is the dim separator
         # tone, and a waiting question is reversed (dark chip, light text).
         _P_DIM="$PEER_DIM"
         _P_BODY=""
@@ -1940,16 +1953,16 @@ if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
             # count this session belongs to, so each session spots its own state
             [ "$1" -gt 0 ] || return 0
             if [ "$P_SELF" = "$4" ]; then
-                _P_BODY+=" ${TXT_BOLD}[${2}${3}${1}${TXT_BOLD}]${B}"
+                _P_BODY+=" ${PEER_BOLD}[${2}${3}${1}${PEER_BOLD}]${PEER_B}"
             else
-                _P_BODY+=" ${2}${3}${1}${B}"
+                _P_BODY+=" ${2}${3}${1}${PEER_B}"
             fi
         }
-        _p_add "$P_BUSY"  "$TXT_BOLD"        "⚙" busy
-        _p_add "$P_SHELL" "$TXT_FG"          "◷" shell
-        _p_add "$P_ASK"   "\033[7m$TXT_BOLD" "?" never   # this session is never "?"
+        _p_add "$P_BUSY"  "$PEER_BOLD"        "⚙" busy
+        _p_add "$P_SHELL" "$PEER_FG"          "◷" shell
+        _p_add "$P_ASK"   "\033[7m$PEER_BOLD" "?" never   # this session is never "?"
         _p_add "$P_IDLE"  "$_P_DIM"          "○" idle
-        [ "$P_OTHERS" -gt 0 ] && [ -n "$_P_BODY" ] && PEER_SEG="${SEP}${B}${_P_BODY} "
+        [ "$P_OTHERS" -gt 0 ] && [ -n "$_P_BODY" ] && PEER_SEG="${_P_BODY# }"
     fi
 fi
 
@@ -2134,13 +2147,15 @@ if [ "$LAYOUT" = "wide" ] && [ "$LAYOUT_FORCED" = "0" ] \
 fi
 
 # ── Line 1 truncation, measured. Priority (least to most essential, so the
-# leaf dir is preserved longest): K8S > BRANCH > AGENT > MODE > TOPIC > DIR.
-# Each round trims one component by the measured overage (plus 2 for "..") and
+# leaf dir is preserved longest): K8S > PEERS > BRANCH > AGENT > MODE > TOPIC > DIR.
+# Each round drops peers whole or trims a component by the measured overage
+# (plus 2 for "..") and
 # re-measures. The common case takes zero rounds; only an overflowing line
 # re-measures, keeping the perl-call budget at ~2 per render.
-# Phone renders only DIR + BRANCH, so trimming the others would burn a
+# Phone renders DIR + BRANCH plus optional peer counts. Trimming the others
+# would burn a
 # re-measure without shrinking the line: walk just the components in play.
-TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC NAME DIR"
+TRUNC_ORDER="K8S PEERS BRANCH AGENT MODE TOPIC NAME DIR"
 # DIRLEAF drops the parent component ("cc-statusline/phone" -> "phone") before
 # anything gets character-mangled: on a phone a whole leaf name reads better
 # than two half-words, and it usually buys back more columns than trimming the
@@ -2150,11 +2165,13 @@ TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC NAME DIR"
 # bottomed out with line 1 still over budget, and a NARROWER viewport rendered a
 # WIDER line (COLUMNS=30 produced 51 columns against a 29-column budget), which
 # is precisely the overflow that makes cli-truncate drop line 2.
-[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="DIRLEAF BRANCH GITST DIR BRANCHDROP DIRHARD"
+[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="PEERS DIRLEAF BRANCH GITST DIR BRANCHDROP DIRHARD"
 for _t in $TRUNC_ORDER; do
     [ "$L1_COLS" -le "$TARGET" ] 2>/dev/null && break
     OVER=$((L1_COLS - TARGET))
     case $_t in
+        PEERS) [ -n "$PEER_SEG" ] || continue
+               PEER_SEG="" ;;
         DIRLEAF) case "$DIR" in */*) DIR="${DIR##*/}" ;; *) continue ;; esac ;;
         GITST)  [ -n "$GIT_STATUS" ] || continue
                 GIT_STATUS="" ;;   # dirty markers go before the leaf dir does
@@ -2250,20 +2267,13 @@ if [ "${STATUSLINE_TAB_TITLE:-1}" != "0" ]; then
 fi
 
 # ── Pad shorter line to match longer ────────────────────────────────────────
-# The right-aligned segments (peer sessions PEER_SEG, then the update indicator
-# UPD_SEG; each empty when it has nothing to say) are placed here rather than in
-# assemble_l1: right-aligned into line 1's padding zone. A segment is shown when
-# it fits in the gap below line 2's width, or when appending it keeps line 1
-# within TARGET (line 2 then pads to match); otherwise it is dropped, never
-# truncated, so it can neither widen a line past the budget nor be sliced
-# mid-escape. Both are tried together first; when only one fits, the peer
-# counts win (they change minute to minute, the update notice can wait).
+# The update indicator alone occupies line 1's right padding zone. It is
+# shown only when it fits within TARGET and is dropped whole, never sliced.
 {
-    # Single perl invocation for both line measurements plus both segments
-    read -r L1_COLS L2_COLS UPD_W PEER_W < <(
-        measure_cols "$L1C" "$L2C" "$UPD_SEG" "$PEER_SEG" | tr '\n' ' '
+    read -r L1_COLS L2_COLS UPD_W < <(
+        measure_cols "$L1C" "$L2C" "$UPD_SEG" | tr '\n' ' '
     )
-    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}; PEER_W=${PEER_W:-0}
+    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}
     SYNC_W=$L2_COLS
     [ "$L1_COLS" -gt "$SYNC_W" ] 2>/dev/null && SYNC_W=$L1_COLS
     _right_fits() {  # _right_fits <width>: does a right segment of that width fit?
@@ -2271,11 +2281,7 @@ fi
             && { [ "$((L1_COLS + $1))" -le "$SYNC_W" ] || [ "$((L1_COLS + $1))" -le "$TARGET" ]; }
     } 2>/dev/null
     RIGHT_SEG=""; RIGHT_W=0
-    if [ -n "$PEER_SEG" ] && [ -n "$UPD_SEG" ] && _right_fits "$((PEER_W + UPD_W))"; then
-        RIGHT_SEG="${PEER_SEG}${UPD_SEG}"; RIGHT_W=$((PEER_W + UPD_W))
-    elif [ -n "$PEER_SEG" ] && _right_fits "$PEER_W"; then
-        RIGHT_SEG="$PEER_SEG"; RIGHT_W=$PEER_W
-    elif [ -n "$UPD_SEG" ] && _right_fits "$UPD_W"; then
+    if [ -n "$UPD_SEG" ] && _right_fits "$UPD_W"; then
         RIGHT_SEG="$UPD_SEG"; RIGHT_W=$UPD_W
     fi
     if [ -n "$RIGHT_SEG" ]; then

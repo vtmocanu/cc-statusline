@@ -2315,7 +2315,7 @@ peer_tests() {
     }
     _peer_run() {  # _peer_run <out> <err> <env...>
         local o="$1" e="$2"; shift 2
-        ( cd "$SCRATCH" && printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"%s","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"self-sid"}' "$repo" \
+        ( cd "$repo" && printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"%s","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"self-sid","session_name":"Peer topic"}' "$repo" \
             | env CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_RL_CACHE="$SCRATCH/peer.cache" "$@" \
                   bash "$STATUSLINE" ) >"$o" 2>"$e"
     }
@@ -2384,14 +2384,14 @@ peer_tests() {
     elif _has "$l1" "⚙" || _has "$l1" "◷" || _has "$l1" "○"; then _rl_fail "$name" "STATUSLINE_PEERS=0 still rendered: $l1"
     else _rl_pass "$name"; fi
 
-    # 6. Peers and the update indicator share the right edge, peers first.
+    # 6. Peers follow the handle; only the update indicator remains right-aligned.
     name="peers-with-update-indicator"; out="$SCRATCH/pe6.out"; err="$SCRATCH/pe6.err"
     printf 'v99.0.0\n' > "$SCRATCH/peer-upd-cache"
     _peer_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$SCRATCH/peer-upd-cache"
     l1=$(sed -n '1p' "$out" | _strip_ansi)
     w1=$(sed -n '1p' "$out" | vis_cols)
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif ! _has "$l1" "[⚙2] ◷1 ○1 │ ⇡ 99.0.0"; then _rl_fail "$name" "expected peers then update: $l1"
+    elif ! _has "$l1" "@p-self [⚙2] ◷1 ○1 │ Peer topic" || ! _has "$l1" "⇡ 99.0.0"; then _rl_fail "$name" "expected peers after handle, update at right: $l1"
     elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then _rl_fail "$name" "width $w1 exceeds budget"
     else _rl_pass "$name"; fi
 
@@ -2404,6 +2404,39 @@ peer_tests() {
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif [ "$w1" -gt 40 ]; then _rl_fail "$name" "width $w1 exceeds 40"
     elif { _has "$l1" "⚙" || _has "$l1" "○"; } && ! _has "$l1" "[⚙2] ◷1 ○1"; then _rl_fail "$name" "segment partially rendered: $l1"
+    else _rl_pass "$name"; fi
+
+    name="peers-lead-without-handle"; out="$SCRATCH/pe8.out"; err="$SCRATCH/pe8.err"
+    _peer_run "$out" "$err" STATUSLINE_SESSION_NAME=0
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || ! _has "$l1" "[⚙2] ◷1 ○1 │ Peer topic"; then _rl_fail "$name" "counts did not lead the topic: $l1"
+    else _rl_pass "$name"; fi
+
+    name="peers-drop-before-branch"; out="$SCRATCH/pe9.out"; err="$SCRATCH/pe9.err"
+    # Make line 1 overflow while leaving enough room for the intact branch
+    # once peers drop. The branch is more essential than the session counts.
+    git -C "$repo" branch branch-stays-whole
+    local original_branch peer_drop_width
+    original_branch=$(git -C "$repo" symbolic-ref HEAD)
+    git -C "$repo" symbolic-ref HEAD refs/heads/branch-stays-whole
+    _peer_run "$out" "$err" STATUSLINE_WIDTH=200 STATUSLINE_LAYOUT=wide STATUSLINE_PEERS=0
+    peer_drop_width=$(( $(head -1 "$out" | vis_cols) + 3 ))
+    _peer_run "$out" "$err" STATUSLINE_WIDTH="$peer_drop_width" STATUSLINE_LAYOUT=wide
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || _has "$l1" "⚙" || ! _has "$l1" "branch-stays-whole"; then _rl_fail "$name" "counts should drop before branch trimming: $l1"
+    else _rl_pass "$name"; fi
+    git -C "$repo" symbolic-ref HEAD "$original_branch"
+
+    name="peers-phone-after-branch"; out="$SCRATCH/pe10.out"; err="$SCRATCH/pe10.err"
+    _peer_run "$out" "$err" COLUMNS=90 STATUSLINE_LAYOUT=phone
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || ! [[ "$l1" = *"${original_branch##*/}"*"[⚙2] ◷1 ○1"* ]] || _has "$l1" "@p-self"; then _rl_fail "$name" "phone counts should follow branch: $l1"
+    else _rl_pass "$name"; fi
+
+    name="peers-phone-drop-first"; out="$SCRATCH/pe11.out"; err="$SCRATCH/pe11.err"
+    _peer_run "$out" "$err" COLUMNS=30
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || _has "$l1" "⚙" || ! _has "$l1" "peer-repo"; then _rl_fail "$name" "phone counts should drop before directory trimming: $l1"
     else _rl_pass "$name"; fi
 
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
@@ -2876,9 +2909,9 @@ context_hold_tests() {
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
 }
 
-# Right-zone text must remain visible on each segmented theme's background.
+# Left peer counts and the right update notice use independent backgrounds.
 theme_right_contrast_tests() {
-    local d="$SCRATCH/theme-right" repo reg fixture out err theme bg idle upd
+    local d="$SCRATCH/theme-right" repo reg fixture out err theme bg peer_bg idle upd
     repo="$d/repo"; reg="$d/sessions"; fixture="$d/input.json"
     out="$d/out"; err="$d/err"
     mkdir -p "$repo" "$reg"
@@ -2894,15 +2927,15 @@ theme_right_contrast_tests() {
             CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
             CC_STATUSLINE_UPDATE_CACHE="$d/update" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
         case "$theme" in
-            tokyo-night) bg="41;46;66" ;;
-            gruvbox) bg="214;93;14" ;;
-            dracula) bg="68;71;90" ;;
-            catppuccin) bg="249;226;175" ;;
+            tokyo-night) bg="41;46;66"; peer_bg="41;46;66" ;;
+            gruvbox) bg="214;93;14"; peer_bg="80;73;69" ;;
+            dracula) bg="68;71;90"; peer_bg="68;71;90" ;;
+            catppuccin) bg="249;226;175"; peer_bg="49;50;68" ;;
         esac
         idle=$(head -1 "$out" | perl -CS -ne 'print $1 if /\e\[38;2;([0-9;]+)m\x{25cb}1/')
         upd=$(head -1 "$out" | perl -CS -ne 'print $1 if /\e\[38;2;([0-9;]+)m(?:\e\[1m)?\x{21e1}/')
         if [ -s "$err" ]; then _rl_fail "theme-$theme-right-contrast" "non-empty stderr"
-        elif [ -z "$idle" ] || [ "$idle" = "$bg" ]; then _rl_fail "theme-$theme-right-contrast" "idle peer foreground missing or equals background"
+        elif [ -z "$idle" ] || [ "$idle" = "$peer_bg" ]; then _rl_fail "theme-$theme-right-contrast" "idle peer foreground missing or equals background"
         elif [ -z "$upd" ] || [ "$upd" = "$bg" ]; then _rl_fail "theme-$theme-right-contrast" "update foreground missing or equals background"
         else _rl_pass "theme-$theme-right-contrast"; fi
     done

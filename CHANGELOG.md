@@ -6,6 +6,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Repo-wide session counts now follow the handle on line 1, or the directory and branch on phones. Counts drop whole when space is tight; only the upgrade notice remains right-aligned.
+
 ### Fixed
 - `install.sh` could fail intermittently with a Git archive error under `pipefail` when tar closed the streaming pipe early. The archive is now written to a private temporary file and extracted in a separate step.
 
