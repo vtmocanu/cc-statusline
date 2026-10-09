@@ -21,7 +21,7 @@ includes:
   shell:
     taskfile: "{{if .CI}}{{.TASK_REPO_RAW}}/shell.yml{{else}}{{.TASK_REPO_LOCAL}}/shell.yml{{end}}"
     vars:
-      SCRIPTS: statusline.sh claude-status-fetch.sh claude-usage-fetch.sh codex-usage-fetch.sh gpt-credits-fetch.sh cc-statusline-update-fetch.sh install.sh tests/run-tests.sh tests/run-fetch-tests.sh
+      SCRIPTS: statusline.sh cc-statusline-theme claude-status-fetch.sh claude-usage-fetch.sh codex-usage-fetch.sh gpt-credits-fetch.sh cc-statusline-update-fetch.sh install.sh tests/run-tests.sh tests/run-fetch-tests.sh tests/run-install-tests.sh
   # Homebrew formula render + tap publish (run by .github/workflows/release.yml
   # on each v* tag; the formula body lives in Formula.rb.tmpl).
   brew:
@@ -42,19 +42,27 @@ tasks:
     cmds:
       - bash tests/run-tests.sh
 
+  test-themes-full:
+    desc: Exhaustive theme fixtures and one-column phone sweep (both locales, opt-in)
+    cmds:
+      - STATUSLINE_TEST_THEMES_FULL=1 bash tests/run-tests.sh
+      - LC_ALL=C STATUSLINE_TEST_THEMES_FULL=1 bash tests/run-tests.sh
+
   test-c-locale:
     desc: Run the test harness under LC_ALL=C (locale regression guard, see CHANGELOG v2.1.3)
     cmds:
       - LC_ALL=C bash tests/run-tests.sh
 
   test-fetch:
-    desc: "Run fetcher tests (service status, Claude/Codex usage, GPT credits, update check)"
+    desc: "Run fetcher and installer tests (service status, Claude/Codex usage, GPT credits, update check)"
     cmds:
       - bash tests/run-fetch-tests.sh
       - LC_ALL=C bash tests/run-fetch-tests.sh
+      - bash tests/run-install-tests.sh
+      - LC_ALL=C bash tests/run-install-tests.sh
 
   ci:
-    desc: Full validation (shell syntax + lint + tests + C-locale tests + fetcher tests)
+    desc: Full validation (shell syntax + lint + tests + C-locale tests + fetcher/installer tests)
     cmds:
       - task: shell:check
       - task: test

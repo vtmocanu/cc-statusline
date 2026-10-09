@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version)
             VERSION="${2:-}"
-            [ -z "$VERSION" ] && { err "--version requires a tag (e.g. v2.0.0)"; exit 1; }
+            [ -z "$VERSION" ] && { err "--version requires a tag (e.g. v3.6.0)"; exit 1; }
             shift 2
             ;;
         --uninstall)
@@ -97,10 +97,15 @@ PREV_REF=""
 [ -f "$INSTALL_DIR/.version" ] && PREV_REF=$(cat "$INSTALL_DIR/.version" 2>/dev/null || true)
 
 # Stage the chosen ref into a temp dir via `git archive` (no working-tree mutation).
-STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-install.XXXXXX")
-trap 'rm -rf "$STAGE_DIR"' EXIT
+# A file avoids SIGPIPE when tar closes a valid stream before Git finishes its
+# trailing padding. Check both steps before replacing any installed file.
+STAGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-install.XXXXXX")
+trap 'rm -rf "$STAGE_ROOT"' EXIT
+STAGE_DIR="$STAGE_ROOT/tree"
+mkdir -p "$STAGE_DIR"
 
-if ! git -C "$REPO_DIR" archive --format=tar "$REF" | tar -x -C "$STAGE_DIR"; then
+if ! git -C "$REPO_DIR" archive --format=tar --output="$STAGE_ROOT/source.tar" "$REF" \
+    || ! tar -x -f "$STAGE_ROOT/source.tar" -C "$STAGE_DIR"; then
     err "git archive failed for ref $REF"
     exit 1
 fi
@@ -121,6 +126,13 @@ install -m 0755 "$STAGE_DIR/claude-usage-fetch.sh"  "$INSTALL_DIR/claude-usage-f
 install -m 0755 "$STAGE_DIR/codex-usage-fetch.sh"   "$INSTALL_DIR/codex-usage-fetch.sh"
 install -m 0755 "$STAGE_DIR/gpt-credits-fetch.sh"   "$INSTALL_DIR/gpt-credits-fetch.sh"
 install -m 0755 "$STAGE_DIR/cc-statusline-update-fetch.sh" "$INSTALL_DIR/cc-statusline-update-fetch.sh"
+# Older tags predate the chooser. Preserve rollback to those tags and remove
+# a newer chooser that would otherwise target their unsupported renderer.
+if [ -f "$STAGE_DIR/cc-statusline-theme" ]; then
+    install -m 0755 "$STAGE_DIR/cc-statusline-theme" "$INSTALL_DIR/cc-statusline-theme"
+else
+    rm -f "$INSTALL_DIR/cc-statusline-theme"
+fi
 # VERSION is the human semver used in the scripts' User-Agent. Absent in tags
 # that predate it (the scripts then fall back to "dev"), so guard the copy.
 [ -f "$STAGE_DIR/VERSION" ] && install -m 0644 "$STAGE_DIR/VERSION" "$INSTALL_DIR/VERSION"
@@ -136,6 +148,16 @@ fi
 
 cat <<EOF
 
+cc-statusline now supports themes. The default is tokyo-auto (Tokyo Night,
+or Tokyo Day when your OS is in light mode). Choose one with live previews:
+
+  "$INSTALL_DIR/cc-statusline-theme"
+
+Or directly: "$INSTALL_DIR/cc-statusline-theme" set <name>
+List themes: "$INSTALL_DIR/cc-statusline-theme" list
+Previous look: "$INSTALL_DIR/cc-statusline-theme" set classic
+fzf is optional. STATUSLINE_THEME in statusLine.command overrides the saved choice.
+
 Add the following to ~/.claude/settings.json:
 
   "statusLine": {
@@ -148,11 +170,10 @@ refreshInterval re-runs the statusline every N seconds so idle sessions keep
 fresh reset times, service health, and rate-limit bars (requires a recent
 Claude Code). Remove the line to update only on activity.
 
-The descriptive session title on line 1 comes from Claude Code's native session
-name (its /rename value or auto-generated title). No hook or extra setup is
-needed; hide it with STATUSLINE_TOPIC=0, and the @handle with
+Auto session descriptions are remembered across user renames. No hook or extra
+setup is needed; hide them with STATUSLINE_TOPIC=0, and the @handle with
 STATUSLINE_SESSION_NAME=0.
 
-To roll back to a previous version: ./install.sh --version v2.0.0
+To roll back to a previous version: ./install.sh --version v3.6.0
 To uninstall:                       ./install.sh --uninstall
 EOF

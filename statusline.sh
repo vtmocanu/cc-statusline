@@ -3,6 +3,20 @@ set -uo pipefail  # no -e: external commands (git, kubectl, jq) can fail; silent
 trap 'printf "\n"' EXIT  # ensure at least empty output on crash
 [ "${STATUSLINE_DEBUG:-}" = "1" ] && exec 2>/tmp/statusline-debug.log
 
+# One source of theme names for validation and the packaged chooser.
+THEME_NAMES=(classic hue-dark nord phosphor synthwave tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin default)
+_theme_valid() {
+    local name
+    for name in "${THEME_NAMES[@]}"; do [ "$1" = "$name" ] && return 0; done
+    return 1
+}
+if [ "${1:-}" = "--list-themes" ]; then
+    trap - EXIT
+    printf '%s\n' "${THEME_NAMES[@]}"
+    exit 0
+fi
+
+
 # ── Portable helpers (BSD/macOS vs GNU/Linux) ───────────────────────────────
 # File mtime as Unix epoch. `date -r FILE +%s` works on both BSD and GNU.
 # Returns 0 on missing file or error.
@@ -40,6 +54,81 @@ _state_dir() {
 _gate_int() {   # _gate_int <value> <default> -> a decimal integer, always
     case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$((10#$1))" ;; esac
 }
+
+# Appearance cache: our only writer stores the timestamp with the answer.
+# Hot reads use builtins and the render's existing clock, with no stat/probe
+# process. Missing, malformed, expired or future records refresh at most once
+# per 60 seconds, including a failed probe's conservative dark fallback.
+_appearance() {
+    case "${CC_STATUSLINE_APPEARANCE:-}" in
+        dark|light) APPEARANCE="$CC_STATUSLINE_APPEARANCE"; return ;;
+    esac
+    # Mirror _state_dir with readonly UID to avoid id/mkdir/chmod on hot reads.
+    # Keep this default path in sync with _state_dir when changing its layout.
+    local cache="${CC_STATUSLINE_APPEARANCE_CACHE:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cc-statusline-${UID}/appearance}"
+    local record="" extra="" stamp now="${NOW:-}" os answer rc=0 tmp parent
+    if [ -z "$now" ]; then
+        now=$(date +%s)
+        now=$(_gate_int "${CC_STATUSLINE_NOW:-$now}" "$now")
+    fi
+    if { IFS= read -r record && { ! IFS= read -r extra && [ -z "$extra" ]; }; } 2>/dev/null <"$cache" \
+        && [[ "$record" =~ ^([0-9]{1,12})\|(dark|light)$ ]]; then
+        stamp=$((10#${BASH_REMATCH[1]}))
+        if [ "$stamp" -le "$now" ] && [ "$((now-stamp))" -lt 60 ]; then
+            APPEARANCE="${BASH_REMATCH[2]}"; return
+        fi
+    fi
+    APPEARANCE=dark
+    os=$(uname -s 2>/dev/null || true)
+    case "$os" in
+        Darwin)
+            if command -v defaults >/dev/null 2>&1; then
+                answer=$(timeout 2 defaults read -g AppleInterfaceStyle 2>/dev/null) || rc=$?
+                case "$rc" in
+                    0) [ "$answer" = Dark ] || APPEARANCE=light ;;
+                    1) APPEARANCE=light ;;
+                esac
+            fi
+            ;;
+        Linux)
+            if command -v gsettings >/dev/null 2>&1; then
+                answer=$(timeout 2 gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null) || rc=$?
+                if [ "$rc" = 0 ]; then
+                    case "$answer" in
+                        "'prefer-dark'"|prefer-dark) APPEARANCE=dark ;;
+                        "'prefer-light'"|prefer-light|"'default'"|default) APPEARANCE=light ;;
+                    esac
+                fi
+            fi
+            ;;
+    esac
+    parent="${cache%/*}"; [ "$parent" != "$cache" ] || parent=.
+    # Only our default state directory gets chmod; an override may name /tmp.
+    if mkdir -p "$parent" 2>/dev/null; then
+        if [ -z "${CC_STATUSLINE_APPEARANCE_CACHE:-}" ]; then chmod 700 "$parent" 2>/dev/null || return; fi
+        tmp=$(mktemp "${cache}.XXXXXX" 2>/dev/null) || return
+        if ! printf '%s|%s\n' "$now" "$APPEARANCE" >"$tmp" || ! mv -f "$tmp" "$cache" 2>/dev/null; then
+            rm -f "$tmp" 2>/dev/null
+        fi
+    fi
+}
+_theme_resolve() {
+    THEME_RESOLVED="$1"
+    [ "$THEME_RESOLVED" != default ] || THEME_RESOLVED=tokyo-auto
+    _theme_valid "$THEME_RESOLVED" || THEME_RESOLVED=tokyo-auto
+    if [ "$THEME_RESOLVED" = tokyo-auto ]; then
+        _appearance
+        case "$APPEARANCE" in light) THEME_RESOLVED=tokyo-day ;; *) THEME_RESOLVED=tokyo-night ;; esac
+    fi
+}
+# Internal chooser path shares exactly the renderer's resolver, without stdin.
+if [ "${1:-}" = --resolve-theme ]; then
+    trap - EXIT
+    [ "$#" = 2 ] || exit 2
+    _theme_resolve "$2"
+    printf '%s\n' "$THEME_RESOLVED"
+    exit 0
+fi
 
 # ── Codepoint-aware length and slicing for the truncation math ─────────────
 # Bash's ${#s} and ${s: -n} count BYTES whenever the locale is not UTF-8 (the
@@ -171,21 +260,19 @@ MODE="${MODE//[$'\001'-$'\037\177']/}"
 # Then strip control bytes (a /rename value is user-controlled) and hard-cap the
 # length so a pathological name cannot dominate line 1 at a wide viewport;
 # width-driven truncation on the NAME rung shortens it further on real overflow.
-SESSION_HANDLE=""
+SESSION_HANDLE=""; SESSION_REG_HANDLE=""; SESSION_USER_RENAME=0
+# Read identity even when its display is hidden: the title must still recognize
+# a user rename. Both fields come from the same registry pass, without a tail.
+_SESS_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
+if [ -n "$SESSION_ID" ] && [ -d "$_SESS_DIR" ]; then
+    eval "$(jq -nr --arg sid "$SESSION_ID" --arg title "$SESSION_TITLE" '
+        (first(inputs | objects | select(.sessionId == $sid)) // {})
+        | @sh "SESSION_REG_HANDLE=\(.name | if type == "string" then . else "" end)",
+          @sh "SESSION_USER_RENAME=\(if .nameSource == "user" and .name == $title then "1" else "0" end)"
+        ' "$_SESS_DIR"/*.json 2>/dev/null || true)" 2>/dev/null
+fi
 if [ "${STATUSLINE_SESSION_NAME:-1}" != "0" ]; then
-    # CC_STATUSLINE_SESSIONS_DIR overrides the registry location (test isolation,
-    # mirrors the SVC/RL cache seams), so the suite never reads the real registry.
-    _SESS_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
-    if [ -n "$SESSION_ID" ] && [ -d "$_SESS_DIR" ]; then
-        # One jq pass over the (few, tiny) registry files; match on sessionId,
-        # take the first .name. Any failure (no files, unreadable, bad JSON) is
-        # swallowed and leaves the handle empty. The glob is literal when nothing
-        # matches, so jq errors to /dev/null and SESSION_HANDLE stays empty.
-        SESSION_HANDLE=$(jq -r --arg sid "$SESSION_ID" \
-            'select(.sessionId == $sid) | .name // empty' \
-            "$_SESS_DIR"/*.json 2>/dev/null | head -n1 || true)
-    fi
-    SESSION_HANDLE="${SESSION_HANDLE//[$'\001'-$'\037\177']/}"
+    SESSION_HANDLE="${SESSION_REG_HANDLE//[$'\001'-$'\037\177']/}"
     [ "$(_clen "$SESSION_HANDLE")" -gt 40 ] 2>/dev/null && SESSION_HANDLE="$(_head_cp "$SESSION_HANDLE" 40)"
 fi
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
@@ -1086,31 +1173,88 @@ RST="\033[0m"
 PROJECT_ROOT=$(git -C "$CWD_FULL" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_FULL")
 PHASH=$(printf '%s' "${SESSION_ID:-$CWD_FULL}" | cksum | cut -d' ' -f1 || echo "0")
 
-# ── Session topic (Claude Code's native session title) ─────────────────────
-# The descriptive label for line 1, sourced from the stdin .session_name
-# (SESSION_TITLE): the /rename value if set, else Claude Code's auto-generated
-# session title (e.g. "Add session names to status line"), which Claude Code
-# writes to the transcript as .aiTitle and serves here. This replaced an earlier
-# opt-in hook that called Claude Haiku to synthesize the same kind of label; the
-# native title needs no extra API call, credential, or quota. If you upgraded from
-# a version that shipped that hook and still have its UserPromptSubmit entry in
-# settings.json, Claude Code prints "session-topic-capture.sh: No such file or
-# directory" on every prompt (non-blocking): delete that one UserPromptSubmit entry
-# to silence it. The old ~/.claude/session-topics/ cache is dead and safe to remove.
-# Shown bold after
-# the @handle. On by default; STATUSLINE_TOPIC=0 hides it. Control bytes are
-# stripped (same as every other JSON-sourced field: removing the ESC byte
-# neutralizes any CSI/OSC a model-authored title might contain) and the length is
-# capped so it cannot dominate line 1 at a wide viewport; the TOPIC truncation
-# rung shrinks it further on real overflow.
-if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
-    TOPIC="${SESSION_TITLE//[$'\001'-$'\037\177']/}"
-    [ "$(_clen "$TOPIC")" -gt 40 ] 2>/dev/null && TOPIC="$(_head_cp "$TOPIC" 40)"
+# ── Session topic (remembered native auto title, no transcript reads) ──────
+# A user rename is identified by the registry's nameSource plus exact raw name
+# equality with stdin .session_name. Preserve the last non-empty auto title,
+# so renaming the addressable handle does not replace its description.
+_session_label_clean() {
+    _SESSION_LABEL="${1//[$'\001'-$'\037\177']/}"
+    if _is_ascii "$_SESSION_LABEL"; then
+        _SESSION_LABEL="${_SESSION_LABEL:0:40}"
+    elif [ "$(_clen "$_SESSION_LABEL")" -gt 40 ] 2>/dev/null; then
+        _SESSION_LABEL="$(_head_cp "$_SESSION_LABEL" 40)"
+    fi
+}
+_same_session_label() {
+    local rc nocase=0
+    if _is_ascii "$1" && _is_ascii "$2"; then
+        shopt -q nocasematch || { shopt -s nocasematch; nocase=1; }
+        [[ "$1" == "$2" ]]; rc=$?
+        [ "$nocase" = 0 ] || shopt -u nocasematch
+        return "$rc"
+    fi
+    printf '%s\0%s' "$1" "$2" | perl -CS -0777 -ne '
+        my ($a, $b) = split /\0/, $_, 2;
+        exit(lc($a) eq lc($b) ? 0 : 1);
+    ' 2>/dev/null
+}
+_session_label_clean "$SESSION_TITLE"
+_TITLE_NATIVE="$_SESSION_LABEL"; _TITLE_DISPLAY="$_TITLE_NATIVE"
+_TITLE_STORED=""; _TITLE_FILE=""
+# Mirror _state_dir for builtin steady-state reads; create/chmod only on writes.
+_TITLE_DIR="${CC_STATUSLINE_TITLE_CACHE:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cc-statusline-${UID}/session-title}"
+case "$SESSION_ID" in
+    ''|*[!A-Za-z0-9_-]*) ;;
+    *) if [ "${#SESSION_ID}" -le 200 ]; then
+        _TITLE_FILE="$_TITLE_DIR/$SESSION_ID"
+        { IFS= read -r _TITLE_STORED; } 2>/dev/null <"$_TITLE_FILE" || true
+        _session_label_clean "$_TITLE_STORED"
+        _TITLE_STORED="$_SESSION_LABEL"
+    fi ;;
+esac
+if [ "$SESSION_USER_RENAME" = 1 ]; then
+    _TITLE_DISPLAY="$_TITLE_STORED"
+elif [ -n "$_TITLE_NATIVE" ] && [ -n "$_TITLE_FILE" ] && [ "$_TITLE_NATIVE" != "$_TITLE_STORED" ]; then
+    # Empty frames never erase a remembered title. Temp + mv is same-directory
+    # atomic publication; mktemp keeps the file private and stale files harmless.
+    if [ -z "${CC_STATUSLINE_TITLE_CACHE:-}" ]; then _state_dir >/dev/null; fi
+    if (umask 077; mkdir -p "$_TITLE_DIR") 2>/dev/null; then
+        _TITLE_TMP=$(mktemp "$_TITLE_DIR/.${SESSION_ID}.XXXXXX" 2>/dev/null) || _TITLE_TMP=""
+        if [ -n "$_TITLE_TMP" ]; then
+            if ! printf '%s\n' "$_TITLE_NATIVE" >"$_TITLE_TMP" \
+                || ! mv -f "$_TITLE_TMP" "$_TITLE_FILE" 2>/dev/null; then
+                rm -f "$_TITLE_TMP" 2>/dev/null
+            fi
+        fi
+    fi
 fi
+if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
+    TOPIC="$_TITLE_DISPLAY"
+    # Only a visible handle can duplicate the description. Sanitation and the
+    # 40-codepoint cap happen before comparison, not after layout truncation.
+    if [ -n "$SESSION_HANDLE" ] && _same_session_label "$TOPIC" "$SESSION_HANDLE"; then TOPIC=""; fi
+fi
+
+# The old look is Classic; explicit/unknown choices use the OS-auto default.
+THEME=tokyo-auto
+if [ "${STATUSLINE_THEME+x}" = x ]; then
+    THEME="$STATUSLINE_THEME"
+else
+    _THEME_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme"
+    if [ -f "$_THEME_FILE" ]; then
+        { IFS= read -r THEME <"$_THEME_FILE"; } 2>/dev/null || true
+        THEME="${THEME//[[:space:]]/}"
+    elif [ -f "$HOME/.claude/statusline-color-overrides.json" ]; then
+        # Existing project palettes keep the old look until explicitly changed.
+        THEME=classic
+    fi
+fi
+_theme_resolve "$THEME"
+THEME="$THEME_RESOLVED"
 
 # Check for manual color override
 COLOR_OVERRIDES="$HOME/.claude/statusline-color-overrides.json"
-if [ -f "$COLOR_OVERRIDES" ]; then
+if { [ "$THEME" = "classic" ] || [ "$THEME" = "hue-dark" ]; } && [ -f "$COLOR_OVERRIDES" ]; then
     COLOR_IDX=$(jq -r --arg p "$PROJECT_ROOT" '.[$p] // empty' "$COLOR_OVERRIDES" 2>/dev/null || true)
 fi
 COLOR_IDX=${COLOR_IDX:-$((PHASH % 12))}
@@ -1135,23 +1279,162 @@ esac
 SEP_R=$((BG_R * 40 / 100)); SEP_G=$((BG_G * 40 / 100)); SEP_B=$((BG_B * 40 / 100))
 TXT_R=$((BG_R * 15 / 100)); TXT_G=$((BG_G * 15 / 100)); TXT_B=$((BG_B * 15 / 100))
 
+# Rendering tokens. Keep Classic escape spelling/order byte-identical.
+SEP_CH="│"; SEP2_CH="│"; DOT2_CH="·"
 BG1="\033[48;2;${BG_R};${BG_G};${BG_B}m"
-B="${RST}${BG1}"
-SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m│"
 TXT_FG="\033[38;2;${TXT_R};${TXT_G};${TXT_B}m"
 TXT_BOLD="\033[38;2;${TXT_R};${TXT_G};${TXT_B};1m"
 PROJ_FG="\033[38;2;${BG_R};${BG_G};${BG_B}m"
-
-# ── Line 2 colors (black fill, light gray text, colored % numbers) ──────────
 BG2="\033[48;2;0;0;0m"
-B2="${RST}${BG2}"
-L2_TXT="\033[38;2;170;170;170m"   # light gray
-L2_DIM="\033[38;2;80;80;80m"      # dim gray for separators + resets
+L2_TXT="\033[38;2;170;170;170m"
+L2_DIM="\033[38;2;80;80;80m"
+CLR_SAGE="\033[38;2;150;210;150m"
+CLR_GOLD="\033[38;2;215;195;125m"
+CLR_CORAL="\033[38;2;225;150;150m"
+CLR_ICE="\033[38;2;140;180;225m"
+CLR_OK="\033[38;2;100;200;120m"
+CLR_INC="\033[38;2;225;150;100m"
+CLR_BAD="\033[38;2;225;100;100m"
+UPD_CLR="$CLR_GOLD"
+MODE_CLR="\033[1;38;2;150;100;0m"
+BAR_FILL="▰"; BAR_EMPTY="▱"; BAR_PRE=""; BAR_POST=""
+CAP1_L="${PROJ_FG}${NF_CORNER_TL}"; CAP1_R="${PROJ_FG}${NF_CORNER_TR}"
+CAP2_L="\033[38;2;0;0;0m${NF_CORNER_BL}"; CAP2_R="\033[38;2;0;0;0m${NF_CORNER_BR}"
 
-CLR_SAGE="\033[38;2;150;210;150m"   # green: good
-CLR_GOLD="\033[38;2;215;195;125m"   # amber: caution
-CLR_CORAL="\033[38;2;225;150;150m"  # coral: warning
-CLR_ICE="\033[38;2;140;180;225m"    # ice blue: prompt cache cold
+THEME_STYLE=flat
+SEG_JOIN=$'\xee\x82\xb0'; SEG_OPEN=$'\xee\x82\xb2'
+SEG_PILL_L=$'\xee\x82\xb6'; SEG_PILL_R=$'\xee\x82\xb4'
+
+# Hex conversion and token assignment use bash printf -v, with no forks.
+# All inputs below are trusted palette constants, never user-controlled text.
+_theme_rgb() { printf -v THEME_RGB '%d;%d;%d' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}"; }
+_theme_fg() { _theme_rgb "$2"; printf -v "$1" '%s' "\033[38;2;${THEME_RGB}m"; }
+_theme_palette() {  # bg1, text, separator, bg2, l2 text/dim, good/caution/bad/cold
+    _theme_rgb "$1"; BG1="\033[48;2;${THEME_RGB}m"
+    _theme_fg TXT_FG "$2"; TXT_BOLD="${TXT_FG}\033[1m"
+    _theme_rgb "$3"; IFS=';' read -r SEP_R SEP_G SEP_B <<< "$THEME_RGB"
+    _theme_rgb "$4"; BG2="\033[48;2;${THEME_RGB}m"
+    _theme_fg CAP2_FG "$4"
+    CAP2_L="${CAP2_FG}${NF_CORNER_BL}"; CAP2_R="${CAP2_FG}${NF_CORNER_BR}"
+    _theme_fg L2_TXT "$5"; _theme_fg L2_DIM "$6"
+    _theme_fg CLR_SAGE "$7"; _theme_fg CLR_GOLD "$8"
+    _theme_fg CLR_CORAL "$9"; _theme_fg CLR_ICE "${10}"
+    CLR_OK="$CLR_SAGE"; CLR_INC="$CLR_GOLD"; CLR_BAD="$CLR_CORAL"
+    UPD_CLR="$CLR_GOLD"; MODE_CLR="${CLR_GOLD}\033[1m"
+}
+
+# Segment roles keep their backgrounds separate from the transparent padding.
+_theme_roles() {  # handle, topic, directory, branch, status, tail, right
+    _theme_rgb "$1"; SEG_HANDLE_BG="$THEME_RGB"
+    _theme_rgb "$2"; SEG_TOPIC_BG="$THEME_RGB"
+    _theme_rgb "$3"; SEG_DIR_BG="$THEME_RGB"
+    _theme_rgb "$4"; SEG_BRANCH_BG="$THEME_RGB"
+    _theme_rgb "$5"; SEG_STATUS_BG="$THEME_RGB"
+    _theme_rgb "$6"; SEG_TAIL_BG="$THEME_RGB"
+    _theme_rgb "$7"; SEG_RIGHT_BG="$THEME_RGB"
+}
+
+# One palette block; derived separators/background resets are built afterward.
+case "$THEME" in
+    hue-dark)  # Project identity inverted onto an 18% tint.
+        BG1="\033[48;2;$((BG_R*18/100));$((BG_G*18/100));$((BG_B*18/100))m"
+        TXT_FG="$PROJ_FG"; TXT_BOLD="${PROJ_FG}\033[1m"
+        SEP_R=$((BG_R*55/100)); SEP_G=$((BG_G*55/100)); SEP_B=$((BG_B*55/100))
+        BG2="\033[48;2;14;14;16m"
+        L2_TXT="\033[38;2;176;176;176m"; L2_DIM="\033[38;2;100;100;100m"
+        CAP1_L="${PROJ_FG}▌"; CAP1_R="${PROJ_FG}▐"
+        CAP2_L="$CAP1_L"; CAP2_R="$CAP1_R"
+        BAR_FILL="▮"; BAR_EMPTY="▯"
+        ;;
+    nord)  # Transparent, restrained Nordic colors.
+        _theme_palette 000000 d8dee9 4c566a 000000 d8dee9 606a80 a3be8c ebcb8b bf616a 88c0d0
+        BG1="\033[49m"; BG2="\033[49m"
+        CAP1_L=""; CAP1_R=""; CAP2_L=""; CAP2_R=""
+        SEP_CH=" "; SEP2_CH=" "; BAR_FILL="─"; BAR_EMPTY="─"
+        ;;
+    phosphor)  # CRT green with amber/red alerts preserved.
+        _theme_palette 001a08 33cc66 145c2c 001a08 33cc66 2a743c 5dff8a d7c37d e19696 33cc66
+        CAP1_L=""; CAP1_R=""; CAP2_L=""; CAP2_R=""
+        SEP_CH=">"; SEP2_CH="|"; BAR_FILL="#"; BAR_EMPTY="."
+        BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
+        ;;
+    synthwave)  # Neon gradient on line 1, dusk on line 2.
+        _theme_palette ff2a6d ffffff f0e8ff 1a1033 d1c4e9 6b5b85 05d9e8 f9c80e ff2a6d 05d9e8
+        _theme_fg CAP1_FG ff2a6d; CAP1_L="${CAP1_FG}${NF_CORNER_TL}"
+        _theme_fg CAP1_FG 05d9e8; CAP1_R="${CAP1_FG}${NF_CORNER_TR}"
+        TXT_FG+="\033[1m"; TXT_BOLD="$TXT_FG"
+        SEP_CH="▸"; SEP2_CH="//"; BAR_FILL="⣿"; BAR_EMPTY="⣀"
+        ;;
+    tokyo-night)  # Stepped arrows, neon on navy.
+        _theme_palette 1a1b26 c0caf5 3b4261 1a1b26 a9b1d6 606987 9ece6a e0af68 f7768e 7dcfff
+        _theme_roles 7aa2f7 bb9af7 3b4261 292e42 292e42 292e42 292e42
+        _theme_fg SEG_INK 1a1b26; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
+        SEG_RIGHT_FG="$CLR_ICE"; _theme_fg SEG_RIGHT_DIM 7883a3; THEME_STYLE=arrow
+        SEP2_CH=$'\xee\x82\xb1'; BAR_FILL="━"; BAR_EMPTY="━"
+        CAP2_L=""; CAP2_R="\033[38;2;26;27;38m${SEG_JOIN}"
+        ;;
+    tokyo-day)  # Official folke/tokyonight.nvim Day colors, cdc07ac.
+        _theme_palette e1e2e7 3760bf 68709a e1e2e7 3760bf 68709a 587539 8c6c3e c64343 007197
+        _theme_roles 3760bf 7847bd c4c8da d0d5e3 d0d5e3 d0d5e3 d0d5e3
+        _theme_fg SEG_INK e1e2e7; _theme_fg SEG_DIR_FG 2e5857; SEG_BRANCH_FG="$CLR_SAGE"
+        SEG_RIGHT_FG="$TXT_FG"; _theme_fg SEG_RIGHT_DIM 68709a; THEME_STYLE=arrow
+        SEP2_CH=$'\xee\x82\xb1'; BAR_FILL="━"; BAR_EMPTY="━"
+        CAP2_L=""; CAP2_R="\033[38;2;225;226;231m${SEG_JOIN}"
+        ;;
+    gruvbox)  # Earth tones and hard arrows.
+        _theme_palette 282828 ebdbb2 665c54 282828 ebdbb2 837567 b8bb26 fabd2f fb4934 83a598
+        _theme_roles d65d0e d79921 689d6a 504945 504945 504945 d65d0e
+        _theme_fg SEG_INK 282828; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$TXT_FG"
+        SEG_RIGHT_FG="$SEG_INK"; _theme_fg SEG_RIGHT_DIM 48301b
+        UPD_CLR="${SEG_INK}\033[1m"; THEME_STYLE=arrow
+        BAR_FILL="█"; BAR_EMPTY="░"; BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
+        CAP2_L=""; CAP2_R=""
+        ;;
+    dracula)  # Purple/pink steps with flame joiners.
+        _theme_palette 282a36 f8f8f2 6272a4 282a36 f8f8f2 6272a4 50fa7b ffb86c ff5555 8be9fd
+        _theme_roles bd93f9 ff79c6 44475a 44475a 44475a 44475a 44475a
+        _theme_fg SEG_INK 282a36; SEG_DIR_FG="$TXT_FG"; SEG_BRANCH_FG="$CLR_SAGE"
+        SEG_RIGHT_FG="$CLR_ICE"; _theme_fg SEG_RIGHT_DIM a0a4bc; THEME_STYLE=arrow; SEG_JOIN=$'\xee\x83\x80'
+        CAP2_L=""; CAP2_R="\033[38;2;40;42;54m${SEG_JOIN}"
+        ;;
+    catppuccin)  # Mocha capsules; service alerts use a dark surface.
+        _theme_palette 1e1e2e cdd6f4 585b70 313244 cdd6f4 7c8098 a6e3a1 f9e2af f38ba8 89dceb
+        _theme_roles f5c2e7 cba6f7 89b4fa a6e3a1 313244 313244 f9e2af
+        _theme_fg SEG_INK 1e1e2e; SEG_DIR_FG="$SEG_INK"; SEG_BRANCH_FG="$SEG_INK"
+        SEG_RIGHT_FG="$SEG_INK"; _theme_fg SEG_RIGHT_DIM 585b70
+        UPD_CLR="${SEG_INK}\033[1m"; THEME_STYLE=pill
+        BAR_FILL="●"; BAR_EMPTY="○"
+        CAP2_L="${CAP2_FG}${SEG_PILL_L}"; CAP2_R="${CAP2_FG}${SEG_PILL_R}"
+        ;;
+esac
+B="${RST}${BG1}"; B2="${RST}${BG2}"
+SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
+SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
+PEER_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
+PEER_FG="$TXT_FG"; PEER_BOLD="$TXT_BOLD"; PEER_B="$B"
+if [ "$THEME" = synthwave ]; then
+    SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B};1m${SEP_CH}"
+    PEER_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B};1m"
+fi
+if [ "$THEME_STYLE" != "flat" ]; then
+    SEG_PEER_BG="$SEG_TAIL_BG"
+    PEER_FG="$L2_TXT"; PEER_BOLD="${PEER_FG}\033[1m"
+    PEER_B="${RST}\033[48;2;${SEG_PEER_BG}m"
+    PEER_DIM="$L2_DIM"
+    case "$THEME" in tokyo-night|dracula) PEER_DIM="$SEG_RIGHT_DIM" ;; esac
+    BG1="\033[49m"  # Padding between left and right groups is transparent.
+    CAP1_L=""
+    TXT_FG="$SEG_RIGHT_FG"; TXT_BOLD="${TXT_FG}\033[1m"
+    B="${RST}\033[48;2;${SEG_RIGHT_BG}m"
+    if [ "$THEME_STYLE" = "pill" ]; then
+        SEP="${RST}\033[38;2;${SEG_RIGHT_BG}m${SEG_PILL_L}"
+        CAP1_R="\033[38;2;${SEG_RIGHT_BG}m${SEG_PILL_R}"
+        SEP2="${RST}${CAP2_FG}${SEG_PILL_R}${RST} ${CAP2_FG}${SEG_PILL_L}${B2}"
+    else
+        SEP="${RST}\033[38;2;${SEG_RIGHT_BG}m${SEG_OPEN}"
+        CAP1_R="\033[38;2;${SEG_RIGHT_BG}m${SEG_JOIN}"
+    fi
+fi
 # Threshold color for a percentage. Default scale: low is good (sage), high is
 # bad (coral). Pass "invert" as $2 for metrics where high is GOOD, e.g. the
 # cache hit rate (green when most of the context is served from cache, coral
@@ -1197,14 +1480,14 @@ else TIME="${S}s"
 fi
 
 # Color-code elapsed time
-if   [ "$H" -gt 2 ]; then TIME_CLR="\033[38;2;225;150;150m"   # coral: 3h+
-elif [ "$H" -gt 0 ]; then TIME_CLR="\033[38;2;215;195;125m"   # gold: 1-3h
-else                      TIME_CLR="\033[38;2;150;210;150m"   # sage: <1h
+if   [ "$H" -gt 2 ]; then TIME_CLR="$CLR_CORAL"   # coral: 3h+
+elif [ "$H" -gt 0 ]; then TIME_CLR="$CLR_GOLD"   # gold: 1-3h
+else                      TIME_CLR="$CLR_SAGE"   # sage: <1h
 fi
 
 # ── Bar builder ─────────────────────────────────────────────────────────────
 make_bar() {
-    local pct=${1:-0} width=${2:-5} fill_clr="$3" empty_clr="$4" bar=""
+    local pct=${1:-0} width=${2:-5} fill_clr="$3" empty_clr="$4" bar="$BAR_PRE"
     pct=${pct%%.*}  # safety: strip decimal
     case "$pct" in ''|*[!0-9]*) pct=0 ;; esac  # non-numeric -> 0 (set -u arith)
     local filled=$((pct * width / 100))
@@ -1212,9 +1495,9 @@ make_bar() {
     [ "$filled" -gt "$width" ] && filled=$width
     [ "$filled" -lt 0 ] && filled=0
     local empty=$((width - filled))
-    for ((i=0; i<filled; i++)); do bar+="${fill_clr}▰"; done
-    for ((i=0; i<empty; i++));  do bar+="${empty_clr}▱"; done
-    printf "%b" "$bar"
+    for ((i=0; i<filled; i++)); do bar+="${fill_clr}${BAR_FILL}"; done
+    for ((i=0; i<empty; i++));  do bar+="${empty_clr}${BAR_EMPTY}"; done
+    printf "%b" "${bar}${BAR_POST}"
 }
 
 # ── Rate limit reset formatter (takes Unix epoch) ─────────────────────────
@@ -1280,8 +1563,8 @@ pace_arrow() {
     [ "$floor" -lt 900 ] && floor=900
     [ "$elapsed" -le "$floor" ] 2>/dev/null && return
     local projected=$(( used * duration / elapsed ))
-    if   [ "$projected" -gt 115 ]; then printf '\033[38;2;225;150;150m↑'
-    elif [ "$projected" -gt 85  ]; then printf '\033[38;2;215;195;125m→'
+    if   [ "$projected" -gt 115 ]; then printf '%b↑' "$CLR_CORAL"
+    elif [ "$projected" -gt 85  ]; then printf '%b→' "$CLR_GOLD"
     fi
 }
 
@@ -1306,15 +1589,63 @@ measure_cols() {
 # width) rather than a hand-maintained character-count estimate: that is what
 # removes the old off-by-2 between the initial estimate (seed 5) and the
 # recalculation paths after each truncation (which re-seeded to 2).
-L1_PREFIX="${RST}${PROJ_FG}${NF_CORNER_TL}${BG1}"
+L1_PREFIX="${RST}${CAP1_L}${BG1}"
 # GitHub service-status icon (empty unless the repo has a github.com remote and
 # STATUSLINE_GITHUB_STATUS is not 0; populated in the GitHub-status block below,
 # before assemble_l1 is first called). Declared here so the function never
 # references an unset var under set -u regardless of ordering.
-GH_SEG=""
+GH_SEG=""; GH_GLYPH=""
+# The segmented builder receives the same truncated values as the flat path.
+# Every cap/joiner is assembled before measure_cols, including the closing cap.
+_seg_add() {  # background RGB, foreground SGR, content
+    local bg="$1" fg="$2" text="$3"
+    [ -n "$text" ] || return 0
+    if [ -z "$SEG_PREV_BG" ]; then
+        L1C+="${RST}"
+        [ "$THEME_STYLE" = "pill" ] && L1C+="\033[38;2;${bg}m${SEG_PILL_L}"
+        L1C+="\033[48;2;${bg}m${fg} ${text} "
+    elif [ "$bg" = "$SEG_PREV_BG" ]; then
+        L1C+="${fg}${text} "
+    elif [ "$THEME_STYLE" = "pill" ]; then
+        L1C+="${RST}\033[38;2;${SEG_PREV_BG}m${SEG_PILL_R}${RST} \033[38;2;${bg}m${SEG_PILL_L}\033[48;2;${bg}m${fg} ${text} "
+    else
+        L1C+="${RST}\033[48;2;${bg}m\033[38;2;${SEG_PREV_BG}m${SEG_JOIN}${fg} ${text} "
+    fi
+    SEG_PREV_BG="$bg"
+}
+_assemble_l1_seg() {
+    L1C="${RST}"; SEG_PREV_BG=""
+    if [ "$LAYOUT" != "phone" ]; then
+        [ -n "$SESSION_HANDLE" ] && _seg_add "$SEG_HANDLE_BG" "${SEG_INK}\033[1m" "@${SESSION_HANDLE}"
+        [ -n "$PEER_SEG" ] && _seg_add "$SEG_PEER_BG" "$PEER_FG" "$PEER_SEG"
+        [ -n "$TOPIC" ] && _seg_add "$SEG_TOPIC_BG" "${SEG_INK}\033[1m" "$TOPIC"
+    fi
+    _seg_add "$SEG_DIR_BG" "$SEG_DIR_FG" "${NF_FOLDER} ${DIR}"
+    if [ -n "$BRANCH" ]; then
+        local status=""
+        [ -n "$GIT_STATUS" ] && status=" ${CLR_GOLD}${GIT_STATUS}"
+        # Pastel branch capsules need dark ink for the dirty markers too.
+        [ "$THEME_STYLE" = "pill" ] && [ -n "$status" ] && status=" ${SEG_INK}${GIT_STATUS}"
+        _seg_add "$SEG_BRANCH_BG" "$SEG_BRANCH_FG" "${NF_GIT} ${BRANCH}${status}"
+    fi
+    [ "$LAYOUT" = "phone" ] && [ -n "$PEER_SEG" ] && _seg_add "$SEG_PEER_BG" "$PEER_FG" "$PEER_SEG"
+    [ -n "$GH_GLYPH" ] && _seg_add "$SEG_STATUS_BG" "$CLR_OK" "$GH_GLYPH"
+    if [ "$LAYOUT" != "phone" ]; then
+        local tail="$AGENT"
+        [ -n "$MODE" ] && tail+="${tail:+ }${MODE_CLR}${MODE}"
+        [ -n "$K8S_CTX" ] && tail+="${tail:+ }${L2_TXT}${NF_K8S} ${K8S_CTX}"
+        [ -n "$tail" ] && _seg_add "$SEG_TAIL_BG" "$L2_TXT" "$tail"
+    fi
+    local end="$SEG_JOIN"
+    [ "$THEME_STYLE" = "pill" ] && end="$SEG_PILL_R"
+    L1C+="${RST}\033[38;2;${SEG_PREV_BG}m${end}${RST}"
+}
+
 assemble_l1() {
+    if [ "$THEME_STYLE" != "flat" ]; then _assemble_l1_seg; return; fi
     L1C="${L1_PREFIX}"
-    # Phone: folder + branch only. Topic, agent, mode and k8s are the first
+    # Phone: folder + branch, with peer counts only while they fit.
+    # Topic, agent, mode and k8s are the first
     # things a narrow viewport cannot afford, and the folder answers "which
     # session am I looking at" more reliably than any of them.
     if [ "$LAYOUT" = "phone" ]; then
@@ -1323,11 +1654,14 @@ assemble_l1() {
             L1C+="${SEP}${B} ${TXT_FG}${NF_GIT} ${BRANCH}${B}"
             [ -n "$GIT_STATUS" ] && L1C+=" ${TXT_FG}${GIT_STATUS}${B}"
         fi
+        [ -n "$PEER_SEG" ] && L1C+=" ${PEER_SEG}${B}"
         L1C+="$GH_SEG"
         L1C+=" "
         return
     fi
-    [ -n "$SESSION_HANDLE" ] && L1C+=" ${TXT_BOLD}@${SESSION_HANDLE}${B} ${SEP}${B}"
+    [ -n "$SESSION_HANDLE" ] && L1C+=" ${TXT_BOLD}@${SESSION_HANDLE}${B}"
+    [ -n "$PEER_SEG" ] && L1C+=" ${PEER_SEG}${B}"
+    if [ -n "$SESSION_HANDLE" ] || [ -n "$PEER_SEG" ]; then L1C+=" ${SEP}${B}"; fi
     [ -n "$TOPIC" ] && L1C+=" ${TXT_BOLD}${TOPIC}${B} ${SEP}${B}"
     L1C+=" ${TXT_FG}${NF_FOLDER} ${DIR} ${B}"
     if [ -n "$BRANCH" ]; then
@@ -1336,7 +1670,7 @@ assemble_l1() {
     fi
     L1C+="$GH_SEG"
     [ -n "$AGENT" ] && L1C+=" ${TXT_FG}${AGENT}${B}"
-    [ -n "$MODE" ]  && L1C+=" ${SEP}${B} \033[1;38;2;150;100;0m${MODE}${B}"
+    [ -n "$MODE" ]  && L1C+=" ${SEP}${B} ${MODE_CLR}${MODE}${B}"
     [ -n "$K8S_CTX" ] && L1C+=" ${SEP}${B} ${TXT_FG}${NF_K8S} ${K8S_CTX}${B}"
     L1C+=" "
 }
@@ -1351,7 +1685,7 @@ CTX_BAR=$(make_bar "$PCT" 7 "$CTX_CLR" "$L2_DIM")
 case $EFFORT in
     max|xhigh|high) EFFORT_CLR="$CLR_SAGE" ;;            # sage: thinking hard
     low)            EFFORT_CLR="$CLR_CORAL" ;;           # coral: warning
-    *)              EFFORT_CLR="\033[38;2;170;170;170m" ;;  # gray: medium/unknown
+    *)              EFFORT_CLR="$L2_TXT" ;;  # gray: medium/unknown
 esac
 
 # ── Session usage value beside the clock ───────────────────────────────────
@@ -1364,7 +1698,7 @@ COST_SEG=""
 if [ "$GPT_ACTIVE" != "1" ] && [ "${STATUSLINE_COST:-1}" != "0" ] \
     && [ "$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
     COST_FMT=$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{ if (c>0 && c<0.005) printf "<0.01"; else printf "%.2f", c }' 2>/dev/null)
-    COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}\$${COST_FMT}${B2}"
+    COST_SEG=" ${DOT2} ${L2_TXT}\$${COST_FMT}${B2}"
 elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
     CREDITS_FMT=$(LC_ALL=C awk -v u="$GPT_CREDITS_UNITS" 'BEGIN {
         if      (u >= 999995000000000000) printf "%.2fT", u / 1000000000000000000
@@ -1374,12 +1708,12 @@ elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
         else                              printf "%.2f",  u / 1000000
     }' 2>/dev/null)
     [[ "$CREDITS_FMT" =~ ^[0-9]+\.[0-9]{2}[kMBT]?$ ]] \
-        && COST_SEG=" ${L2_DIM}·${B2} ${L2_TXT}${CREDITS_FMT} cr${B2}"
+        && COST_SEG=" ${DOT2} ${L2_TXT}${CREDITS_FMT} cr${B2}"
 fi
 
-L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${L2_DIM}·${B2} ${EFFORT_CLR}${EFFORT}${B2}"
-[ -n "$PROFILE_LABEL" ] && L2C+=" ${L2_DIM}·${B2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
-L2C+=" ${L2_DIM}│${B2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2}${COST_SEG} ${L2_DIM}│${B2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
+L2C="${RST}${CAP2_L}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${DOT2} ${EFFORT_CLR}${EFFORT}${B2}"
+[ -n "$PROFILE_LABEL" ] && L2C+=" ${DOT2} ${PROFILE_FG}${PROFILE_LABEL}${B2}"
+L2C+=" ${SEP2} ${L2_TXT}${NF_CLOCK} ${TIME_CLR}${TIME}${B2}${COST_SEG} ${SEP2} ${CTX_BAR} ${CTX_CLR}${PCT}%${B2} ${L2_TXT}of ${CTX_SIZE_K}k"
 
 # ── Rate-limit detail candidates (full / compact / minimal) ────────────────
 # Build all three tiers up front so the widest one that actually FITS can be
@@ -1407,23 +1741,23 @@ if [ "$RATE_READY" = "1" ]; then
         [ "$PACE_ON" = "1" ] && FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" "$FIVE_DURATION" "$NOW")
         FIVE_BAR=$(make_bar "$FIVE_PCT" 5 "$FIVE_CLR" "$L2_DIM")
         FIVE_TIME=$(format_reset "$FIVE_RESET_TS")
-        RATE_FULL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_FULL=" ${SEP2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
         [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_TXT}${FIVE_TIME}${B2}"
-        RATE_COMPACT=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
-        RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_COMPACT=" ${SEP2} ${L2_TXT}5h ${FIVE_BAR} ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+        RATE_MINIMAL=" ${SEP2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
     fi
     if [ -n "${SEVEN_PCT:-}" ]; then
         SEVEN_CLR=$(pct_color "$SEVEN_PCT")
         [ "$PACE_ON" = "1" ] && SEVEN_ARROW=$(pace_arrow "$SEVEN_PCT" "$SEVEN_RESET_TS" "$SEVEN_DURATION" "$NOW")
         SEVEN_BAR=$(make_bar "$SEVEN_PCT" 5 "$SEVEN_CLR" "$L2_DIM")
         SEVEN_TIME=$(format_reset "$SEVEN_RESET_TS")
-        RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        RATE_FULL+=" ${SEP2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_TXT}${SEVEN_TIME}${B2}"
-        RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+        RATE_COMPACT+=" ${SEP2} ${L2_TXT}7d ${SEVEN_BAR} ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         if [ -n "${FIVE_PCT:-}" ]; then
             RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         else
-            RATE_MINIMAL=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+            RATE_MINIMAL=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
         fi
     fi
 fi
@@ -1540,10 +1874,10 @@ fi
 SVC_SEG=""
 if [ -f "$SVC_CACHE" ]; then
     case "$(head -1 "$SVC_CACHE" 2>/dev/null)" in
-        operational)                     SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;100;200;120m${SVC_LINK_OPEN}✓${SVC_LINK_CLOSE}${B2}" ;;
-        incident:*)                      SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;150;100m${SVC_LINK_OPEN}⚠${SVC_LINK_CLOSE}${B2}" ;;
-        degraded_performance:*)          SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;215;195;125m${SVC_LINK_OPEN}~${SVC_LINK_CLOSE}${B2}" ;;
-        partial_outage:*|major_outage:*) SVC_SEG=" ${L2_DIM}│${B2} \033[38;2;225;100;100m${SVC_LINK_OPEN}✗${SVC_LINK_CLOSE}${B2}" ;;
+        operational)                     SVC_SEG=" ${SEP2} ${CLR_OK}${SVC_LINK_OPEN}✓${SVC_LINK_CLOSE}${B2}" ;;
+        incident:*)                      SVC_SEG=" ${SEP2} ${CLR_INC}${SVC_LINK_OPEN}⚠${SVC_LINK_CLOSE}${B2}" ;;
+        degraded_performance:*)          SVC_SEG=" ${SEP2} ${CLR_GOLD}${SVC_LINK_OPEN}~${SVC_LINK_CLOSE}${B2}" ;;
+        partial_outage:*|major_outage:*) SVC_SEG=" ${SEP2} ${CLR_BAD}${SVC_LINK_OPEN}✗${SVC_LINK_CLOSE}${B2}" ;;
     esac
 fi
 
@@ -1608,11 +1942,11 @@ if [ "${STATUSLINE_UPDATE_CHECK:-1}" != "0" ]; then
             UPD_LINK_OPEN="\033]8;;https://github.com/vtmocanu/cc-statusline/releases/tag/v${UPD_LATEST#v}\a"
             UPD_LINK_CLOSE='\033]8;;\a'
         fi
-        UPD_SEG="${SEP}${B} ${CLR_GOLD}${UPD_LINK_OPEN}⇡ ${UPD_LATEST#v}${UPD_LINK_CLOSE}${B} "
+        UPD_SEG="${SEP}${B} ${UPD_CLR}${UPD_LINK_OPEN}⇡ ${UPD_LATEST#v}${UPD_LINK_CLOSE}${B} "
     fi
 fi
 
-# ── Peer sessions in this repo (line 1, right-aligned) ──────────────────────
+# ── Peer sessions in this repo (line 1, after the handle) ──────────────────────
 # On by default; opt OUT with STATUSLINE_PEERS=0. Counts EVERY live session
 # working in the same repository, this one included, by state, so all of the
 # repo's sessions show the same repo-wide total (up to each one's own render
@@ -1643,8 +1977,9 @@ fi
 # linked worktrees at any path, with no per-peer git call. Unknown .status
 # values are ignored. An idle peer's transcript is found by session id under
 # ~/.claude/projects/*/ (no reliance on how Claude Code names those folders) and
-# only its last 300 lines are read. Placed in the padding pass at the bottom,
-# like the update indicator: dropped, never truncated, when it does not fit.
+# only its last 300 lines are read. Counts follow the handle (or lead when it
+# is hidden). Phone counts follow directory/branch. The whole segment drops
+# after K8S on wide layouts and first on phones; it is never sliced.
 # Test seams: CC_STATUSLINE_SESSIONS_DIR, CC_STATUSLINE_PROJECTS_DIR.
 PEER_SEG=""
 if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
@@ -1741,24 +2076,25 @@ if [ "${STATUSLINE_PEERS:-1}" != "0" ] && [ -n "$SESSION_ID" ]; then
         fi
         # Weight, not hue, carries urgency: the 12 project backgrounds make any
         # fixed color unreadable on some of them, while the palette's own dark
-        # text stays legible on all. Busy is bold, idle is the dim separator
+        # text stays legible on all. Segment themes use a dark peer surface
+        # with its own light ink. Busy is bold, idle is the dim separator
         # tone, and a waiting question is reversed (dark chip, light text).
-        _P_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
+        _P_DIM="$PEER_DIM"
         _P_BODY=""
         _p_add() {  # _p_add <count> <style> <glyph> <self-state>: bracket the
             # count this session belongs to, so each session spots its own state
             [ "$1" -gt 0 ] || return 0
             if [ "$P_SELF" = "$4" ]; then
-                _P_BODY+=" ${TXT_BOLD}[${2}${3}${1}${TXT_BOLD}]${B}"
+                _P_BODY+=" ${PEER_BOLD}[${2}${3}${1}${PEER_BOLD}]${PEER_B}"
             else
-                _P_BODY+=" ${2}${3}${1}${B}"
+                _P_BODY+=" ${2}${3}${1}${PEER_B}"
             fi
         }
-        _p_add "$P_BUSY"  "$TXT_BOLD"        "⚙" busy
-        _p_add "$P_SHELL" "$TXT_FG"          "◷" shell
-        _p_add "$P_ASK"   "\033[7m$TXT_BOLD" "?" never   # this session is never "?"
+        _p_add "$P_BUSY"  "$PEER_BOLD"        "⚙" busy
+        _p_add "$P_SHELL" "$PEER_FG"          "◷" shell
+        _p_add "$P_ASK"   "\033[7m$PEER_BOLD" "?" never   # this session is never "?"
         _p_add "$P_IDLE"  "$_P_DIM"          "○" idle
-        [ "$P_OTHERS" -gt 0 ] && [ -n "$_P_BODY" ] && PEER_SEG="${SEP}${B}${_P_BODY} "
+        [ "$P_OTHERS" -gt 0 ] && [ -n "$_P_BODY" ] && PEER_SEG="${_P_BODY# }"
     fi
 fi
 
@@ -1799,11 +2135,16 @@ if [ "${STATUSLINE_GITHUB_STATUS:-1}" != "0" ]; then
         fi
         if [ -f "$GH_CACHE" ]; then
             case "$(head -1 "$GH_CACHE" 2>/dev/null)" in
-                operational)                     GH_SEG=" ${SEP}${B} \033[38;2;100;200;120m${GH_LINK_OPEN}✓${GH_LINK_CLOSE}${B}" ;;
-                incident:*)                      GH_SEG=" ${SEP}${B} \033[38;2;225;150;100m${GH_LINK_OPEN}⚠${GH_LINK_CLOSE}${B}" ;;
-                degraded_performance:*)          GH_SEG=" ${SEP}${B} \033[38;2;215;195;125m${GH_LINK_OPEN}~${GH_LINK_CLOSE}${B}" ;;
-                partial_outage:*|major_outage:*) GH_SEG=" ${SEP}${B} \033[38;2;225;100;100m${GH_LINK_OPEN}✗${GH_LINK_CLOSE}${B}" ;;
+                operational)                     GH_GLYPH="${CLR_OK}${GH_LINK_OPEN}✓${GH_LINK_CLOSE}" ;;
+                incident:*)                      GH_GLYPH="${CLR_INC}${GH_LINK_OPEN}⚠${GH_LINK_CLOSE}" ;;
+                degraded_performance:*)          GH_GLYPH="${CLR_GOLD}${GH_LINK_OPEN}~${GH_LINK_CLOSE}" ;;
+                partial_outage:*|major_outage:*) GH_GLYPH="${CLR_BAD}${GH_LINK_OPEN}✗${GH_LINK_CLOSE}" ;;
             esac
+            # Keep alerts legible on the bright gradient with one dark cell.
+            if [ "$THEME" = synthwave ] && [ -n "$GH_GLYPH" ]; then
+                GH_GLYPH="\033[48;2;26;16;51m${GH_GLYPH}"
+            fi
+            [ -n "$GH_GLYPH" ] && GH_SEG=" ${SEP}${B} ${GH_GLYPH}${B}"
         fi
     fi
 fi
@@ -1817,7 +2158,7 @@ fi
 # and cache are dropped: on a phone they cost more columns than they earn.
 # ↻ costs one column and stops the countdown reading as a second percentage.
 _apply_phone_l2() {
-    L2C="${RST}\033[38;2;0;0;0m${NF_CORNER_BL}${BG2}"
+    L2C="${RST}${CAP2_L}${BG2}"
     local PH_SEP=""
     if [ -n "$PROFILE_LABEL" ]; then
         # The badge sits in the line-2 BASE, which no tier can shed, so a long
@@ -1832,7 +2173,7 @@ _apply_phone_l2() {
         local lbl="$PROFILE_LABEL"
         [ "$(_clen "$lbl")" -gt 8 ] && lbl="$(_head_cp "$lbl" 7)…"
         L2C+=" ${PROFILE_FG}${lbl}${B2}"
-        PH_SEP=" ${L2_DIM}│${B2}"
+        PH_SEP=" ${SEP2}"
     fi
     CACHE_SEG=""; TIMER_SEG=""
     if [ "$RATE_READY" = "1" ]; then
@@ -1844,15 +2185,15 @@ _apply_phone_l2() {
         if [ -n "$CTX_PH" ]; then
             RATE_FULL="$CTX_PH"; RATE_COMPACT="$CTX_PH"; RATE_MINIMAL=""
             if [ -n "${FIVE_PCT:-}" ]; then
-                RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                RATE_FULL+=" ${SEP2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
                 [ -n "$FIVE_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${FIVE_TIME}${B2}"
-                RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
+                RATE_COMPACT+=" ${SEP2} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
                 RATE_MINIMAL="${PH_SEP} ${L2_TXT}5h ${FIVE_CLR}${FIVE_PCT}%${FIVE_ARROW}${B2}"
             fi
             if [ -n "${SEVEN_PCT:-}" ]; then
-                RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                RATE_FULL+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 [ -n "$SEVEN_TIME" ] && RATE_FULL+=" ${L2_DIM}↻${L2_TXT}${SEVEN_TIME}${B2}"
-                RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                RATE_COMPACT+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 if [ -n "${FIVE_PCT:-}" ]; then
                     RATE_MINIMAL+=" ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 else
@@ -1870,8 +2211,8 @@ _apply_phone_l2() {
             fi
             if [ -n "${SEVEN_PCT:-}" ]; then
                 if [ -n "$RATE_FULL" ]; then
-                    RATE_FULL+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
-                    RATE_COMPACT+=" ${L2_DIM}│${B2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                    RATE_FULL+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
+                    RATE_COMPACT+=" ${SEP2} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                 else
                     RATE_FULL="${PH_SEP} ${L2_TXT}7d ${SEVEN_CLR}${SEVEN_PCT}%${SEVEN_ARROW}${B2}"
                     RATE_COMPACT="$RATE_FULL"
@@ -1942,13 +2283,15 @@ if [ "$LAYOUT" = "wide" ] && [ "$LAYOUT_FORCED" = "0" ] \
 fi
 
 # ── Line 1 truncation, measured. Priority (least to most essential, so the
-# leaf dir is preserved longest): K8S > BRANCH > AGENT > MODE > TOPIC > DIR.
-# Each round trims one component by the measured overage (plus 2 for "..") and
+# leaf dir is preserved longest): K8S > PEERS > BRANCH > AGENT > MODE > TOPIC > DIR.
+# Each round drops peers whole or trims a component by the measured overage
+# (plus 2 for "..") and
 # re-measures. The common case takes zero rounds; only an overflowing line
 # re-measures, keeping the perl-call budget at ~2 per render.
-# Phone renders only DIR + BRANCH, so trimming the others would burn a
+# Phone renders DIR + BRANCH plus optional peer counts. Trimming the others
+# would burn a
 # re-measure without shrinking the line: walk just the components in play.
-TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC NAME DIR"
+TRUNC_ORDER="K8S PEERS BRANCH AGENT MODE TOPIC NAME DIR"
 # DIRLEAF drops the parent component ("cc-statusline/phone" -> "phone") before
 # anything gets character-mangled: on a phone a whole leaf name reads better
 # than two half-words, and it usually buys back more columns than trimming the
@@ -1958,11 +2301,13 @@ TRUNC_ORDER="K8S BRANCH AGENT MODE TOPIC NAME DIR"
 # bottomed out with line 1 still over budget, and a NARROWER viewport rendered a
 # WIDER line (COLUMNS=30 produced 51 columns against a 29-column budget), which
 # is precisely the overflow that makes cli-truncate drop line 2.
-[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="DIRLEAF BRANCH GITST DIR BRANCHDROP DIRHARD"
+[ "$LAYOUT" = "phone" ] && TRUNC_ORDER="PEERS DIRLEAF BRANCH GITST DIR BRANCHDROP DIRHARD"
 for _t in $TRUNC_ORDER; do
     [ "$L1_COLS" -le "$TARGET" ] 2>/dev/null && break
     OVER=$((L1_COLS - TARGET))
     case $_t in
+        PEERS) [ -n "$PEER_SEG" ] || continue
+               PEER_SEG="" ;;
         DIRLEAF) case "$DIR" in */*) DIR="${DIR##*/}" ;; *) continue ;; esac ;;
         GITST)  [ -n "$GIT_STATUS" ] || continue
                 GIT_STATUS="" ;;   # dirty markers go before the leaf dir does
@@ -2052,23 +2397,19 @@ L2C+=" "
 # (e.g. "/dev/tty: Device not configured" in non-tty contexts), not just
 # printf's own stderr.
 _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
-{ printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
+# Preview callers suppress this out-of-band write to their controlling TTY.
+if [ "${STATUSLINE_TAB_TITLE:-1}" != "0" ]; then
+    { printf '\033]1;%s\007' "$_TAB_TITLE" > /dev/tty; } 2>/dev/null || true
+fi
 
 # ── Pad shorter line to match longer ────────────────────────────────────────
-# The right-aligned segments (peer sessions PEER_SEG, then the update indicator
-# UPD_SEG; each empty when it has nothing to say) are placed here rather than in
-# assemble_l1: right-aligned into line 1's padding zone. A segment is shown when
-# it fits in the gap below line 2's width, or when appending it keeps line 1
-# within TARGET (line 2 then pads to match); otherwise it is dropped, never
-# truncated, so it can neither widen a line past the budget nor be sliced
-# mid-escape. Both are tried together first; when only one fits, the peer
-# counts win (they change minute to minute, the update notice can wait).
+# The update indicator alone occupies line 1's right padding zone. It is
+# shown only when it fits within TARGET and is dropped whole, never sliced.
 {
-    # Single perl invocation for both line measurements plus both segments
-    read -r L1_COLS L2_COLS UPD_W PEER_W < <(
-        measure_cols "$L1C" "$L2C" "$UPD_SEG" "$PEER_SEG" | tr '\n' ' '
+    read -r L1_COLS L2_COLS UPD_W < <(
+        measure_cols "$L1C" "$L2C" "$UPD_SEG" | tr '\n' ' '
     )
-    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}; PEER_W=${PEER_W:-0}
+    L1_COLS=${L1_COLS:-0}; L2_COLS=${L2_COLS:-0}; UPD_W=${UPD_W:-0}
     SYNC_W=$L2_COLS
     [ "$L1_COLS" -gt "$SYNC_W" ] 2>/dev/null && SYNC_W=$L1_COLS
     _right_fits() {  # _right_fits <width>: does a right segment of that width fit?
@@ -2076,11 +2417,7 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
             && { [ "$((L1_COLS + $1))" -le "$SYNC_W" ] || [ "$((L1_COLS + $1))" -le "$TARGET" ]; }
     } 2>/dev/null
     RIGHT_SEG=""; RIGHT_W=0
-    if [ -n "$PEER_SEG" ] && [ -n "$UPD_SEG" ] && _right_fits "$((PEER_W + UPD_W))"; then
-        RIGHT_SEG="${PEER_SEG}${UPD_SEG}"; RIGHT_W=$((PEER_W + UPD_W))
-    elif [ -n "$PEER_SEG" ] && _right_fits "$PEER_W"; then
-        RIGHT_SEG="$PEER_SEG"; RIGHT_W=$PEER_W
-    elif [ -n "$UPD_SEG" ] && _right_fits "$UPD_W"; then
+    if [ -n "$UPD_SEG" ] && _right_fits "$UPD_W"; then
         RIGHT_SEG="$UPD_SEG"; RIGHT_W=$UPD_W
     fi
     if [ -n "$RIGHT_SEG" ]; then
@@ -2097,7 +2434,39 @@ _TAB_TITLE="${TOPIC:-${DIR:-Claude}}"
 } 2>/dev/null || true
 
 # ── Output ───────────────────────────────────────────────────────────────────
-L2_END_FG="\033[38;2;0;0;0m"
+[ "$THEME_STYLE" != "flat" ] && [ -z "${RIGHT_SEG:-}" ] && CAP1_R=""
 trap - EXIT  # disarm crash trap before normal output
-printf '\033[0m%b\n' "${L1C}${RST}${PROJ_FG}${NF_CORNER_TR}${RST}"
-printf '\033[0m%b\n' "${L2C}${RST}${L2_END_FG}${NF_CORNER_BR}${RST}"
+if [ "$THEME" = "synthwave" ]; then
+    # After every width decision and padding step, add only zero-width SGRs.
+    # Preserve foreground/style and OSC 8 tokens; never slice their payloads.
+    SYNTH_LINE=$(printf '%b' "$L1C" | perl -CS -0777 -ne '
+        my @tokens = /(?:\e\]8;;.*?(?:\a|\e\\)|\e\[[0-9;]*m|.)/sg;
+        my $n = scalar(grep { substr($_, 0, 1) ne "\e" } @tokens) - 1;
+        my $i = -1;
+        my $chip = 0;
+        my @stops = ([255,42,109], [123,44,255], [5,217,232]);
+        for my $token (@tokens) {
+            if (substr($token, 0, 1) eq "\e") {
+                if ($token =~ /^\e\[48;2;[0-9]+;[0-9]+;[0-9]+m$/) {
+                    $chip = $token eq "\e[48;2;26;16;51m";
+                    next unless $chip; # retain only the explicit dark surface
+                } elsif ($token eq "\e[0m" || $token eq "\e[49m") { $chip = 0 }
+                print $token; next;
+            }
+            if ($i < 0) { print $token; $i = 0; next } # leading cap
+            my $t = $n > 1 ? $i / ($n - 1) : 0;
+            my $half = $t < 0.5 ? 0 : 1;
+            my $u = $t < 0.5 ? 2*$t : 2*$t-1;
+            my @rgb = map { int($stops[$half][$_] +
+                ($stops[$half+1][$_]-$stops[$half][$_])*$u) } 0..2;
+            print "\e[48;2;", join(";", @rgb), "m" unless $chip;
+            print $token;
+            ++$i;
+        }
+    ' 2>/dev/null) || SYNTH_LINE=$(printf '%b' "$L1C")
+    # The perl result is already expanded. A second %b would interpret content.
+    printf '\033[0m%s%b\n' "$SYNTH_LINE" "${RST}${CAP1_R}${RST}"
+else
+    printf '\033[0m%b\n' "${L1C}${RST}${CAP1_R}${RST}"
+fi
+printf '\033[0m%b\n' "${L2C}${RST}${CAP2_R}${RST}"

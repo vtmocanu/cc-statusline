@@ -25,6 +25,7 @@ Live blog post with design notes: https://hai.wxs.ro/ai-stuff/claude-statusline/
 
 ```
 cc-statusline/
+├── cc-statusline-theme              Packaged chooser, real renderer previews and atomic XDG theme selection
 ├── statusline.sh                     Main script (called by Claude Code, reads JSON from stdin, outputs 2 lines of ANSI)
 ├── claude-status-fetch.sh            Background helper for Statuspage-compatible JSON. Defaults to Claude's summary; also reads GitHub's summary and, for opt-in GPT sessions, the exact OpenAI `Codex API` component into separate caches
 ├── claude-usage-fetch.sh             Background helper, fetches /api/oauth/usage with the session's own credential, writes the per-account rate-limits cache (authoritative 5-field line)
@@ -37,6 +38,7 @@ cc-statusline/
 │   └── statusline-color-overrides.json  Template for ~/.claude/statusline-color-overrides.json
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
+│   ├── run-install-tests.sh          Deterministic archive/SIGPIPE regression, run by test-fetch in both locales
 │   └── fixtures/*.json               Mock JSON inputs for normal, edge-case, width, model, and session-name renders
 ├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, test-fetch, ci); used locally and by CI
 ├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
@@ -59,13 +61,14 @@ The script lives where it runs. Edit `statusline.sh` directly; the maintainer's 
 
 ```bash
 task ci              # all five checks in order
+task test-themes-full # exhaustive theme matrix + step-1 phone sweep, both locales
 
 # or individually:
 task shell:syntax    # 1. bash -n on all scripts
 task shell:lint      # 2. shellcheck -x -S warning (matches CI)
 task test            # 3. test harness (tests/run-tests.sh)
 task test-c-locale   # 4. test harness under LC_ALL=C (catches wc-m / bash-string-length issues)
-task test-fetch      # 5. fetcher tests (status, usage, GPT credits, update check), in both locales
+task test-fetch      # 5. fetcher and installer tests, in both locales
 ```
 
 The `shell:` tasks come from the reusable `shell.yml` in [github.com/vtmocanu/task](https://github.com/vtmocanu/task): the local checkout at `~/stuff/gitrepos/gh/vtmocanu/task` when developing, the public raw URL in CI (with `TASK_X_REMOTE_TASKFILES=1` and `task --yes`).
@@ -188,22 +191,61 @@ Other portable patterns we use:
 
 ## Width measurement (rebuilt)
 
-Line widths are measured with a single ANSI-aware `measure_cols` (perl) helper, run **before** truncation decisions, not estimated in bash. One batched call measures line 1, line 2's base, every rate-detail tier candidate, the cache hit-rate and cache-timer segments, and the service icon; truncation (priority K8s > branch > agent > mode > topic > dir) re-measures only when a line actually overflows. Line 2 picks the widest rate-detail tier that fits, reserving the service icon's real width. This replaced the old bash `L1_EST`/`L2_BASE_W` estimate and its off-by-2. Common-case cost is ~2 perl invocations per render.
+Line widths are measured with a single ANSI-aware `measure_cols` (perl) helper, run **before** truncation decisions, not estimated in bash. One batched call measures line 1, line 2's base, every rate-detail tier candidate, the cache hit-rate and cache-timer segments, and the service icon; truncation (priority K8s > peers > branch > agent > mode > topic > dir) re-measures only when a line actually overflows. Line 2 picks the widest rate-detail tier that fits, reserving the service icon's real width. This replaced the old bash `L1_EST`/`L2_BASE_W` estimate and its off-by-2. Common-case cost is ~2 perl invocations per render.
 
 Two paths cost more, both bounded and both off the common path. A viewport that cannot fit line 2's wide base re-runs the whole batch once after switching to the phone layout (one extra call). And the truncation ladder's length/slice helpers (`_clen`, `_head_cp`, `_tail_cp`) take a pure-bash path for ASCII but shell out to perl for a non-ASCII value, so truncating a multibyte directory or branch name costs a few more: the helpers exist because bash counts bytes rather than codepoints outside a UTF-8 locale, which silently under-sheds and cuts characters in half. An ASCII render at any width still costs ~2.
 
 `WIDE_GLYPH_MARGIN` (env `STATUSLINE_GLYPH_MARGIN`, default 3) keeps a small real-terminal cushion for Nerd Font glyphs that render double-width; see `KNOWN_ISSUES.md`.
+
+### Theme rendering tokens
+
+`statusline.sh --list-themes` is the chooser's source of names. Theme precedence
+is the environment (including an explicitly empty value), then the first line
+of `$XDG_CONFIG_HOME/cc-statusline/theme`, then `tokyo-auto`; unknown values and
+the `default` alias choose `tokyo-auto`. With no explicit choice, an existing
+color-overrides file selects `classic` for migration compatibility. Whitespace is stripped from the file using bash builtins. Tests isolate
+the theme file alongside the layout file. The chooser resolves the same dev
+override as the brew wrapper and previews with scratch HOME/config/caches,
+disabled fetchers and pinned time. `install.sh` retains old-tag rollback by
+removing the chooser when that archived tag predates it.
+
+`STATUSLINE_THEME` selects a palette in one block, followed by a derive step
+for background resets, caps and separators. Classic tokens must reproduce the
+original bytes, including escape spelling and order. Only `classic` and
+`hue-dark` read project color overrides. Flat themes reuse the original line-1
+builder; segmented themes assemble every cap and join before measurement and
+use the same truncation ladder. OSC 8 wrappers remain confined to fixed glyphs.
+
+`tokyo-auto` follows OS appearance, with a private atomic `epoch|dark/light`
+cache and a 60-second TTL. Hot reads use builtin `read` and the existing NOW;
+future or malformed records are stale. Probes use a two-second timeout and
+cache failures as dark. The chooser uses the same `--resolve-theme NAME`
+path. Tests always set `CC_STATUSLINE_APPEARANCE` and a private
+`CC_STATUSLINE_APPEARANCE_CACHE`, never read real OS appearance.
+
+Synthwave's single perl gradient pass runs after all width decisions and
+padding. It adds only zero-width background SGRs and preserves OSC 8 and other
+SGRs. The explicit `48;2;26;16;51` service surface survives the pass; its cells
+skip the gradient until the next reset/background, without changing indices. Its output is already expanded, so print it with `%s`, never a second
+`%b`. Do not move the gradient before measurement or add visible characters
+after measured assembly. Regular `task ci` runs every theme on representative fixtures at 110/50 columns
+and COLUMNS=40, plus a four-column phone sweep and exact boundary columns.
+Byte identity, content, status, pace, held-context and gradient checks stay in
+full. `task test-themes-full` runs all fixtures at 130/110/80/50/30 columns,
+COLUMNS=40 and a one-column 20-60 sweep in both locales. Run it when changing
+theme tokens or layout assembly; it is opt-in so ordinary CI stays bounded.
+Keep `WIDTH_SLOP=0`.
 
 ## Session name and title (both native, no hook)
 
 Line 1 leads with two identifiers that come straight from Claude Code, sourced in `statusline.sh` (grep `SESSION_HANDLE` and `SESSION_TITLE`):
 
 - **`@handle`** (`SESSION_HANDLE`): the addressable name peers message (`SendMessage({to})`), e.g. `@uzi-60`. Read from Claude Code's per-session registry `~/.claude/sessions/<pid>.json`, selecting the file whose `.sessionId` matches the stdin `.session_id` and taking `.name`. This covers both the auto-derived handle and a `/rename` value. **This registry is an UNDOCUMENTED internal file** (verified against Claude Code 2.1.233: `.sessionId`, `.name`, `.nameSource`, `.status`, `.messagingSocketPath`); its shape may change across versions, so the read is fully guarded and the handle just doesn't show on any miss. Toggle: `STATUSLINE_SESSION_NAME` (default 1). Test seam: `CC_STATUSLINE_SESSIONS_DIR`.
-- **Title** (`SESSION_TITLE` -> `TOPIC`): the descriptive label, from the **documented** stdin `.session_name` field (Claude Code's `/rename` value, else its auto-generated session title, which it also stores in the transcript as `.aiTitle`). Absent until a title exists, so a brand-new session shows none. Toggle: `STATUSLINE_TOPIC` (default 1).
+- **Title** (`SESSION_TITLE` -> `TOPIC`): the descriptive auto title from stdin `.session_name`. A registry entry with `.nameSource == "user"` and raw `.name == .session_name` marks a user rename; the same registry jq pass returns this flag even when the handle is hidden. Non-empty auto titles are stored atomically per charset-gated session id under `_state_dir/session-title/`, only when changed. Renamed sessions use the stored auto title, else no description. Empty frames preserve the cache. Toggle: `STATUSLINE_TOPIC` (default 1). Seam: `CC_STATUSLINE_TITLE_CACHE` overrides the cache directory; tests/previews always isolate it. Hot ASCII reads/normalization/comparison use builtins; the default cache path mirrors `_state_dir` using readonly UID.
 
-**Repo-wide session counts** (`PEER_SEG`, toggle `STATUSLINE_PEERS`) read the same registry for every live session (`.pid` alive, `.status` busy/shell/idle, `.cwd` inside a `git worktree list` path), excluding `.entrypoint == "codex"` shims. The `?` state tails each idle peer's transcript, found by glob `~/.claude/projects/*/<sessionId>.jsonl`. Test seams: `CC_STATUSLINE_SESSIONS_DIR`, `CC_STATUSLINE_PROJECTS_DIR`. Verified: a running background subagent keeps a session `busy`; `shell` means background shells are still running after the turn (observed, undocumented). SGR 5 blink does not render in the statusline (tried and removed).
+**Repo-wide session counts** (`PEER_SEG`, toggle `STATUSLINE_PEERS`) follow the handle (or lead when it is hidden); phones place them after directory/branch. Counts are measured with line 1 and dropped whole after K8S on wide layouts, first on phones. Only `UPD_SEG` stays right-aligned. They read the same registry for every live session (`.pid` alive, `.status` busy/shell/idle, `.cwd` inside a `git worktree list` path), excluding `.entrypoint == "codex"` shims. The `?` state tails each idle peer's transcript, found by glob `~/.claude/projects/*/<sessionId>.jsonl`. Test seams: `CC_STATUSLINE_SESSIONS_DIR`, `CC_STATUSLINE_PROJECTS_DIR`. Verified: a running background subagent keeps a session `busy`; `shell` means background shells are still running after the turn (observed, undocumented). SGR 5 blink does not render in the statusline (tried and removed).
 
-Do NOT conflate the two: `.session_name` is the *title*, never the addressable handle. The default `my-app-3f`-style display name does NOT populate `.session_name` (it stays absent), which is why the handle has to come from the registry. Both values are user/model-controlled, so both get the standard control-byte strip and a 40-codepoint cap, and both ride the line-1 truncation ladder (title on the `TOPIC` rung, handle on the `NAME` rung).
+Keep handle identity separate from the remembered auto title. A user rename can replace both registry `.name` and stdin `.session_name`; it must not overwrite the stored description. Title retrieval has no transcript fallback. Sanitize/cap cache reads like native values (control-byte strip, 40 codepoints), then drop a description equal to the visible handle case-insensitively. Hidden handles do not suppress descriptions. Both still use the measured truncation ladder (`TOPIC`/`NAME`), and the tab title follows the selected description with directory fallback.
 
 **History:** the title was previously synthesized by an opt-in `UserPromptSubmit` hook (`hooks/session-topic-capture.sh`) that called Claude Haiku and wrote `~/.claude/session-topics/<id>.txt`. That hook was removed once Claude Code exposed `.session_name` natively (no credential, transcript excerpt, or quota needed). If you see references to `session-topic-capture.sh`, `_strip_ctl`, or `session-topics/` in old commits/docs, they predate that removal.
 
@@ -216,6 +258,7 @@ Do NOT conflate the two: `.session_name` is the *title*, never the addressable h
 ## What NOT to do
 
 - **Don't add `Co-Authored-By: Claude` trailers** to commits. The maintainer prefers clean attribution.
+- **Do not change the installed `refreshInterval` during theme work or recommend lowering it.** Theme choices apply on the next redraw; report the existing interval.
 - **Don't use em dashes** in commit messages, code comments, or docs. Prefer commas, colons, or hyphens.
 - **Don't reintroduce a bash width *estimate*.** Width is now measured with `measure_cols` before truncation (the deliberate v2.4.0 rebuild). If you touch truncation, keep it measurement-driven, re-validate every path in both locales, and keep `WIDTH_SLOP=0`. Don't paper over an overflow by bumping `WIDTH_SLOP` or `WIDE_GLYPH_MARGIN`.
 - **Don't wrap truncation-ladder text in OSC 8 hyperlinks, and don't let `measure_cols` count them.** Since v3.1.0 the service-status glyphs are clickable via OSC 8 (`STATUSLINE_HYPERLINKS`, default on). Two invariants hold this together: (1) `measure_cols` (and the harness's `vis_cols`/`_strip_ansi`) strip the OSC 8 wrapper so a hyperlinked glyph stays zero-width, matching what a terminal renders. If you add a new escape family, teach both strippers or the width math will over-count by the URL length. (2) Only fixed glyphs (the status icons) are ever wrapped, never a component the truncation ladder can slice (`DIR`/`BRANCH`/`TOPIC`/`SESSION_HANDLE`/…) or `_head_cp`/`_tail_cp` would cut mid-escape and emit a broken link.

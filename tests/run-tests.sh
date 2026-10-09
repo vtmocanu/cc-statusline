@@ -35,11 +35,17 @@ SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 export KUBECONFIG=/dev/null
 unset GIT_DIR GIT_WORK_TREE
+# Disposable repositories must not spawn persistent Git filesystem monitors.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
 # The statusline now narrows SAFE_WIDTH to the viewport when Claude Code exports
 # COLUMNS (v2.1.153+). A runner that happens to export it would silently shrink
 # every fixture's budget (and flip the phone layout on), so drop it here; the
 # phone-layout tests below set it explicitly per run.
-unset COLUMNS LINES
+unset COLUMNS LINES STATUSLINE_THEME
+export CC_STATUSLINE_APPEARANCE=dark CC_STATUSLINE_APPEARANCE_CACHE="$SCRATCH/appearance"
+# Baseline assertions protect the unchanged Classic palette. The theme suite
+# independently covers the new default and every selectable palette.
+if [ "${STATUSLINE_TEST_SCOPE:-}" = base ]; then export STATUSLINE_THEME=classic; fi
 # Isolate the layout override file ($XDG_CONFIG_HOME/cc-statusline/layout): the
 # maintainer's own file must not decide which layout the fixtures render.
 export XDG_CONFIG_HOME="$SCRATCH/xdg-empty"
@@ -70,6 +76,7 @@ export CC_STATUSLINE_UPDATE_FETCH="$SCRATCH/no-such-update-fetcher.sh"
 # reads or writes the real per-session snapshot in the runtime dir. The
 # context-hold tests below point each case at its own path.
 export CC_STATUSLINE_CTX_CACHE="$SCRATCH/ctx-snapshot"
+export CC_STATUSLINE_TITLE_CACHE="$SCRATCH/session-titles"
 
 # Pin the clock so rate-limit reset countdowns and pace arrows are
 # deterministic across runs and locales. Fixtures with future resets_at are
@@ -110,10 +117,39 @@ vis_cols() {
     '
 }
 
+_render_contract() {  # stdout file, stderr file, exit status, width budget
+    local stdout_file="$1" stderr_file="$2" rc="$3" max_allowed="$4"
+    if [ "$rc" -ne 0 ]; then fail_reasons+=("exit code $rc"); fi
+    if [ -s "$stderr_file" ]; then fail_reasons+=("non-empty stderr: $(head -1 "$stderr_file")"); fi
+    # One UTF-8/ANSI pass counts rows and finds the widest line. This is the
+    # same codepoint contract as vis_cols, without per-line process pipelines.
+    local line_count cols lineno
+    read -r line_count cols lineno < <(perl -e '
+        use Encode qw(decode);
+        open my $fh, "<", $ARGV[0] or exit 1;
+        my $s = do { local $/; <$fh> } // "";
+        my $rows = () = $s =~ /\n/g;
+        $s =~ s/\e\]8;;.*?(?:\a|\e\\)//g;
+        $s =~ s/\e\[[0-9;]*m//g;
+        my ($max, $line, $index) = (0, 0, 0);
+        for my $raw (split /\n/, $s) {
+            ++$index;
+            my $width = length(decode("UTF-8", $raw, Encode::FB_DEFAULT));
+            ($max, $line) = ($width, $index) if $width > $max;
+        }
+        print "$rows $max $line\n";
+    ' "$stdout_file" 2>/dev/null)
+    line_count=${line_count:-0}; cols=${cols:-0}; lineno=${lineno:-0}
+    if [ "$line_count" -ne 2 ]; then fail_reasons+=("expected 2 stdout lines, got $line_count"); fi
+    if [ "$cols" -gt "$max_allowed" ]; then
+        fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
+    fi
+}
+
 run_one() {
     local fixture="$1"
     local name
-    name=$(basename "$fixture" .json)
+    name=${fixture##*/}; name=${name%.json}
 
     # Per-fixture shared rate-limits cache: an empty scratch path so a fixture
     # with rate_limits (which now writes the cache) cannot leak account-wide
@@ -136,36 +172,13 @@ run_one() {
 
     local fail_reasons=()
 
-    if [ "$rc" -ne 0 ]; then
-        fail_reasons+=("exit code $rc")
-    fi
-
-    local line_count
-    line_count=$(wc -l <"$stdout_file" | tr -d ' ')
-    if [ "$line_count" -ne 2 ]; then
-        fail_reasons+=("expected 2 stdout lines, got $line_count")
-    fi
-
-    if [ -s "$stderr_file" ]; then
-        fail_reasons+=("non-empty stderr: $(head -1 "$stderr_file")")
-    fi
-
-    local lineno=0
-    local max_allowed=$((SAFE_WIDTH + WIDTH_SLOP))
-    while IFS= read -r line; do
-        lineno=$((lineno + 1))
-        local cols
-        cols=$(printf '%s' "$line" | vis_cols)
-        if [ "$cols" -gt "$max_allowed" ]; then
-            fail_reasons+=("line $lineno is $cols cols (> ${max_allowed} = SAFE_WIDTH+${WIDTH_SLOP})")
-        fi
-    done <"$stdout_file"
+    _render_contract "$stdout_file" "$stderr_file" "$rc" "$((SAFE_WIDTH + WIDTH_SLOP))"
 
     # Optional content assertion: <name>.expect-l2 holds a substring that line 2
     # (ANSI-stripped) must contain. Used to prove the transcript-derived model
     # name actually reaches line 2, not just that the render stays within width.
     local expect_file="$FIXTURES/$name.expect-l2"
-    if [ -f "$expect_file" ]; then
+    if [ -f "$expect_file" ] && [ "${THEME_MATRIX:-0}" != "1" ]; then
         local want line2 stripped
         want=$(cat "$expect_file")
         line2=$(sed -n '2p' "$stdout_file")
@@ -177,13 +190,13 @@ run_one() {
     fi
 
     if [ ${#fail_reasons[@]} -eq 0 ]; then
-        printf '  PASS  %s\n' "$name"
+        printf '  PASS  %s\n' "${TEST_CASE_LABEL:-$name}"
         pass=$((pass + 1))
     else
-        printf '  FAIL  %s\n' "$name"
+        printf '  FAIL  %s\n' "${TEST_CASE_LABEL:-$name}"
         for r in "${fail_reasons[@]}"; do
             printf '          - %s\n' "$r"
-            errors+=("$name: $r")
+            errors+=("${TEST_CASE_LABEL:-$name}: $r")
         done
         fail=$((fail + 1))
     fi
@@ -1785,9 +1798,8 @@ github_status_tests() {
 #            so the suite never reads the real registry.
 #   topic    the descriptive session title, read from the stdin .session_name
 #            (Claude Code's /rename value or auto-generated title).
-# These come from different sources and must not bleed into each other: a
-# .session_name must NEVER appear as a handle, and the registry .name must NEVER
-# appear as the topic. Covers both sources, both opt-outs
+# The handle remains registry-only. Auto titles are remembered separately;
+# a user rename retrieves that stored description and never replaces it. Covers both sources, both opt-outs
 # (STATUSLINE_SESSION_NAME / STATUSLINE_TOPIC), coexistence, absence, and
 # control-byte stripping of each user-controlled value.
 session_name_tests() {
@@ -1811,8 +1823,8 @@ session_name_tests() {
     }
     _sess_reg() {  # _sess_reg <sessionId> <name-json>  (name-json may hold $esc)
         rm -rf "$reg"; mkdir -p "$reg"
-        printf '{"pid":123,"sessionId":"%s","name":"%s","nameSource":"derived","status":"idle"}\n' \
-            "$1" "$2" > "$reg/123.json"
+        printf '{"pid":123,"sessionId":"%s","name":"%s","nameSource":"%s","status":"idle"}\n' \
+            "$1" "$2" "${3:-derived}" > "$reg/123.json"
         # A second, non-matching entry proves the sessionId select is real.
         printf '{"pid":456,"sessionId":"other-sid","name":"other-99","status":"idle"}\n' \
             > "$reg/456.json"
@@ -1908,6 +1920,119 @@ session_name_tests() {
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif ! _has "$l1" "safe"; then _rl_fail "$name" "title control byte not stripped cleanly: $l1"
     else _rl_pass "$name"; fi
+    # Auto titles survive a /rename; registry identity is not itself a title.
+    local titles="$SCRATCH/sess-titles" cache old_sig new_sig title longtitle
+    mkdir -p "$titles"
+    _sess_reg sid-auto buddy
+    _sess_run "$out" "$err" "$(_sess_json sid-auto Original-auto-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi); cache="$titles/sid-auto"
+    if [ ! -s "$err" ] && _has "$l1" 'Original-auto-title' && [ "$(cat "$cache")" = Original-auto-title ]; then _rl_pass title-auto-stored
+    else _rl_fail title-auto-stored "title not displayed/stored: $l1"; fi
+    old_sig=$(perl -e 'print join ":", (stat($ARGV[0]))[1,9]' "$cache")
+    _sess_run "$out" "$err" "$(_sess_json sid-auto Original-auto-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    new_sig=$(perl -e 'print join ":", (stat($ARGV[0]))[1,9]' "$cache")
+    if [ ! -s "$err" ] && [ "$old_sig" = "$new_sig" ]; then _rl_pass title-unchanged-no-write
+    else _rl_fail title-unchanged-no-write "unchanged title was republished"; fi
+    _sess_run "$out" "$err" "$(_sess_json sid-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    if [ "$(cat "$cache")" = Original-auto-title ]; then _rl_pass title-empty-preserves-cache
+    else _rl_fail title-empty-preserves-cache "empty frame erased remembered title"; fi
+    _sess_reg sid-auto cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-auto cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && _has "$l1" 'Original-auto-title' && [ "$(cat "$cache")" = Original-auto-title ]; then _rl_pass title-renamed-with-cache
+    else _rl_fail title-renamed-with-cache "rename replaced the auto description: $l1"; fi
+    _sess_reg sid-cold cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-cold cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && ! _has "$l1" '│ cc' && [ ! -e "$titles/sid-cold" ]; then _rl_pass title-renamed-without-cache
+    else _rl_fail title-renamed-without-cache "cold rename rendered/stored description: $l1"; fi
+    _sess_reg sid-mismatch cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-mismatch Different-auto-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-mismatch")" = Different-auto-title ]; then _rl_pass title-user-source-name-mismatch
+    else _rl_fail title-user-source-name-mismatch "nameSource alone incorrectly treated title as rename"; fi
+
+    for title in 'mixed-case' 'MIXED-CASE'; do
+        _sess_reg sid-same Mixed-Case
+        _sess_run "$out" "$err" "$(_sess_json sid-same "$title")" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+        l1=$(head -1 "$out" | _strip_ansi)
+        if [ ! -s "$err" ] && _has "$l1" '@Mixed-Case' && ! _has "$l1" "│ $title"; then _rl_pass title-duplicate-case
+        else _rl_fail title-duplicate-case "duplicate description remains: $l1"; fi
+    done
+    _sess_run "$out" "$err" "$(_sess_json sid-same MIXED-CASE)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_SESSION_NAME=0
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && ! _has "$l1" '@Mixed-Case' && _has "$l1" 'MIXED-CASE'; then _rl_pass title-hidden-handle-keeps-description
+    else _rl_fail title-hidden-handle-keeps-description "hidden handle suppressed title: $l1"; fi
+    _sess_reg sid-unicode 'Équipe'
+    _sess_run "$out" "$err" "$(_sess_json sid-unicode 'éQUIPE')" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@Équipe' && ! _has "$l1" 'éQUIPE'; then _rl_pass title-duplicate-unicode
+    else _rl_fail title-duplicate-unicode "Unicode comparison failed: $l1"; fi
+    _sess_reg sid-glob 'a*'
+    _sess_run "$out" "$err" "$(_sess_json sid-glob abc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" 'abc'; then _rl_pass title-comparison-literal
+    else _rl_fail title-comparison-literal "handle was treated as a glob"; fi
+
+    _sess_reg sid-off buddy
+    _sess_run "$out" "$err" "$(_sess_json sid-off Remember-while-hidden)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_TOPIC=0
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-off")" = Remember-while-hidden ] && ! _has "$(head -1 "$out" | _strip_ansi)" Remember-while-hidden; then _rl_pass title-topic-off-still-remembers
+    else _rl_fail title-topic-off-still-remembers "topic toggle changed storage/display policy"; fi
+    _sess_reg sid-auto cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-auto cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_SESSION_NAME=0
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && ! _has "$l1" '@cc' && _has "$l1" Original-auto-title; then _rl_pass title-hidden-handle-rename-detected
+    else _rl_fail title-hidden-handle-rename-detected "hidden handle disabled rename detection: $l1"; fi
+
+    # Files are untrusted too: strip controls and cap before duplicate checks.
+    _sess_reg sid-cold cc user
+    longtitle=$(printf '%045d' 0)
+    printf 'sa\033fe%s\n' "$longtitle" >"$titles/sid-cold"
+    _sess_run "$out" "$err" "$(_sess_json sid-cold cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" "safe${longtitle:0:36}" && ! _has "$l1" "safe${longtitle:0:37}"; then _rl_pass title-cache-sanitized-capped
+    else _rl_fail title-cache-sanitized-capped "stored title not sanitized/capped: $l1"; fi
+    printf 'CC\n' >"$titles/sid-cold"
+    _sess_run "$out" "$err" "$(_sess_json sid-cold cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && ! _has "$l1" '│ CC'; then _rl_pass title-cached-duplicate-dropped
+    else _rl_fail title-cached-duplicate-dropped "stored duplicate remains: $l1"; fi
+
+    local sid badcache="$SCRATCH/bad-title-cache"
+    for sid in '../escape' 'bad/sid' 'bad.sid' ''; do
+        rm -rf "$badcache"
+        _sess_run "$out" "$err" "$(_sess_json "$sid" Test-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$badcache"
+        if [ ! -s "$err" ] && [ ! -e "$badcache" ]; then _rl_pass title-invalid-sid-no-path
+        else _rl_fail title-invalid-sid-no-path "malformed id became a cache path"; fi
+    done
+    _sess_reg sid-change buddy
+    _sess_run "$out" "$err" "$(_sess_json sid-change First-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    _sess_run "$out" "$err" "$(_sess_json sid-change Latest-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-change")" = Latest-auto ]; then _rl_pass title-changed-updated
+    else _rl_fail title-changed-updated "changed auto title was not remembered"; fi
+    local failbin="$SCRATCH/title-failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    _sess_run "$out" "$err" "$(_sess_json sid-change Failed-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" PATH="$failbin:$PATH"
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-change")" = Latest-auto ] && ! compgen -G "$titles/.sid-change.*" >/dev/null; then _rl_pass title-atomic-failure
+    else _rl_fail title-atomic-failure "failed publish changed cache or left a temp file"; fi
+    _sess_reg sid-auto cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-auto cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_THEME=tokyo-night
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && _has "$l1" Original-auto-title; then _rl_pass title-renamed-segment-theme
+    else _rl_fail title-renamed-segment-theme "segmented builder lost remembered description"; fi
+    _sess_reg sid-no-transcript cc user
+    local tr="$SCRATCH/title-transcript.jsonl" j
+    printf '{"type":"system","aiTitle":"Forbidden-transcript-title"}\n' >"$tr"
+    j=$(_sess_json sid-no-transcript cc | jq --arg tr "$tr" '.transcript_path=$tr')
+    _sess_run "$out" "$err" "$j" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && ! _has "$l1" Forbidden-transcript-title && [ ! -e "$titles/sid-no-transcript" ]; then _rl_pass title-no-transcript-fallback
+    else _rl_fail title-no-transcript-fallback "transcript was used to recover a description"; fi
+
+    local mode
+    mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$titles/sid-auto")
+    if [ "$mode" = 600 ]; then _rl_pass title-cache-private; else _rl_fail title-cache-private "cache mode $mode"; fi
+
 }
 
 # ── Env-input hardening tests ──────────────────────────────────────────────
@@ -2309,7 +2434,7 @@ peer_tests() {
     }
     _peer_run() {  # _peer_run <out> <err> <env...>
         local o="$1" e="$2"; shift 2
-        ( cd "$SCRATCH" && printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"%s","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"self-sid"}' "$repo" \
+        ( cd "$repo" && printf '{"model":{"display_name":"Claude Opus 5","id":"opus"},"cwd":"%s","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"self-sid","session_name":"Peer topic"}' "$repo" \
             | env CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_RL_CACHE="$SCRATCH/peer.cache" "$@" \
                   bash "$STATUSLINE" ) >"$o" 2>"$e"
     }
@@ -2378,14 +2503,14 @@ peer_tests() {
     elif _has "$l1" "⚙" || _has "$l1" "◷" || _has "$l1" "○"; then _rl_fail "$name" "STATUSLINE_PEERS=0 still rendered: $l1"
     else _rl_pass "$name"; fi
 
-    # 6. Peers and the update indicator share the right edge, peers first.
+    # 6. Peers follow the handle; only the update indicator remains right-aligned.
     name="peers-with-update-indicator"; out="$SCRATCH/pe6.out"; err="$SCRATCH/pe6.err"
     printf 'v99.0.0\n' > "$SCRATCH/peer-upd-cache"
     _peer_run "$out" "$err" CC_STATUSLINE_UPDATE_CACHE="$SCRATCH/peer-upd-cache"
     l1=$(sed -n '1p' "$out" | _strip_ansi)
     w1=$(sed -n '1p' "$out" | vis_cols)
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif ! _has "$l1" "[⚙2] ◷1 ○1 │ ⇡ 99.0.0"; then _rl_fail "$name" "expected peers then update: $l1"
+    elif ! _has "$l1" "@p-self [⚙2] ◷1 ○1 │ Peer topic" || ! _has "$l1" "⇡ 99.0.0"; then _rl_fail "$name" "expected peers after handle, update at right: $l1"
     elif [ "$w1" -gt "$((SAFE_WIDTH + WIDTH_SLOP))" ]; then _rl_fail "$name" "width $w1 exceeds budget"
     else _rl_pass "$name"; fi
 
@@ -2398,6 +2523,39 @@ peer_tests() {
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif [ "$w1" -gt 40 ]; then _rl_fail "$name" "width $w1 exceeds 40"
     elif { _has "$l1" "⚙" || _has "$l1" "○"; } && ! _has "$l1" "[⚙2] ◷1 ○1"; then _rl_fail "$name" "segment partially rendered: $l1"
+    else _rl_pass "$name"; fi
+
+    name="peers-lead-without-handle"; out="$SCRATCH/pe8.out"; err="$SCRATCH/pe8.err"
+    _peer_run "$out" "$err" STATUSLINE_SESSION_NAME=0
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || ! _has "$l1" "[⚙2] ◷1 ○1 │ Peer topic"; then _rl_fail "$name" "counts did not lead the topic: $l1"
+    else _rl_pass "$name"; fi
+
+    name="peers-drop-before-branch"; out="$SCRATCH/pe9.out"; err="$SCRATCH/pe9.err"
+    # Make line 1 overflow while leaving enough room for the intact branch
+    # once peers drop. The branch is more essential than the session counts.
+    git -C "$repo" branch branch-stays-whole
+    local original_branch peer_drop_width
+    original_branch=$(git -C "$repo" symbolic-ref HEAD)
+    git -C "$repo" symbolic-ref HEAD refs/heads/branch-stays-whole
+    _peer_run "$out" "$err" STATUSLINE_WIDTH=200 STATUSLINE_LAYOUT=wide STATUSLINE_PEERS=0
+    peer_drop_width=$(( $(head -1 "$out" | vis_cols) + 3 ))
+    _peer_run "$out" "$err" STATUSLINE_WIDTH="$peer_drop_width" STATUSLINE_LAYOUT=wide
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || _has "$l1" "⚙" || ! _has "$l1" "branch-stays-whole"; then _rl_fail "$name" "counts should drop before branch trimming: $l1"
+    else _rl_pass "$name"; fi
+    git -C "$repo" symbolic-ref HEAD "$original_branch"
+
+    name="peers-phone-after-branch"; out="$SCRATCH/pe10.out"; err="$SCRATCH/pe10.err"
+    _peer_run "$out" "$err" COLUMNS=90 STATUSLINE_LAYOUT=phone
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || ! [[ "$l1" = *"${original_branch##*/}"*"[⚙2] ◷1 ○1"* ]] || _has "$l1" "@p-self"; then _rl_fail "$name" "phone counts should follow branch: $l1"
+    else _rl_pass "$name"; fi
+
+    name="peers-phone-drop-first"; out="$SCRATCH/pe11.out"; err="$SCRATCH/pe11.err"
+    _peer_run "$out" "$err" COLUMNS=30
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ -s "$err" ] || _has "$l1" "⚙" || ! _has "$l1" "peer-repo"; then _rl_fail "$name" "phone counts should drop before directory trimming: $l1"
     else _rl_pass "$name"; fi
 
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
@@ -2870,6 +3028,778 @@ context_hold_tests() {
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
 }
 
+synthwave_cell_tests() {
+    local d="$SCRATCH/synthwave-cells" layout status glyph rgb out err cell rc
+    mkdir -p "$d"
+    out="$d/out"; err="$d/err"
+    for layout in wide phone; do
+        local -a viewport=()
+        [ "$layout" != phone ] || viewport=(COLUMNS=40)
+        for status in operational incident:test degraded_performance:test major_outage:test; do
+            case "$status" in
+                operational) glyph="✓"; rgb='5;217;232' ;;
+                incident:*) glyph="⚠"; rgb='249;200;14' ;;
+                degraded*) glyph="~"; rgb='249;200;14' ;;
+                *) glyph="✗"; rgb='255;42;109' ;;
+            esac
+            printf '%s\n' "$status" >"$d/gh"
+            (cd "$d" && env ${viewport[@]+"${viewport[@]}"} STATUSLINE_THEME=synthwave STATUSLINE_LAYOUT="$layout" STATUSLINE_WIDTH=130 \
+                STATUSLINE_PEERS=0 STATUSLINE_UPDATE_CHECK=0 CC_STATUSLINE_GH_CACHE="$d/gh" \
+                CC_STATUSLINE_GH_FETCH=/nonexistent CC_STATUSLINE_SVC_CACHE="$d/no-svc" \
+                bash "$STATUSLINE" <"$FIXTURES/08-long-dir.json" >"$out" 2>"$err")
+            rc=$?
+            cell=$(head -1 "$out" | perl -CSDA -e '
+                my $want = shift @ARGV; my $line = <STDIN> // "";
+                my ($fg, $bg) = ("", "");
+                while ($line =~ /(\e\]8;;.*?(?:\a|\e\\)|\e\[[0-9;]*m|.)/sg) {
+                    my $t = $1;
+                    ($fg, $bg) = ("", "") if $t eq "\e[0m";
+                    $fg = $1 if $t =~ /\e\[38;2;([0-9]+;[0-9]+;[0-9]+)/;
+                    $bg = $1 if $t =~ /\e\[48;2;([0-9]+;[0-9]+;[0-9]+)m/;
+                    if ($t eq $want) { print "$fg|$bg"; last; }
+                }
+            ' "$glyph")
+            if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$cell" = "$rgb|26;16;51" ]; then _rl_pass "synthwave-cell-$layout-$glyph"
+            else _rl_fail "synthwave-cell-$layout-$glyph" "wrong glyph color/surface: $cell"; fi
+        done
+    done
+    if _has "$(cat "$out")" $'\e[48;2;255;42;109m' && _has "$(cat "$out")" $'\e[48;2;5;217;232m'; then
+        _rl_pass synthwave-bright-endpoints
+    else _rl_fail synthwave-bright-endpoints "bright gradient endpoint absent"; fi
+}
+
+# Classic's literal bytes come from main 108227a, with deterministic inputs.
+classic_golden_tests() {
+    local d="$SCRATCH/classic-golden" layout out err rc
+    mkdir -p "$d/home/.claude"
+    printf 'operational\n' >"$d/svc"; printf 'incident:golden\n' >"$d/gh"; printf 'v99.0.0\n' >"$d/upd"
+    out="$d/out"; err="$d/err"
+    for layout in wide phone; do
+        local -a viewport=()
+        [ "$layout" != phone ] || viewport=(COLUMNS=40)
+        (cd "$d" && env ${viewport[@]+"${viewport[@]}"} HOME="$d/home" XDG_CONFIG_HOME="$d/xdg" \
+            CLAUDE_EFFORT=medium STATUSLINE_THEME=classic STATUSLINE_LAYOUT="$layout" STATUSLINE_WIDTH=130 \
+            STATUSLINE_PROFILE=0 STATUSLINE_TAB_TITLE=0 CC_STATUSLINE_NOW=1700000000 CC_STATUSLINE_RL_KEY="" \
+            CC_STATUSLINE_SESSIONS_DIR="$d/none" CC_STATUSLINE_CTX_CACHE="$d/ctx" CC_STATUSLINE_RL_CACHE="$d/rl" \
+            CC_STATUSLINE_SVC_CACHE="$d/svc" CC_STATUSLINE_GH_CACHE="$d/gh" CC_STATUSLINE_UPDATE_CACHE="$d/upd" \
+            bash "$STATUSLINE" <"$FIXTURES/01-happy-path.json" >"$out" 2>"$err")
+        rc=$?
+        if [ "$rc" = 0 ] && [ ! -s "$err" ] && cmp -s "$out" "$SCRIPT_DIR/golden/classic-$layout.ansi"; then
+            _rl_pass "classic-golden-$layout"
+        else _rl_fail "classic-golden-$layout" "original main bytes changed: $(head -1 "$err")"; fi
+    done
+}
+
+# No OS setting is read: local command shims drive every probe and cache case.
+appearance_tests() {
+    local d="$SCRATCH/appearance-tests" bin cache log out err rc want name record
+    bin="$d/bin"; cache="$d/cache"; log="$d/probes"; out="$d/out"; err="$d/err"
+    mkdir -p "$bin" "$d/minbin"
+    cat >"$bin/uname" <<'OS'
+#!/bin/sh
+printf 'uname\n' >>"$AP_TEST_LOG"
+printf '%s\n' "${AP_TEST_OS:-Darwin}"
+OS
+    cat >"$bin/defaults" <<'PROBE'
+#!/bin/sh
+printf 'probe\n' >>"$AP_TEST_LOG"
+printf '%s\n' "${AP_TEST_ANSWER:-Dark}"
+exit "${AP_TEST_RC:-0}"
+PROBE
+    cp "$bin/defaults" "$bin/gsettings"
+    chmod +x "$bin/uname" "$bin/defaults" "$bin/gsettings"
+    local cmd real
+    for cmd in bash date mkdir chmod mktemp mv rm timeout; do
+        real=$(command -v "$cmd") || continue
+        ln -s "$real" "$d/minbin/$cmd"
+    done
+    ln -s "$bin/uname" "$d/minbin/uname"
+    _ap_run() {
+        want="$1"; name="$2"; shift 2
+        env -u CC_STATUSLINE_APPEARANCE PATH="$bin:$PATH" CC_STATUSLINE_APPEARANCE_CACHE="$cache" \
+            CC_STATUSLINE_NOW=1700000000 AP_TEST_LOG="$log" AP_TEST_OS=Darwin AP_TEST_ANSWER=Dark AP_TEST_RC=0 \
+            "$@" /bin/bash "$STATUSLINE" --resolve-theme tokyo-auto >"$out" 2>"$err"
+        rc=$?
+        if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$(cat "$out")" = "$want" ]; then _rl_pass "$name"
+        else _rl_fail "$name" "wanted $want, got $(cat "$out"), stderr: $(head -1 "$err")"; fi
+    }
+    _ap_cold() { rm -f "$cache"; : >"$log"; _ap_run "$@"; }
+    _ap_cold tokyo-night appearance-force-dark CC_STATUSLINE_APPEARANCE=dark
+    _ap_cold tokyo-day appearance-force-light CC_STATUSLINE_APPEARANCE=light
+    if [ ! -s "$log" ] && [ ! -e "$cache" ]; then _rl_pass appearance-force-no-probe
+    else _rl_fail appearance-force-no-probe "forced appearance probed/wrote a cache"; fi
+    _ap_cold tokyo-night appearance-mac-dark
+    _ap_cold tokyo-day appearance-mac-light AP_TEST_ANSWER=Light
+    _ap_cold tokyo-day appearance-mac-missing-key AP_TEST_RC=1 AP_TEST_ANSWER=''
+    for rc in 5 124 137; do _ap_cold tokyo-night "appearance-mac-failure-$rc" AP_TEST_RC="$rc"; done
+    _ap_cold tokyo-night appearance-linux-dark AP_TEST_OS=Linux AP_TEST_ANSWER="'prefer-dark'"
+    _ap_cold tokyo-day appearance-linux-light AP_TEST_OS=Linux AP_TEST_ANSWER="'prefer-light'"
+    _ap_cold tokyo-day appearance-linux-default AP_TEST_OS=Linux AP_TEST_ANSWER="'default'"
+    _ap_cold tokyo-night appearance-linux-unknown AP_TEST_OS=Linux AP_TEST_ANSWER="'unknown'"
+    _ap_cold tokyo-night appearance-linux-failure AP_TEST_OS=Linux AP_TEST_RC=1
+    _ap_cold tokyo-night appearance-mac-no-tool PATH="$d/minbin"
+    _ap_cold tokyo-night appearance-linux-no-tool PATH="$d/minbin" AP_TEST_OS=Linux
+    printf '1700000000|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-day appearance-cache-hot
+    if [ ! -s "$log" ]; then _rl_pass appearance-cache-no-probe; else _rl_fail appearance-cache-no-probe "hot cache probed"; fi
+    printf '1699999941|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-day appearance-cache-59s
+    printf '1699999940|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-night appearance-cache-60s
+    printf '1700000001|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-night appearance-cache-future
+    for record in 'garbage' 'x|light' '1700000000|bad' '999999999999999|light' '1700000000|light|extra' $'1700000000|light\nextra' 'a[$(touch '"$d/NEVER_RUN_APPEARANCE"')]|dark'; do
+        printf '%s\n' "$record" >"$cache"; : >"$log"
+        _ap_run tokyo-night appearance-cache-malformed
+        [ -s "$log" ] || _rl_fail appearance-cache-malformed-probe "bad record did not refresh"
+    done
+    if [ ! -e "$d/NEVER_RUN_APPEARANCE" ]; then _rl_pass appearance-cache-no-eval; else _rl_fail appearance-cache-no-eval "cache arithmetic executed data"; fi
+    _ap_cold tokyo-night appearance-failure-cached AP_TEST_RC=124
+    : >"$log"
+    _ap_run tokyo-night appearance-failure-not-reprobed AP_TEST_ANSWER=Light
+    if [ ! -s "$log" ] && [ "$(cat "$cache")" = '1700000000|dark' ]; then _rl_pass appearance-fallback-record
+    else _rl_fail appearance-fallback-record "failure fallback not cached"; fi
+    local mode
+    mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$cache")
+    if [ "$mode" = 600 ]; then _rl_pass appearance-cache-private; else _rl_fail appearance-cache-private "mode $mode"; fi
+}
+
+# Left peer counts and the right update notice use independent backgrounds.
+theme_right_contrast_tests() {
+    local d="$SCRATCH/theme-right" repo reg fixture out err theme bg peer_bg idle upd
+    repo="$d/repo"; reg="$d/sessions"; fixture="$d/input.json"
+    out="$d/out"; err="$d/err"
+    mkdir -p "$repo" "$reg"
+    git -C "$repo" init -q -b main 2>/dev/null
+    jq --arg cwd "$repo" '.cwd=$cwd | .session_id="theme-self"' "$FIXTURES/01-happy-path.json" >"$fixture"
+    jq -n --arg cwd "$repo" --argjson pid "$$" \
+        '{cwd:$cwd,pid:$pid,sessionId:"theme-self",status:"busy",name:"self"}' >"$reg/self.json"
+    jq -n --arg cwd "$repo" --argjson pid "$$" \
+        '{cwd:$cwd,pid:$pid,sessionId:"theme-idle",status:"idle",name:"idle"}' >"$reg/idle.json"
+    printf 'v99.0.0\n' >"$d/update"
+    for theme in tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin; do
+        (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=200 STATUSLINE_HYPERLINKS=0 \
+            CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
+            CC_STATUSLINE_UPDATE_CACHE="$d/update" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+        case "$theme" in
+            tokyo-night|tokyo-auto) bg="41;46;66"; peer_bg="41;46;66" ;;
+            tokyo-day) bg="208;213;227"; peer_bg="$bg" ;;
+            gruvbox) bg="214;93;14"; peer_bg="80;73;69" ;;
+            dracula) bg="68;71;90"; peer_bg="68;71;90" ;;
+            catppuccin) bg="249;226;175"; peer_bg="49;50;68" ;;
+        esac
+        idle=$(head -1 "$out" | perl -CS -ne 'print $1 if /\e\[38;2;([0-9;]+)m\x{25cb}1/')
+        upd=$(head -1 "$out" | perl -CS -ne 'print $1 if /\e\[38;2;([0-9;]+)m(?:\e\[1m)?\x{21e1}/')
+        if [ -s "$err" ]; then _rl_fail "theme-$theme-right-contrast" "non-empty stderr"
+        elif [ -z "$idle" ] || [ "$idle" = "$peer_bg" ]; then _rl_fail "theme-$theme-right-contrast" "idle peer foreground missing or equals background"
+        elif [ -z "$upd" ] || [ "$upd" = "$bg" ]; then _rl_fail "theme-$theme-right-contrast" "update foreground missing or equals background"
+        else _rl_pass "theme-$theme-right-contrast"; fi
+    done
+}
+
+# Themes use the same render contract as every fixture, in both task locales.
+theme_tests() {
+    # Isolate the rendering suite from host account discovery and from the
+    # many files produced by unrelated tests. Account discovery is tested above.
+    local SCRATCH="$SCRATCH/themes"
+    local CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_RL_CACHE="$SCRATCH/parent.rl"
+    export CC_STATUSLINE_RL_KEY CC_STATUSLINE_RL_CACHE
+    mkdir -p "$SCRATCH"
+    printf '\ntheme matrix and phone sweep\n'
+    local themes="classic hue-dark nord phosphor synthwave tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin default"
+    local theme f w SAFE_WIDTH
+    local worker_slots
+    worker_slots=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || printf '1')
+    [[ "$worker_slots" =~ ^[1-9][0-9]{0,2}$ ]] || worker_slots=1
+    [ "$worker_slots" -le 8 ] || worker_slots=8
+    local -a theme_fixtures=() theme_widths=(110 50) sweep_cols=()
+    if [ "${STATUSLINE_TEST_THEMES_FULL:-0}" = 1 ]; then
+        theme_fixtures=("$FIXTURES"/*.json)
+        theme_widths=(130 110 80 50 30)
+        for ((w=20; w<=60; w++)); do sweep_cols+=("$w"); done
+    else
+        theme_fixtures=("$FIXTURES/01-happy-path.json" "$FIXTURES/08-long-dir.json"
+            "$FIXTURES/10-line2-overflow.json" "$FIXTURES/18-session-name.json"
+            "$FIXTURES/13-pct-100.json" "$FIXTURES/15-malformed-or-extreme.json")
+        # Dense boundary coverage plus a four-column sweep, in regular CI.
+        sweep_cols=(20 24 28 29 30 32 36 39 40 44 48 49 50 52 56 59 60 61)
+    fi
+    # Real repository state exercises branch joins, a GitHub alert, and the
+    # right-aligned update group. This runs last, after other scratch tests.
+    git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
+    git -C "$SCRATCH" remote add origin https://github.com/example/theme-tests
+    printf 'operational\n' >"$CC_STATUSLINE_SVC_CACHE"
+    printf 'incident:test\n' >"$SCRATCH/theme-gh"
+    printf 'v99.0.0\n' >"$CC_STATUSLINE_UPDATE_CACHE"
+    local CC_STATUSLINE_GH_CACHE="$SCRATCH/theme-gh"
+    local CC_STATUSLINE_GH_FETCH="$SCRATCH/no-gh-fetcher"
+    export CC_STATUSLINE_GH_CACHE CC_STATUSLINE_GH_FETCH
+    local CC_STATUSLINE_SESSIONS_DIR="$SCRATCH/theme-sessions"
+    export CC_STATUSLINE_SESSIONS_DIR
+    mkdir -p "$CC_STATUSLINE_SESSIONS_DIR"
+    _theme_matrix_one() {
+        local theme="$1" f w SAFE_WIDTH
+        # Each parallel worker owns its cwd, transcripts and rate-cache files.
+        local SCRATCH="$SCRATCH/matrix-$theme"
+        mkdir -p "$SCRATCH"
+        git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
+        git -C "$SCRATCH" remote add origin https://github.com/example/theme-tests
+        pass=0; fail=0; errors=()
+        for f in "${theme_fixtures[@]}"; do
+            for w in "${theme_widths[@]}"; do
+                SAFE_WIDTH=$w
+                STATUSLINE_THEME="$theme" STATUSLINE_WIDTH="$w" THEME_MATRIX=1 \
+                    TEST_CASE_LABEL="theme-$theme-$(basename "$f" .json)-$w" run_one "$f"
+            done
+            SAFE_WIDTH=39
+            STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=130 COLUMNS=40 THEME_MATRIX=1 \
+                TEST_CASE_LABEL="theme-$theme-$(basename "$f" .json)-phone" run_one "$f"
+        done
+        for w in "${sweep_cols[@]}"; do
+            SAFE_WIDTH=$((w-1))
+            STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=130 COLUMNS="$w" THEME_MATRIX=1 \
+                TEST_CASE_LABEL="theme-$theme-phone-sweep-$w" run_one "$FIXTURES/08-long-dir.json"
+        done
+        printf '%s %s\n' "$pass" "$fail" >"$SCRATCH/counts"
+    }
+    local -a theme_pids=()
+    local pid tpass tfail
+    for theme in $themes; do
+        _theme_matrix_one "$theme" >"$SCRATCH/matrix-$theme.log" 2>&1 &
+        theme_pids+=("$!")
+        if [ "${#theme_pids[@]}" -eq "$worker_slots" ]; then
+            for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
+            theme_pids=()
+        fi
+    done
+    if [ "${#theme_pids[@]}" -gt 0 ]; then
+    for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail theme-worker "worker failed"; done
+    fi
+    for theme in $themes; do
+        cat "$SCRATCH/matrix-$theme.log"
+        if read -r tpass tfail <"$SCRATCH/matrix-$theme/counts"; then
+            pass=$((pass+tpass)); fail=$((fail+tfail))
+        else _rl_fail "theme-$theme-worker" "no result count"; fi
+    done
+
+    # A roomy wide render proves segmented assembly preserves all content.
+    local fixture="$SCRATCH/theme-content.json"
+    jq '.session_name="Theme topic" | .agent.name="theme-agent" | .mode="plan"' \
+        "$FIXTURES/18-session-name.json" >"$fixture"
+    printf '{"sessionId":"test-session-name","name":"theme-handle"}\n' >"$CC_STATUSLINE_SESSIONS_DIR/handle.json"
+    local out="$SCRATCH/theme-contract.out" err="$SCRATCH/theme-contract.err" rc
+    local base="" actual name
+    for theme in classic tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin; do
+        (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=600 STATUSLINE_LAYOUT=wide \
+            bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+        rc=$?; name="theme-$theme-content"
+        local fail_reasons=()
+        _render_contract "$out" "$err" "$rc" 600
+        # Remove only decoration, preserving all text, dirty markers and alerts.
+        actual=$(head -1 "$out" | _strip_ansi | perl -CS -pe \
+            's/[\x{e0b0}\x{e0b2}\x{e0b4}\x{e0b6}\x{e0b8}\x{e0ba}\x{e0c0}\x{2502}]//g; s/\s+/ /g; s/^ | $//g')
+        if [ "$theme" = "classic" ]; then base="$actual"; fi
+        if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
+        elif [ "$actual" != "$base" ]; then _rl_fail "$name" "content differs: $actual vs $base"
+        else _rl_pass "$name"; fi
+    done
+
+    # Byte identity includes GH/provider links and the right update segment,
+    # not just visible text. Compare all fixtures at every requested width.
+    _theme_identity_one() {
+        local f="$1" key baseline out err w theme name viewport width companion
+        key=$(basename "$f" .json)
+        local SCRATCH="$SCRATCH/identity-$key"
+        local CC_STATUSLINE_RL_CACHE="$SCRATCH/rl"
+        export CC_STATUSLINE_RL_CACHE
+        mkdir -p "$SCRATCH"
+        git -C "$SCRATCH" init -q -b feature/theme-phone-branch 2>/dev/null
+        baseline="$SCRATCH/base"; out="$SCRATCH/out"; err="$SCRATCH/err"
+        # Create every output before rendering so git status is stable.
+        for name in base out err rl counts; do : >"$SCRATCH/$name"; done
+        companion="$FIXTURES/$key.transcript.jsonl"
+        [ ! -f "$companion" ] || cp "$companion" "$SCRATCH/$key.transcript.jsonl"
+        pass=0; fail=0; errors=()
+        for w in 130 110 80 50 30 phone; do
+            viewport=130; width="$w"
+            [ "$w" = phone ] && { viewport=40; width=130; }
+            (cd "$SCRATCH" && COLUMNS="$viewport" STATUSLINE_WIDTH="$width" \
+                bash "$STATUSLINE" <"$f" >"$baseline" 2>"$err")
+            for theme in default bogus; do
+                (cd "$SCRATCH" && STATUSLINE_THEME="$theme" COLUMNS="$viewport" STATUSLINE_WIDTH="$width" \
+                    bash "$STATUSLINE" <"$f" >"$out" 2>"$err")
+                name="theme-identity-$theme-$key-$w"
+                if cmp -s "$baseline" "$out"; then _rl_pass "$name"
+                else _rl_fail "$name" "unset and $theme differ in raw bytes"; fi
+            done
+        done
+        printf '%s %s\n' "$pass" "$fail" >"$SCRATCH/counts"
+    }
+    theme_pids=()
+    local key
+    for f in "$FIXTURES"/*.json; do
+        key=$(basename "$f" .json)
+        _theme_identity_one "$f" >"$SCRATCH/identity-$key.log" 2>&1 &
+        theme_pids+=("$!")
+        if [ "${#theme_pids[@]}" -eq "$worker_slots" ]; then
+            for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail identity-worker "worker failed"; done
+            theme_pids=()
+        fi
+    done
+    if [ "${#theme_pids[@]}" -gt 0 ]; then
+    for pid in "${theme_pids[@]}"; do wait "$pid" || _rl_fail identity-worker "worker failed"; done
+    fi
+    for f in "$FIXTURES"/*.json; do
+        key=$(basename "$f" .json)
+        cat "$SCRATCH/identity-$key.log"
+        if read -r tpass tfail <"$SCRATCH/identity-$key/counts"; then
+            pass=$((pass+tpass)); fail=$((fail+tfail))
+        else _rl_fail "identity-$key-worker" "no result count"; fi
+    done
+
+    # Compare Synthwave to its own pre-gradient builder, including OSC 8 bytes.
+    # Only the post-pass condition changes in this disposable script copy.
+    local grad="$SCRATCH/gradient" plain="$SCRATCH/gradient/plain" locale
+    mkdir -p "$grad"
+    perl -pe 's/if \[ "\$THEME" = "synthwave" \]; then/if false; then/' "$STATUSLINE" >"$grad/statusline.sh"
+    cp "$REPO_DIR/VERSION" "$grad/VERSION"
+    jq '.cwd="/home/test/日本語目录"' "$fixture" >"$grad/input"
+    for locale in normal C; do
+        (cd "$SCRATCH" && GIT_DIR="$grad/no-git" STATUSLINE_THEME=synthwave STATUSLINE_WIDTH=130 \
+            STATUSLINE_HYPERLINKS=1 STATUSLINE_UPDATE_CHECK=0 STATUSLINE_PEERS=0 \
+            bash "$grad/statusline.sh" <"$grad/input" >"$plain" 2>"$err")
+        if [ "$locale" = C ]; then
+            (cd "$SCRATCH" && LC_ALL=C GIT_DIR="$grad/no-git" STATUSLINE_THEME=synthwave STATUSLINE_WIDTH=130 \
+                STATUSLINE_HYPERLINKS=1 STATUSLINE_UPDATE_CHECK=0 STATUSLINE_PEERS=0 \
+                bash "$STATUSLINE" <"$grad/input" >"$out" 2>"$err")
+        else
+            (cd "$SCRATCH" && GIT_DIR="$grad/no-git" STATUSLINE_THEME=synthwave STATUSLINE_WIDTH=130 \
+                STATUSLINE_HYPERLINKS=1 STATUSLINE_UPDATE_CHECK=0 STATUSLINE_PEERS=0 \
+                bash "$STATUSLINE" <"$grad/input" >"$out" 2>"$err")
+        fi
+        rc=$?; name="theme-synthwave-gradient-text-$locale"
+        local fail_reasons=()
+        _render_contract "$out" "$err" "$rc" 130
+        base=$(head -1 "$plain" | _strip_ansi); actual=$(head -1 "$out" | _strip_ansi)
+        if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
+        elif [ "$base" = "$actual" ] && _has "$actual" '日本語目录'; then _rl_pass "$name"
+        else _rl_fail "$name" "gradient changed non-ASCII visible text"; fi
+        base=$(head -1 "$plain" | perl -ne 'print "$&\n" while /\e\]8;;.*?(?:\a|\e\\)/g')
+        actual=$(head -1 "$out" | perl -ne 'print "$&\n" while /\e\]8;;.*?(?:\a|\e\\)/g')
+        if [ -n "$base" ] && [ "$base" = "$actual" ]; then _rl_pass "theme-synthwave-gradient-links-$locale"
+        else _rl_fail "theme-synthwave-gradient-links-$locale" "gradient changed OSC 8 wrappers"; fi
+    done
+
+    # Each theme retains the glyph meanings and distinct alert foregrounds.
+    local status glyph good caution bad rgb
+    for theme in $themes; do
+        good=""; caution=""; bad=""
+        for status in operational incident:test degraded_performance:test major_outage:test; do
+            case "$status" in operational) glyph="✓" ;; incident:*) glyph="⚠" ;; degraded*) glyph="~" ;; *) glyph="✗" ;; esac
+            printf '%s\n' "$status" >"$CC_STATUSLINE_SVC_CACHE"
+            (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_HYPERLINKS=0 STATUSLINE_WIDTH=600 \
+                bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+            name="theme-$theme-status-$status"
+            actual=$(_rl_l2 "$out")
+            rgb=$(tail -1 "$out" | perl -CS -ne \
+                'print $1 if /\e\[38;2;([0-9]+;[0-9]+;[0-9]+)m[\x{2713}\x{26a0}~\x{2717}]/')
+            if _has "$actual" "$glyph" && [ -n "$rgb" ]; then _rl_pass "$name"
+            else _rl_fail "$name" "missing service glyph or color"; fi
+            case "$status" in operational) good="$rgb" ;; incident:*) caution="$rgb" ;; major*) bad="$rgb" ;; esac
+        done
+        name="theme-$theme-status-colors"
+        if [ "$good" != "$caution" ] && [ "$good" != "$bad" ] && [ "$caution" != "$bad" ]; then _rl_pass "$name"
+        else _rl_fail "$name" "good/caution/bad foregrounds are not distinct"; fi
+        # Future-reset fixture keeps the ahead-of-pace and on-pace alerts.
+        (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=600 STATUSLINE_RL_SHARE=0 \
+            bash "$STATUSLINE" <"$FIXTURES/07-pace.json" >"$out" 2>"$err")
+        actual=$(_rl_l2 "$out"); name="theme-$theme-pace-arrows"
+        if _has "$actual" "↑" && _has "$actual" "→"; then _rl_pass "$name"
+        else _rl_fail "$name" "pace arrows lost: $actual"; fi
+    done
+
+    # Auto uses exactly the named palette in both resolved appearances.
+    local appearance resolved auto_base="$SCRATCH/auto-base"
+    for appearance in dark light; do
+        case "$appearance" in dark) resolved=tokyo-night ;; *) resolved=tokyo-day ;; esac
+        for layout in wide phone; do
+            (cd "$SCRATCH" && CC_STATUSLINE_APPEARANCE="$appearance" STATUSLINE_THEME="$resolved" \
+                STATUSLINE_LAYOUT="$layout" bash "$STATUSLINE" <"$fixture" >"$auto_base" 2>"$err")
+            (cd "$SCRATCH" && CC_STATUSLINE_APPEARANCE="$appearance" STATUSLINE_THEME=tokyo-auto \
+                STATUSLINE_LAYOUT="$layout" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+            if [ "$?" = 0 ] && [ ! -s "$err" ] && cmp -s "$out" "$auto_base"; then _rl_pass "theme-auto-$appearance-$layout"
+            else _rl_fail "theme-auto-$appearance-$layout" "auto differs from $resolved"; fi
+        done
+    done
+
+    # Held GPT context uses the theme's dim token in both layouts.
+    local tr="$SCRATCH/theme-ctx.jsonl" snap dim layout raw
+    for theme in $themes; do
+        case "$theme" in
+            classic) dim=$'\e[38;2;80;80;80m' ;;
+            hue-dark) dim=$'\e[38;2;100;100;100m' ;;
+            nord) dim=$'\e[38;2;96;106;128m' ;;
+            phosphor) dim=$'\e[38;2;42;116;60m' ;;
+            synthwave) dim=$'\e[38;2;107;91;133m' ;;
+            tokyo-night|tokyo-auto|default) dim=$'\e[38;2;96;105;135m' ;;
+            tokyo-day) dim=$'\e[38;2;104;112;154m' ;;
+            gruvbox) dim=$'\e[38;2;131;117;103m' ;;
+            dracula) dim=$'\e[38;2;98;114;164m' ;;
+            catppuccin) dim=$'\e[38;2;124;128;152m' ;;
+        esac
+        : >"$tr"; _ctx_asst "$tr" gpt-6.1-sol pos21
+        snap="$SCRATCH/theme-$theme-ctx"
+        (cd "$SCRATCH" && _ctx_json theme-ctx gpt-6.1-sol "$tr" 872000 pos21 \
+            | STATUSLINE_THEME="$theme" STATUSLINE_GPT_LIMITS=1 STATUSLINE_GPT_FETCH=0 \
+              CC_STATUSLINE_GPT_CACHE="$SCRATCH/no-theme-gpt" CC_STATUSLINE_CTX_CACHE="$snap" \
+              bash "$STATUSLINE" >"$out" 2>"$err")
+        for layout in wide phone; do
+            (cd "$SCRATCH" && _ctx_json theme-ctx gpt-6.1-sol "$tr" 872000 zero \
+                | STATUSLINE_THEME="$theme" STATUSLINE_LAYOUT="$layout" STATUSLINE_GPT_LIMITS=1 \
+                  STATUSLINE_GPT_FETCH=0 CC_STATUSLINE_GPT_CACHE="$SCRATCH/no-theme-gpt" \
+                  CC_STATUSLINE_CTX_CACHE="$snap" bash "$STATUSLINE" >"$out" 2>"$err")
+            rc=$?; name="theme-$theme-context-dim-$layout"
+            local fail_reasons=()
+            _render_contract "$out" "$err" "$rc" 110
+            raw=$(tail -1 "$out")
+            if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
+            elif _has "$raw" "${dim}21%"; then _rl_pass "$name"
+            else _rl_fail "$name" "held context lost its dim color"; fi
+        done
+    done
+
+    # Override-file access is exclusive to the two project-hue themes.
+    local bin="$SCRATCH/theme-bin" real_jq
+    real_jq=$(command -v jq); mkdir -p "$bin"
+    cat >"$bin/jq" <<'JQ'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    case "$arg" in */statusline-color-overrides.json) printf 'read\n' >>"$THEME_READ_LOG" ;; esac
+done
+exec "$THEME_REAL_JQ" "$@"
+JQ
+    chmod +x "$bin/jq"
+    printf '{}\n' >"$HOME/.claude/statusline-color-overrides.json"
+    for theme in $themes; do
+        : >"$SCRATCH/theme-reads"
+        (cd "$SCRATCH" && PATH="$bin:$PATH" THEME_REAL_JQ="$real_jq" THEME_READ_LOG="$SCRATCH/theme-reads" \
+            STATUSLINE_THEME="$theme" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+        name="theme-$theme-override-read"
+        case "$theme" in
+            classic|hue-dark) if [ -s "$SCRATCH/theme-reads" ]; then _rl_pass "$name"; else _rl_fail "$name" "override read missing"; fi ;;
+            *) if [ -s "$SCRATCH/theme-reads" ]; then _rl_fail "$name" "fixed palette read project overrides"; else _rl_pass "$name"; fi ;;
+        esac
+    done
+}
+
+# The baseline and theme suites share no mutable state: each child initializes
+# its own HOME, config, cache seams and scratch tree through this same harness.
+# Run them together so full identity/semantic coverage fits the CI time budget.
+if [ "${STATUSLINE_TEST_SCOPE:-}" = "" ] && [ "${STATUSLINE_TEST_THEMES_FULL:-0}" != 1 ]; then
+    STATUSLINE_TEST_SCOPE=base bash "$0" >"$SCRATCH/base.log" 2>&1 &
+    BASE_PID=$!
+    STATUSLINE_TEST_SCOPE=themes bash "$0" >"$SCRATCH/themes.log" 2>&1 &
+    THEMES_PID=$!
+    BASE_RC=0; THEMES_RC=0
+    wait "$BASE_PID" || BASE_RC=$?
+    wait "$THEMES_PID" || THEMES_RC=$?
+    cat "$SCRATCH/base.log" "$SCRATCH/themes.log"
+    read -r BASE_PASS BASE_FAIL < <(awk '/^[0-9]+ passed, [0-9]+ failed$/ {p=$1;f=$3} END{print p+0,f+0}' "$SCRATCH/base.log")
+    read -r THEMES_PASS THEMES_FAIL < <(awk '/^[0-9]+ passed, [0-9]+ failed$/ {p=$1;f=$3} END{print p+0,f+0}' "$SCRATCH/themes.log")
+    printf '%d passed, %d failed (combined)\n' "$((BASE_PASS+THEMES_PASS))" "$((BASE_FAIL+THEMES_FAIL))"
+    [ "$BASE_RC" = 0 ] && [ "$THEMES_RC" = 0 ] && [ "$((BASE_FAIL+THEMES_FAIL))" = 0 ]
+    exit $?
+fi
+
+# Packaged chooser behavior and renderer precedence, with isolated config.
+theme_chooser_tests() {
+    printf '\ntheme chooser tests\n'
+    local d="$SCRATCH/chooser" chooser_home cfg out err rc actual base
+    chooser_home="$d/home"; cfg="$d/xdg"; out="$d/out"; err="$d/err"; base="$d/base"
+    local CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_RL_CACHE="$d/render.rl"
+    export CC_STATUSLINE_RL_KEY CC_STATUSLINE_RL_CACHE
+    mkdir -p "$chooser_home/.claude" "$cfg" "$d/tmp"
+    local chooser="$REPO_DIR/cc-statusline-theme" file="$cfg/cc-statusline/theme"
+    _choose() {
+        HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" TMPDIR="$d/tmp" CC_STATUSLINE_DEV_DIR="$REPO_DIR" \
+            "$chooser" "$@" >"$out" 2>"$err"
+        rc=$?
+    }
+    _choose current
+    if [ "$rc" = 0 ] && [ "$(cat "$out")" = 'tokyo-auto (now: night) (default)' ]; then _rl_pass chooser-current-default
+    else _rl_fail chooser-current-default "unexpected current selection"; fi
+    _choose set nord
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-set
+    else _rl_fail chooser-set "valid theme not saved"; fi
+    _choose current
+    if [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-current-file
+    else _rl_fail chooser-current-file "saved source not reported"; fi
+    _choose list
+    if [ "$(wc -l <"$out" | tr -d ' ')" = 12 ] && _has "$(cat "$out")" '● nord (current)'; then _rl_pass chooser-list
+    else _rl_fail chooser-list "theme list or current marker wrong"; fi
+    STATUSLINE_THEME=dracula _choose current
+    if [ "$(cat "$out")" = 'dracula (env)' ]; then _rl_pass chooser-current-env
+    else _rl_fail chooser-current-env "environment did not win"; fi
+    STATUSLINE_THEME=bogus _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (env)' ]; then _rl_pass chooser-unknown-env
+    else _rl_fail chooser-unknown-env "invalid environment did not select default"; fi
+    _choose set bogus
+    if [ "$rc" -ne 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-invalid
+    else _rl_fail chooser-invalid "invalid choice accepted or changed saved theme"; fi
+    local mode
+    mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$file")
+    if [ "$mode" = 600 ]; then _rl_pass chooser-file-mode; else _rl_fail chooser-file-mode "saved file mode is $mode"; fi
+
+    # Failed atomic rename leaves the old file intact and no temporary file.
+    local failbin="$d/failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    PATH="$failbin:$PATH" _choose set dracula
+    if [ "$rc" -ne 0 ] && [ "$(cat "$file")" = nord ] && ! compgen -G "$cfg/cc-statusline/.theme.*" >/dev/null; then _rl_pass chooser-atomic-failure
+    else _rl_fail chooser-atomic-failure "failed rename changed file or left temporary state"; fi
+
+    # Real previews use scratch HOME/cache/fetch seams, including under C locale.
+    _choose preview
+    if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$(wc -l <"$out" | tr -d ' ')" = 36 ] \
+        && ! compgen -G "$d/tmp/cc-statusline-preview.*" >/dev/null; then _rl_pass chooser-preview-all
+    else _rl_fail chooser-preview-all "preview contract or cleanup failed: $(head -1 "$err")"; fi
+    _choose preview nord
+    if [ "$rc" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 3 ] && _has "$(cat "$out" | _strip_ansi)" "code/my-project"; then _rl_pass chooser-preview-one
+    else _rl_fail chooser-preview-one "single preview failed"; fi
+    local sentinel="$d/sentinel" sentinel_dir sentinel_bad=0 fake_fetch="$d/sentinel-fetch"
+    mkdir -p "$sentinel/home" "$sentinel/xdg" "$sentinel/runtime"
+    printf '#!/bin/sh\nprintf "unexpected\\n" >"$CHOOSER_SENTINEL_MARKER"\n' >"$fake_fetch"; chmod +x "$fake_fetch"
+    local -a sentinel_env=("HOME=$sentinel/home" "XDG_CONFIG_HOME=$sentinel/xdg"
+        "XDG_RUNTIME_DIR=$sentinel/runtime" "TMPDIR=$d/tmp" "CC_STATUSLINE_DEV_DIR=$REPO_DIR"
+        "CHOOSER_SENTINEL_MARKER=$sentinel/home/unexpected-fetch"
+        "CC_STATUSLINE_CTX_CACHE=$sentinel/runtime/ctx" "CC_STATUSLINE_TITLE_CACHE=$sentinel/runtime/title")
+    local cache_key
+    for cache_key in SVC CODEX_SVC GH RL GPT GPT_CREDITS UPDATE; do
+        sentinel_env+=("CC_STATUSLINE_${cache_key}_CACHE=$sentinel/runtime/$cache_key"
+            "CC_STATUSLINE_${cache_key}_FETCH=$fake_fetch")
+    done
+    env "${sentinel_env[@]}" "$chooser" preview nord >"$out" 2>"$err"
+    rc=$?
+    for sentinel_dir in home xdg runtime; do
+        [ -z "$(ls -A "$sentinel/$sentinel_dir")" ] || sentinel_bad=1
+    done
+    if [ "$rc" = 0 ] && [ "$sentinel_bad" = 0 ] && [ ! -s "$err" ]; then _rl_pass chooser-preview-sentinel
+    else _rl_fail chooser-preview-sentinel "preview touched caller HOME/config/caches or spawned a fetcher"; fi
+    _choose preview bogus
+    if [ "$rc" -ne 0 ]; then _rl_pass chooser-preview-invalid; else _rl_fail chooser-preview-invalid "invalid preview accepted"; fi
+
+    # File first-line/whitespace handling and env precedence match the renderer.
+    _theme_saved_render() {
+        (cd "$SCRATCH" && XDG_CONFIG_HOME="$cfg" STATUSLINE_WIDTH=130 STATUSLINE_LAYOUT=wide \
+            bash "$STATUSLINE" <"$FIXTURES/01-happy-path.json" >"$out" 2>"$err")
+    }
+    STATUSLINE_THEME=nord _theme_saved_render; cp "$out" "$base"
+    printf '  nord \t\ninvalid-second-line\n' >"$file"
+    _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-file-whitespace; else _rl_fail theme-file-whitespace "file and explicit theme differ"; fi
+    STATUSLINE_THEME=default _theme_saved_render; cp "$out" "$base"
+    STATUSLINE_THEME=bogus _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-env-unknown-beats-file; else _rl_fail theme-env-unknown-beats-file "unknown env did not override file"; fi
+    STATUSLINE_THEME='' _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-env-empty-beats-file; else _rl_fail theme-env-empty-beats-file "empty env did not override file"; fi
+    printf 'bogus\n' >"$file"; _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-file-garbage; else _rl_fail theme-file-garbage "garbage file did not select default"; fi
+    printf '\033[31mnord\n' >"$file"; _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-file-control-bytes; else _rl_fail theme-file-control-bytes "control bytes selected a theme"; fi
+    STATUSLINE_THEME=tokyo-auto _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-default-alias; else _rl_fail theme-default-alias "default differs from tokyo-auto"; fi
+    rm -f "$file"
+    mkdir -p "$HOME/.claude"
+    printf '{}\n' >"$HOME/.claude/statusline-color-overrides.json"
+    STATUSLINE_THEME=classic _theme_saved_render; cp "$out" "$d/classic-base"
+    _theme_saved_render
+    if cmp -s "$out" "$d/classic-base"; then _rl_pass theme-classic-migration
+    else _rl_fail theme-classic-migration "existing overrides did not retain Classic"; fi
+    STATUSLINE_THEME=default _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-explicit-default-beats-migration
+    else _rl_fail theme-explicit-default-beats-migration "explicit alias did not override migration"; fi
+    printf 'nord\n' >"$file"
+    _theme_saved_render
+    STATUSLINE_THEME=nord _theme_saved_render; cp "$out" "$d/nord-base"
+    _theme_saved_render
+    if cmp -s "$out" "$d/nord-base"; then _rl_pass theme-explicit-file-beats-migration
+    else _rl_fail theme-explicit-file-beats-migration "file did not override migration"; fi
+    rm -f "$HOME/.claude/statusline-color-overrides.json"
+    printf '{}\n' >"$chooser_home/.claude/statusline-color-overrides.json"
+    rm -f "$file"
+    _choose current
+    if [ "$(cat "$out")" = 'classic (default: overrides file)' ]; then _rl_pass chooser-classic-migration
+    else _rl_fail chooser-classic-migration "migration source not reported"; fi
+    STATUSLINE_THEME=default _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (env)' ]; then _rl_pass chooser-explicit-default
+    else _rl_fail chooser-explicit-default "explicit alias did not win"; fi
+    rm -f "$chooser_home/.claude/statusline-color-overrides.json"
+    CC_STATUSLINE_APPEARANCE=light _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: day) (default)' ]; then _rl_pass chooser-auto-day
+    else _rl_fail chooser-auto-day "auto resolved variant not reported"; fi
+    printf 'nord\n' >"$file"
+    _choose reset
+    if [ "$rc" = 0 ] && [ ! -e "$file" ]; then _rl_pass chooser-reset; else _rl_fail chooser-reset "saved theme not removed"; fi
+    _choose --help
+    if [ "$rc" = 0 ] && _has "$(cat "$out")" 'Usage:'; then _rl_pass chooser-help; else _rl_fail chooser-help "help failed"; fi
+    printf '{"statusLine":{"command":"STATUSLINE_THEME=dracula cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
+    _choose set nord
+    if [ "$rc" = 0 ] && _has "$(cat "$err")" 'overrides the saved theme'; then _rl_pass chooser-settings-warning
+    else _rl_fail chooser-settings-warning "settings override warning absent"; fi
+    STATUSLINE_THEME=nord _choose current
+    if [ "$(cat "$out")" = 'dracula (settings)' ]; then _rl_pass chooser-current-settings
+    else _rl_fail chooser-current-settings "settings did not override shell env/file"; fi
+    _choose list
+    if _has "$(cat "$out")" '● dracula (current)'; then _rl_pass chooser-list-settings
+    else _rl_fail chooser-list-settings "settings theme not marked"; fi
+    _choose set nord
+    if _has "$(cat "$out")" 'will not apply until STATUSLINE_THEME is removed'; then _rl_pass chooser-save-overridden
+    else _rl_fail chooser-save-overridden "override apply warning absent"; fi
+    printf '{"statusLine":{"command":"env STATUSLINE_THEME=bogus cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (settings)' ]; then _rl_pass chooser-current-settings-unknown
+    else _rl_fail chooser-current-settings-unknown "invalid settings did not choose default"; fi
+    jq -n --arg command "env STATUSLINE_THEME='tokyo-night' cc-statusline" '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'tokyo-night (settings)' ]; then _rl_pass chooser-current-settings-quoted
+    else _rl_fail chooser-current-settings-quoted "quoted setting was not parsed"; fi
+    jq -n --arg command 'echo "STATUSLINE_THEME=dracula"' '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-current-settings-not-assignment
+    else _rl_fail chooser-current-settings-not-assignment "quoted command text treated as assignment"; fi
+    jq -n --arg command 'STATUSLINE_THEME=$(touch NEVER_EXECUTE_SETTINGS) cc-statusline' '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (settings)' ] && [ ! -e "$SCRATCH/NEVER_EXECUTE_SETTINGS" ]; then _rl_pass chooser-current-settings-no-eval
+    else _rl_fail chooser-current-settings-no-eval "settings command was executed or expanded"; fi
+    printf '{"statusLine":{"command":"cc-statusline","refreshInterval":120}}\n' >"$chooser_home/.claude/settings.json"
+    _choose set nord
+    if _has "$(cat "$out")" 'within 120s in idle ones'; then _rl_pass chooser-save-timing
+    else _rl_fail chooser-save-timing "refresh interval absent from save message"; fi
+    _choose reset
+    if _has "$(cat "$out")" 'within 120s in idle ones'; then _rl_pass chooser-reset-timing
+    else _rl_fail chooser-reset-timing "refresh interval absent from reset message"; fi
+    : >"$chooser_home/.claude/settings.json"
+    _choose set nord
+    if _has "$(cat "$out")" 'idle sessions update on your next message'; then _rl_pass chooser-save-no-refresh
+    else _rl_fail chooser-save-no-refresh "missing-interval timing wrong"; fi
+    _choose reset
+    if _has "$(cat "$out")" 'idle sessions update on your next message'; then _rl_pass chooser-reset-no-refresh
+    else _rl_fail chooser-reset-no-refresh "missing-interval reset timing wrong"; fi
+    _choose set nord
+
+    # Exercise the fzf route with a controlled selection, no terminal needed.
+    local fzfbin="$d/fzfbin"
+    mkdir -p "$fzfbin"
+    cat >"$fzfbin/fzf" <<'FZF'
+#!/bin/sh
+case " $* " in *" --filter= "*) [ "${CHOOSER_FZF_NO_BIND:-0}" = 1 ] && exit 2; exit 1 ;; esac
+printf '%s\n' "$@" >"$CHOOSER_FZF_ARGS"
+cat >"$CHOOSER_FZF_INPUT"
+printf 'dracula\t● dracula (current)\n'
+FZF
+    chmod +x "$fzfbin/fzf"
+    CHOOSER_FZF_ARGS="$d/fzf.args" CHOOSER_FZF_INPUT="$d/fzf.input" PATH="$fzfbin:$PATH" _choose
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = dracula ]; then _rl_pass chooser-fzf
+    else _rl_fail chooser-fzf "fzf selection not saved"; fi
+
+    local fzf_args
+    fzf_args=$(cat "$d/fzf.args")
+    if _has "$fzf_args" '--layout=reverse' && _has "$fzf_args" '--preview-window=down,2,border-top,noinfo' \
+        && _has "$fzf_args" '--fzf-preview {1}'; then _rl_pass chooser-fzf-stacked-panes
+    else _rl_fail chooser-fzf-stacked-panes "list/preview layout arguments wrong"; fi
+    if _has "$fzf_args" 'Current: nord (file)' && _has "$fzf_args" '--bind=load:pos(3)' \
+        && _has "$(cat "$d/fzf.input")" '● nord (current)' && _has "$fzf_args" 'CC_STATUSLINE_APPEARANCE=dark'; then _rl_pass chooser-fzf-current-marker
+    else _rl_fail chooser-fzf-current-marker "current marker/header/initial position wrong"; fi
+    CHOOSER_FZF_NO_BIND=1 CHOOSER_FZF_ARGS="$d/fzf.args" CHOOSER_FZF_INPUT="$d/fzf.input" PATH="$fzfbin:$PATH" _choose
+    if [ "$rc" = 0 ] && ! _has "$(cat "$d/fzf.args")" '--bind='; then _rl_pass chooser-fzf-older-binding
+    else _rl_fail chooser-fzf-older-binding "unsupported initial-position binding did not degrade"; fi
+    printf '{"statusLine":{"command":"STATUSLINE_THEME=dracula cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
+    FZF_PREVIEW_COLUMNS=130 COLUMNS=40 _choose --fzf-preview nord
+    : >"$chooser_home/.claude/settings.json"
+    local fail_reasons=() canonical="$d/fzf-canonical"
+    # fzf gets two records with one separator and no final blank row. Append
+    # a newline only for the regular file-based two-line width contract.
+    [ "$(wc -l <"$out" | tr -d ' ')" = 1 ] || fail_reasons+=("unexpected preview line endings")
+    printf '%s\n' "$(cat "$out")" >"$canonical"
+    _render_contract "$canonical" "$err" "$rc" 129
+    if [ "${#fail_reasons[@]}" -eq 0 ] && _has "$(_rl_l2 "$canonical")" 'Claude Opus 4.6'; then
+        _rl_pass chooser-fzf-two-row-wide-preview
+    else _rl_fail chooser-fzf-two-row-wide-preview "preview heading, width source or render contract wrong: ${fail_reasons[*]}"; fi
+
+    local titledev="$d/title-dev"
+    mkdir -p "$titledev"
+    cat >"$titledev/statusline.sh" <<'TITLE'
+#!/usr/bin/env bash
+if [ "${1:-}" != --list-themes ]; then
+    printf '%s\n' "${STATUSLINE_TAB_TITLE:-unset}" >"$CHOOSER_TITLE_LOG"
+    printf '%s:%s:%s\n' "${GIT_CONFIG_COUNT:-unset}" "${GIT_CONFIG_KEY_0:-unset}" "${GIT_CONFIG_VALUE_0:-unset}" >"$CHOOSER_MONITOR_LOG"
+fi
+exec bash "$CHOOSER_REAL_RENDERER" "$@"
+TITLE
+    chmod +x "$titledev/statusline.sh"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" TMPDIR="$d/tmp" CC_STATUSLINE_DEV_DIR="$titledev" \
+        CHOOSER_TITLE_LOG="$d/title-flag" CHOOSER_MONITOR_LOG="$d/monitor-flag" CHOOSER_REAL_RENDERER="$STATUSLINE" \
+        "$chooser" --fzf-preview nord >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(cat "$d/title-flag")" = 0 ] && [ ! -s "$err" ]; then _rl_pass chooser-preview-no-tab-title
+    else _rl_fail chooser-preview-no-tab-title "preview did not suppress the terminal title write"; fi
+
+    if [ "$(cat "$d/monitor-flag")" = '1:core.fsmonitor:false' ]; then _rl_pass chooser-preview-no-fsmonitor
+    else _rl_fail chooser-preview-no-fsmonitor "preview did not disable the Git filesystem monitor"; fi
+
+    # A PATH containing only existing dependencies forces the numbered menu.
+    local menubin="$d/menubin" cmd real
+    mkdir -p "$menubin"
+    for cmd in bash jq perl git dirname basename cat mktemp mkdir rm mv timeout date cksum cut awk head grep wc tr; do
+        real=$(command -v "$cmd") || continue
+        ln -s "$real" "$menubin/$cmd"
+    done
+    PATH="$menubin" _choose <<< '3'
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ] && _has "$(cat "$out")" 'Current: dracula (file)' \
+        && _has "$(cat "$out")" '● dracula (current)'; then _rl_pass chooser-numbered-menu
+    else _rl_fail chooser-numbered-menu "numbered selection not saved"; fi
+
+    # Both explicit dev override and the dev-dir file resolve the renderer.
+    printf '%s\n' "$REPO_DIR" >"$cfg/cc-statusline/dev-dir"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" current >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-dev-file
+    else _rl_fail chooser-dev-file "dev-dir file resolution failed"; fi
+    local dev="$d/mock-dev"
+    mkdir -p "$dev"
+    printf '#!/bin/sh\nprintf "default\\nnord\\n"\n' >"$dev/statusline.sh"; chmod +x "$dev/statusline.sh"
+    printf '%s\n' "$dev" >"$cfg/cc-statusline/dev-dir"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" list >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 2 ]; then _rl_pass chooser-dev-renderer-names
+    else _rl_fail chooser-dev-renderer-names "chooser did not use selected renderer's names"; fi
+    printf '%s\ngarbage\n' "$dev" >"$cfg/cc-statusline/dev-dir"
+    HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" list >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 12 ]; then _rl_pass chooser-dev-file-multiline
+    else _rl_fail chooser-dev-file-multiline "malformed dev-dir differs from brew wrapper fallback"; fi
+
+    # Exercise the installer archive flow using the exact working-tree scripts
+    # in a disposable checkout. No host install or release tags are involved.
+    local repo="$d/install-repo" prefix="$d/install-prefix" git_home="$d/git-home"
+    mkdir -p "$repo" "$git_home"
+    cp "$REPO_DIR"/*.sh "$REPO_DIR/cc-statusline-theme" "$REPO_DIR/VERSION" "$repo/"
+    HOME="$git_home" git -C "$repo" init -q 2>/dev/null
+    HOME="$git_home" git -C "$repo" add .
+    HOME="$git_home" git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm fixture
+    HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ -x "$prefix/cc-statusline-theme" ]; then _rl_pass chooser-install
+    else _rl_fail chooser-install "installer did not package chooser: $(head -1 "$err")"; fi
+    HOME="$chooser_home" XDG_CONFIG_HOME="$d/install-config" CC_STATUSLINE_DEV_DIR='' "$prefix/cc-statusline-theme" current >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ "$(cat "$out")" = 'tokyo-auto (now: night) (default)' ]; then _rl_pass chooser-installed-sibling
+    else _rl_fail chooser-installed-sibling "installed chooser cannot resolve sibling renderer"; fi
+    # An older archived HEAD without the chooser must still install successfully.
+    HOME="$git_home" git -C "$repo" rm -q --cached cc-statusline-theme
+    HOME="$git_home" git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm older-fixture
+    HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ ! -e "$prefix/cc-statusline-theme" ]; then _rl_pass chooser-install-old-head
+    else _rl_fail chooser-install-old-head "older archive failed or retained incompatible chooser: $(head -1 "$err")"; fi
+    HOME="$git_home" CC_STATUSLINE_PREFIX="$prefix" bash "$repo/install.sh" --uninstall >"$out" 2>"$err"
+    if [ "$?" = 0 ] && [ ! -e "$prefix" ]; then _rl_pass chooser-uninstall
+    else _rl_fail chooser-uninstall "installer did not remove prefix"; fi
+}
+
 if [ ! -d "$FIXTURES" ]; then
     printf 'error: fixtures dir not found: %s\n' "$FIXTURES" >&2
     exit 2
@@ -2879,6 +3809,7 @@ printf 'cc-statusline test harness (SAFE_WIDTH=%s)\n' "$SAFE_WIDTH"
 printf '%s\n' "------------------------------------------------------------"
 
 shopt -s nullglob
+if [ "${STATUSLINE_TEST_THEMES_FULL:-0}" != 1 ] && [ "${STATUSLINE_TEST_SCOPE:-}" != themes ]; then
 for f in "$FIXTURES"/*.json; do
     run_one "$f"
 done
@@ -2896,6 +3827,15 @@ effort_tests
 update_check_tests
 cache_timer_tests
 context_hold_tests
+fi
+if [ "${STATUSLINE_TEST_SCOPE:-}" != base ]; then
+classic_golden_tests
+appearance_tests
+synthwave_cell_tests
+theme_right_contrast_tests
+theme_tests
+theme_chooser_tests
+fi
 
 printf '%s\n' "------------------------------------------------------------"
 printf '%d passed, %d failed\n' "$pass" "$fail"
