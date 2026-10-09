@@ -2915,6 +2915,46 @@ context_hold_tests() {
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
 }
 
+synthwave_cell_tests() {
+    local d="$SCRATCH/synthwave-cells" layout status glyph rgb out err cell rc
+    mkdir -p "$d"
+    out="$d/out"; err="$d/err"
+    for layout in wide phone; do
+        local -a viewport=()
+        [ "$layout" != phone ] || viewport=(COLUMNS=40)
+        for status in operational incident:test degraded_performance:test major_outage:test; do
+            case "$status" in
+                operational) glyph="✓"; rgb='5;217;232' ;;
+                incident:*) glyph="⚠"; rgb='249;200;14' ;;
+                degraded*) glyph="~"; rgb='249;200;14' ;;
+                *) glyph="✗"; rgb='255;42;109' ;;
+            esac
+            printf '%s\n' "$status" >"$d/gh"
+            (cd "$d" && env ${viewport[@]+"${viewport[@]}"} STATUSLINE_THEME=synthwave STATUSLINE_LAYOUT="$layout" STATUSLINE_WIDTH=130 \
+                STATUSLINE_PEERS=0 STATUSLINE_UPDATE_CHECK=0 CC_STATUSLINE_GH_CACHE="$d/gh" \
+                CC_STATUSLINE_GH_FETCH=/nonexistent CC_STATUSLINE_SVC_CACHE="$d/no-svc" \
+                bash "$STATUSLINE" <"$FIXTURES/08-long-dir.json" >"$out" 2>"$err")
+            rc=$?
+            cell=$(head -1 "$out" | perl -CSDA -e '
+                my $want = shift @ARGV; my $line = <STDIN> // "";
+                my ($fg, $bg) = ("", "");
+                while ($line =~ /(\e\]8;;.*?(?:\a|\e\\)|\e\[[0-9;]*m|.)/sg) {
+                    my $t = $1;
+                    ($fg, $bg) = ("", "") if $t eq "\e[0m";
+                    $fg = $1 if $t =~ /\e\[38;2;([0-9]+;[0-9]+;[0-9]+)/;
+                    $bg = $1 if $t =~ /\e\[48;2;([0-9]+;[0-9]+;[0-9]+)m/;
+                    if ($t eq $want) { print "$fg|$bg"; last; }
+                }
+            ' "$glyph")
+            if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$cell" = "$rgb|26;16;51" ]; then _rl_pass "synthwave-cell-$layout-$glyph"
+            else _rl_fail "synthwave-cell-$layout-$glyph" "wrong glyph color/surface: $cell"; fi
+        done
+    done
+    if _has "$(cat "$out")" $'\e[48;2;255;42;109m' && _has "$(cat "$out")" $'\e[48;2;5;217;232m'; then
+        _rl_pass synthwave-bright-endpoints
+    else _rl_fail synthwave-bright-endpoints "bright gradient endpoint absent"; fi
+}
+
 # Classic's literal bytes come from main 108227a, with deterministic inputs.
 classic_golden_tests() {
     local d="$SCRATCH/classic-golden" layout out err rc
@@ -3555,7 +3595,7 @@ FZF
         && _has "$fzf_args" '--fzf-preview {1}'; then _rl_pass chooser-fzf-stacked-panes
     else _rl_fail chooser-fzf-stacked-panes "list/preview layout arguments wrong"; fi
     if _has "$fzf_args" 'Current: nord (file)' && _has "$fzf_args" '--bind=load:pos(3)' \
-        && _has "$(cat "$d/fzf.input")" '● nord (current)'; then _rl_pass chooser-fzf-current-marker
+        && _has "$(cat "$d/fzf.input")" '● nord (current)' && _has "$fzf_args" 'CC_STATUSLINE_APPEARANCE=dark'; then _rl_pass chooser-fzf-current-marker
     else _rl_fail chooser-fzf-current-marker "current marker/header/initial position wrong"; fi
     CHOOSER_FZF_NO_BIND=1 CHOOSER_FZF_ARGS="$d/fzf.args" CHOOSER_FZF_INPUT="$d/fzf.input" PATH="$fzfbin:$PATH" _choose
     if [ "$rc" = 0 ] && ! _has "$(cat "$d/fzf.args")" '--bind='; then _rl_pass chooser-fzf-older-binding
@@ -3678,6 +3718,7 @@ fi
 if [ "${STATUSLINE_TEST_SCOPE:-}" != base ]; then
 classic_golden_tests
 appearance_tests
+synthwave_cell_tests
 theme_right_contrast_tests
 theme_tests
 theme_chooser_tests

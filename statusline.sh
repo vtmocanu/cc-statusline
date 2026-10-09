@@ -1319,9 +1319,10 @@ case "$THEME" in
         BAR_PRE="${L2_TXT}["; BAR_POST="${L2_TXT}]"
         ;;
     synthwave)  # Neon gradient on line 1, dusk on line 2.
-        _theme_palette ff2a6d ffffff 9f94b5 1a1033 d1c4e9 6b5b85 05d9e8 f9c80e ff2a6d 05d9e8
+        _theme_palette ff2a6d ffffff f0e8ff 1a1033 d1c4e9 6b5b85 05d9e8 f9c80e ff2a6d 05d9e8
         _theme_fg CAP1_FG ff2a6d; CAP1_L="${CAP1_FG}${NF_CORNER_TL}"
         _theme_fg CAP1_FG 05d9e8; CAP1_R="${CAP1_FG}${NF_CORNER_TR}"
+        TXT_FG+="\033[1m"; TXT_BOLD="$TXT_FG"
         SEP_CH="▸"; SEP2_CH="//"; BAR_FILL="⣿"; BAR_EMPTY="⣀"
         ;;
     tokyo-night)  # Stepped arrows, neon on navy.
@@ -1371,6 +1372,10 @@ SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m${SEP_CH}"
 SEP2="${L2_DIM}${SEP2_CH}${B2}"; DOT2="${L2_DIM}${DOT2_CH}${B2}"
 PEER_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B}m"
 PEER_FG="$TXT_FG"; PEER_BOLD="$TXT_BOLD"; PEER_B="$B"
+if [ "$THEME" = synthwave ]; then
+    SEP="\033[38;2;${SEP_R};${SEP_G};${SEP_B};1m${SEP_CH}"
+    PEER_DIM="\033[38;2;${SEP_R};${SEP_G};${SEP_B};1m"
+fi
 if [ "$THEME_STYLE" != "flat" ]; then
     SEG_PEER_BG="$SEG_TAIL_BG"
     PEER_FG="$L2_TXT"; PEER_BOLD="${PEER_FG}\033[1m"
@@ -2095,6 +2100,10 @@ if [ "${STATUSLINE_GITHUB_STATUS:-1}" != "0" ]; then
                 degraded_performance:*)          GH_GLYPH="${CLR_GOLD}${GH_LINK_OPEN}~${GH_LINK_CLOSE}" ;;
                 partial_outage:*|major_outage:*) GH_GLYPH="${CLR_BAD}${GH_LINK_OPEN}✗${GH_LINK_CLOSE}" ;;
             esac
+            # Keep alerts legible on the bright gradient with one dark cell.
+            if [ "$THEME" = synthwave ] && [ -n "$GH_GLYPH" ]; then
+                GH_GLYPH="\033[48;2;26;16;51m${GH_GLYPH}"
+            fi
             [ -n "$GH_GLYPH" ] && GH_SEG=" ${SEP}${B} ${GH_GLYPH}${B}"
         fi
     fi
@@ -2391,20 +2400,27 @@ if [ "$THEME" = "synthwave" ]; then
     # After every width decision and padding step, add only zero-width SGRs.
     # Preserve foreground/style and OSC 8 tokens; never slice their payloads.
     SYNTH_LINE=$(printf '%b' "$L1C" | perl -CS -0777 -ne '
-        s/\e\[48;2;[0-9]+;[0-9]+;[0-9]+m//g;
         my @tokens = /(?:\e\]8;;.*?(?:\a|\e\\)|\e\[[0-9;]*m|.)/sg;
         my $n = scalar(grep { substr($_, 0, 1) ne "\e" } @tokens) - 1;
         my $i = -1;
-        my @stops = ([96,18,46], [59,28,112], [5,59,67]);
+        my $chip = 0;
+        my @stops = ([255,42,109], [123,44,255], [5,217,232]);
         for my $token (@tokens) {
-            if (substr($token, 0, 1) eq "\e") { print $token; next }
+            if (substr($token, 0, 1) eq "\e") {
+                if ($token =~ /^\e\[48;2;[0-9]+;[0-9]+;[0-9]+m$/) {
+                    $chip = $token eq "\e[48;2;26;16;51m";
+                    next unless $chip; # retain only the explicit dark surface
+                } elsif ($token eq "\e[0m" || $token eq "\e[49m") { $chip = 0 }
+                print $token; next;
+            }
             if ($i < 0) { print $token; $i = 0; next } # leading cap
             my $t = $n > 1 ? $i / ($n - 1) : 0;
             my $half = $t < 0.5 ? 0 : 1;
             my $u = $t < 0.5 ? 2*$t : 2*$t-1;
             my @rgb = map { int($stops[$half][$_] +
                 ($stops[$half+1][$_]-$stops[$half][$_])*$u) } 0..2;
-            print "\e[48;2;", join(";", @rgb), "m", $token;
+            print "\e[48;2;", join(";", @rgb), "m" unless $chip;
+            print $token;
             ++$i;
         }
     ' 2>/dev/null) || SYNTH_LINE=$(printf '%b' "$L1C")

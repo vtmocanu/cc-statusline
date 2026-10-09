@@ -224,7 +224,8 @@ path. Tests always set `CC_STATUSLINE_APPEARANCE` and a private
 
 Synthwave's single perl gradient pass runs after all width decisions and
 padding. It adds only zero-width background SGRs and preserves OSC 8 and other
-SGRs. Its output is already expanded, so print it with `%s`, never a second
+SGRs. The explicit `48;2;26;16;51` service surface survives the pass; its cells
+skip the gradient until the next reset/background, without changing indices. Its output is already expanded, so print it with `%s`, never a second
 `%b`. Do not move the gradient before measurement or add visible characters
 after measured assembly. Regular `task ci` runs every theme on representative fixtures at 110/50 columns
 and COLUMNS=40, plus a four-column phone sweep and exact boundary columns.

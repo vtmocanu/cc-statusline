@@ -190,9 +190,10 @@ preview() {
     done
 }
 picker() {
-    local choice command i current_pos=1 probe_rc header
+    local choice command i current_pos=1 probe_rc header picker_appearance=dark
     current
     header="Current: $(theme_display "$CURRENT_THEME") ($(source_label))"
+    [ "$AUTO_VARIANT" != day ] || picker_appearance=light
     for ((i=0; i<${#THEMES[@]}; i++)); do
         [ "${THEMES[$i]}" != "$CURRENT_THEME" ] || current_pos=$((i+1))
     done
@@ -203,7 +204,7 @@ picker() {
         fzf --bind='load:pos(1)' --filter='' </dev/null >/dev/null 2>&1
         probe_rc=$?
         [ "$probe_rc" -gt 1 ] || bindings=("--bind=load:pos($current_pos)")
-        printf -v command '%q --fzf-preview {1}' "$SELF"
+        printf -v command 'CC_STATUSLINE_APPEARANCE=%q %q --fzf-preview {1}' "$picker_appearance" "$SELF"
         choice=$(
             for name in "${THEMES[@]}"; do printf '%s\t%s\n' "$name" "$(theme_label "$name")"; done \
                 | fzf --prompt='Theme: ' --header="$header" --delimiter=$'\t' --with-nth=2.. \
@@ -214,7 +215,7 @@ picker() {
         [ -n "$choice" ] && save "$choice"
     else
         printf '%s\n' "$header"
-        preview 1 || return 1
+        CC_STATUSLINE_APPEARANCE="$picker_appearance" preview 1 || return 1
         for ((i=0; i<${#THEMES[@]}; i++)); do
             printf '%d) %s\n' "$((i+1))" "$(theme_label "${THEMES[$i]}")"
         done

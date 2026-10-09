@@ -7,6 +7,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- Synthwave uses the bright neon pink/purple/cyan gradient, bold white text and light lilac separators. Fixed service glyphs keep their alert colors on a dark cell for contrast. Picker previews use the same resolved appearance as their Auto hint.
 - The original palette is now `classic`. The new default, `tokyo-auto`, selects Tokyo Night or Tokyo Day from OS appearance with a private 60-second cache. `default` is an alias for `tokyo-auto`; existing color overrides retain Classic until a theme is chosen.
 - The theme picker marks the effective current choice, including an explicit theme in `statusLine.command`, and starts there when fzf supports it. Saved choices report when active and idle sessions redraw, or when settings prevent the saved choice from applying. Preview and test Git repositories disable persistent filesystem monitors.
 - Repo-wide session counts now follow the handle on line 1, or the directory and branch on phones. Counts drop whole when space is tight; only the upgrade notice remains right-aligned.
