@@ -55,7 +55,8 @@ load_settings() {
         "$HOME/.claude/settings.json" 2>/dev/null || true)
 }
 current() {
-    CURRENT_THEME=default; CURRENT_SOURCE=default
+    CURRENT_THEME=tokyo-auto; CURRENT_SOURCE=default
+    valid tokyo-auto || CURRENT_THEME=default
     if [ "$SETTINGS_THEME_SET" = 1 ]; then
         CURRENT_THEME="$SETTINGS_THEME"; CURRENT_SOURCE=settings
     elif [ "${STATUSLINE_THEME+x}" = x ]; then
@@ -63,8 +64,21 @@ current() {
     elif [ -f "$THEME_FILE" ]; then
         { IFS= read -r CURRENT_THEME <"$THEME_FILE"; } 2>/dev/null || true
         CURRENT_THEME="${CURRENT_THEME//[[:space:]]/}"; CURRENT_SOURCE="file"
+    elif [ -f "$HOME/.claude/statusline-color-overrides.json" ]; then
+        CURRENT_THEME=classic; CURRENT_SOURCE="default: overrides file"
     fi
-    valid "$CURRENT_THEME" || CURRENT_THEME=default
+    if valid tokyo-auto; then
+        [ "$CURRENT_THEME" != default ] || CURRENT_THEME=tokyo-auto
+        valid "$CURRENT_THEME" || CURRENT_THEME=tokyo-auto
+    else
+        valid "$CURRENT_THEME" || CURRENT_THEME=default
+    fi
+    AUTO_VARIANT=night
+    if valid tokyo-auto; then
+        local resolved
+        resolved=$(bash "$RENDERER" --resolve-theme tokyo-auto)
+        [ "$resolved" != tokyo-day ] || AUTO_VARIANT=day
+    fi
 }
 source_label() {
     case "$CURRENT_SOURCE" in
@@ -73,9 +87,16 @@ source_label() {
         *) printf '%s' "$CURRENT_SOURCE" ;;
     esac
 }
+theme_display() {
+    case "$1" in
+        tokyo-auto) printf 'tokyo-auto (now: %s)' "${AUTO_VARIANT:-night}" ;;
+        default) if valid tokyo-auto; then printf 'default (alias: tokyo-auto)'; else printf 'default'; fi ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 theme_label() {
-    if [ "$1" = "$CURRENT_THEME" ]; then printf '● %s (current)' "$1";
-    else printf '  %s' "$1"; fi
+    if [ "$1" = "$CURRENT_THEME" ]; then printf '● %s (current)' "$(theme_display "$1")";
+    else printf '  %s' "$(theme_display "$1")"; fi
 }
 warn_override() {
     if [ "$SETTINGS_THEME_SET" = 1 ]; then
@@ -109,7 +130,7 @@ save() {
     applies_message
 }
 preview() {
-    local theme heading="$1" rendered
+    local theme heading="$1" rendered resolved preview_appearance
     # Preview repos must not inherit a persistent filesystem monitor.
     local GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
     export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
@@ -139,9 +160,15 @@ preview() {
         '{cwd:$cwd,pid:$pid,sessionId:"preview-idle",status:"idle",name:"idle"}' >"$d/sessions/idle.json"
     printf 'operational\n' >"$d/svc"; printf 'incident:preview\n' >"$d/gh"; printf 'v99.0.0\n' >"$d/update"
     for theme in "${selected[@]}"; do
+        preview_appearance="${CC_STATUSLINE_APPEARANCE:-dark}"
+        if [ "$theme" = tokyo-auto ] || [ "$theme" = default ]; then
+            resolved=$(CC_STATUSLINE_APPEARANCE_CACHE="$d/appearance" bash "$RENDERER" --resolve-theme tokyo-auto)
+            case "$resolved" in tokyo-day) preview_appearance=light ;; *) preview_appearance=dark ;; esac
+        fi
         [ "$heading" = 0 ] || printf '%s\n' "$theme"
         rendered=$(cd "$repo" && HOME="$d/home" XDG_CONFIG_HOME="$d/xdg" XDG_RUNTIME_DIR="$d/runtime" \
             KUBECONFIG=/dev/null STATUSLINE_THEME="$theme" STATUSLINE_LAYOUT=auto \
+            CC_STATUSLINE_APPEARANCE="$preview_appearance" CC_STATUSLINE_APPEARANCE_CACHE="$d/appearance" \
             STATUSLINE_WIDTH="$preview_width" COLUMNS="$preview_width" STATUSLINE_DEBUG=0 STATUSLINE_TAB_TITLE=0 \
             STATUSLINE_PROFILE=0 STATUSLINE_RL_SHARE=0 STATUSLINE_GPT_LIMITS=0 \
             CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_NOW=1700000000 CC_STATUSLINE_CTX_CACHE="$d/ctx" \
@@ -165,7 +192,7 @@ preview() {
 picker() {
     local choice command i current_pos=1 probe_rc header
     current
-    header="Current: $CURRENT_THEME ($(source_label))"
+    header="Current: $(theme_display "$CURRENT_THEME") ($(source_label))"
     for ((i=0; i<${#THEMES[@]}; i++)); do
         [ "${THEMES[$i]}" != "$CURRENT_THEME" ] || current_pos=$((i+1))
     done
@@ -203,7 +230,7 @@ picker() {
 if [ "${1:-}" != --fzf-preview ]; then load_settings; warn_override; fi
 case "${1:-}" in
     '') picker ;;
-    current) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current; printf '%s (%s)\n' "$CURRENT_THEME" "$CURRENT_SOURCE" ;;
+    current) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current; printf '%s (%s)\n' "$(theme_display "$CURRENT_THEME")" "$CURRENT_SOURCE" ;;
     list)
         [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current
         for name in "${THEMES[@]}"; do

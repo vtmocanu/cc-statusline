@@ -7,6 +7,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- The original palette is now `classic`. The new default, `tokyo-auto`, selects Tokyo Night or Tokyo Day from OS appearance with a private 60-second cache. `default` is an alias for `tokyo-auto`; existing color overrides retain Classic until a theme is chosen.
 - The theme picker marks the effective current choice, including an explicit theme in `statusLine.command`, and starts there when fzf supports it. Saved choices report when active and idle sessions redraw, or when settings prevent the saved choice from applying. Preview and test Git repositories disable persistent filesystem monitors.
 - Repo-wide session counts now follow the handle on line 1, or the directory and branch on phones. Counts drop whole when space is tight; only the upgrade notice remains right-aligned.
 
@@ -15,7 +16,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - Packaged `cc-statusline-theme` chooser with real renderer previews, an optional fzf picker, numbered-menu fallback, and `list`, `set`, `reset`, `preview`, and `current` commands. Choices are saved atomically under the XDG config directory and take effect on the next render; an explicit `STATUSLINE_THEME` overrides the file.
-- Selectable themes via `STATUSLINE_THEME`: `default`, `hue-dark`, `nord`, `phosphor`, `synthwave`, `tokyo-night`, `gruvbox`, `dracula`, and `catppuccin`. With no saved theme, unset or unknown names preserve the existing default output byte for byte. Project color overrides apply only to `default` and `hue-dark`; every theme retains adaptive wide/phone layouts and distinct status alerts.
+- Selectable themes via `STATUSLINE_THEME`: `classic`, `hue-dark`, `nord`, `phosphor`, `synthwave`, `tokyo-night`, `tokyo-day`, `tokyo-auto`, `gruvbox`, `dracula`, `catppuccin`, and the `default` alias. Classic preserves the original output byte for byte. Project color overrides apply only to `classic` and `hue-dark`; every theme retains adaptive wide/phone layouts and distinct status alerts.
 
 ## [v3.6.0] - 2026-10-04
 

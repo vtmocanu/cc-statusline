@@ -4,7 +4,7 @@ trap 'printf "\n"' EXIT  # ensure at least empty output on crash
 [ "${STATUSLINE_DEBUG:-}" = "1" ] && exec 2>/tmp/statusline-debug.log
 
 # One source of theme names for validation and the packaged chooser.
-THEME_NAMES=(default hue-dark nord phosphor synthwave tokyo-night gruvbox dracula catppuccin)
+THEME_NAMES=(classic hue-dark nord phosphor synthwave tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin default)
 _theme_valid() {
     local name
     for name in "${THEME_NAMES[@]}"; do [ "$1" = "$name" ] && return 0; done
@@ -54,6 +54,79 @@ _state_dir() {
 _gate_int() {   # _gate_int <value> <default> -> a decimal integer, always
     case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$((10#$1))" ;; esac
 }
+
+# Appearance cache: our only writer stores the timestamp with the answer.
+# Hot reads use builtins and the render's existing clock, with no stat/probe
+# process. Missing, malformed, expired or future records refresh at most once
+# per 60 seconds, including a failed probe's conservative dark fallback.
+_appearance() {
+    case "${CC_STATUSLINE_APPEARANCE:-}" in
+        dark|light) APPEARANCE="$CC_STATUSLINE_APPEARANCE"; return ;;
+    esac
+    local cache="${CC_STATUSLINE_APPEARANCE_CACHE:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cc-statusline-${UID}/appearance}"
+    local record="" extra="" stamp now="${NOW:-}" os answer rc=0 tmp parent
+    if [ -z "$now" ]; then
+        now=$(date +%s)
+        now=$(_gate_int "${CC_STATUSLINE_NOW:-$now}" "$now")
+    fi
+    if { IFS= read -r record && { ! IFS= read -r extra && [ -z "$extra" ]; }; } 2>/dev/null <"$cache" \
+        && [[ "$record" =~ ^([0-9]{1,12})\|(dark|light)$ ]]; then
+        stamp=$((10#${BASH_REMATCH[1]}))
+        if [ "$stamp" -le "$now" ] && [ "$((now-stamp))" -lt 60 ]; then
+            APPEARANCE="${BASH_REMATCH[2]}"; return
+        fi
+    fi
+    APPEARANCE=dark
+    os=$(uname -s 2>/dev/null || true)
+    case "$os" in
+        Darwin)
+            if command -v defaults >/dev/null 2>&1; then
+                answer=$(timeout 2 defaults read -g AppleInterfaceStyle 2>/dev/null) || rc=$?
+                case "$rc" in
+                    0) [ "$answer" = Dark ] || APPEARANCE=light ;;
+                    1) APPEARANCE=light ;;
+                esac
+            fi
+            ;;
+        Linux)
+            if command -v gsettings >/dev/null 2>&1; then
+                answer=$(timeout 2 gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null) || rc=$?
+                if [ "$rc" = 0 ]; then
+                    case "$answer" in
+                        "'prefer-dark'"|prefer-dark) APPEARANCE=dark ;;
+                        "'prefer-light'"|prefer-light|"'default'"|default) APPEARANCE=light ;;
+                    esac
+                fi
+            fi
+            ;;
+    esac
+    parent="${cache%/*}"; [ "$parent" != "$cache" ] || parent=.
+    # Only our default state directory gets chmod; an override may name /tmp.
+    if mkdir -p "$parent" 2>/dev/null; then
+        if [ -z "${CC_STATUSLINE_APPEARANCE_CACHE:-}" ]; then chmod 700 "$parent" 2>/dev/null || return; fi
+        tmp=$(mktemp "${cache}.XXXXXX" 2>/dev/null) || return
+        if ! printf '%s|%s\n' "$now" "$APPEARANCE" >"$tmp" || ! mv -f "$tmp" "$cache" 2>/dev/null; then
+            rm -f "$tmp" 2>/dev/null
+        fi
+    fi
+}
+_theme_resolve() {
+    THEME_RESOLVED="$1"
+    [ "$THEME_RESOLVED" != default ] || THEME_RESOLVED=tokyo-auto
+    _theme_valid "$THEME_RESOLVED" || THEME_RESOLVED=tokyo-auto
+    if [ "$THEME_RESOLVED" = tokyo-auto ]; then
+        _appearance
+        case "$APPEARANCE" in light) THEME_RESOLVED=tokyo-day ;; *) THEME_RESOLVED=tokyo-night ;; esac
+    fi
+}
+# Internal chooser path shares exactly the renderer's resolver, without stdin.
+if [ "${1:-}" = --resolve-theme ]; then
+    trap - EXIT
+    [ "$#" = 2 ] || exit 2
+    _theme_resolve "$2"
+    printf '%s\n' "$THEME_RESOLVED"
+    exit 0
+fi
 
 # ── Codepoint-aware length and slicing for the truncation math ─────────────
 # Bash's ${#s} and ${s: -n} count BYTES whenever the locale is not UTF-8 (the
@@ -1122,20 +1195,26 @@ if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
     [ "$(_clen "$TOPIC")" -gt 40 ] 2>/dev/null && TOPIC="$(_head_cp "$TOPIC" 40)"
 fi
 
-# Unknown names deliberately retain the byte-identical default theme.
-THEME="${STATUSLINE_THEME-default}"
-if [ "${STATUSLINE_THEME+x}" != "x" ]; then
-    THEME_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme"
-    if [ -f "$THEME_FILE" ]; then
-        { IFS= read -r THEME <"$THEME_FILE"; } 2>/dev/null || true
+# The old look is Classic; explicit/unknown choices use the OS-auto default.
+THEME=tokyo-auto
+if [ "${STATUSLINE_THEME+x}" = x ]; then
+    THEME="$STATUSLINE_THEME"
+else
+    _THEME_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme"
+    if [ -f "$_THEME_FILE" ]; then
+        { IFS= read -r THEME <"$_THEME_FILE"; } 2>/dev/null || true
         THEME="${THEME//[[:space:]]/}"
+    elif [ -f "$HOME/.claude/statusline-color-overrides.json" ]; then
+        # Existing project palettes keep the old look until explicitly changed.
+        THEME=classic
     fi
 fi
-_theme_valid "$THEME" || THEME=default
+_theme_resolve "$THEME"
+THEME="$THEME_RESOLVED"
 
 # Check for manual color override
 COLOR_OVERRIDES="$HOME/.claude/statusline-color-overrides.json"
-if { [ "$THEME" = "default" ] || [ "$THEME" = "hue-dark" ]; } && [ -f "$COLOR_OVERRIDES" ]; then
+if { [ "$THEME" = "classic" ] || [ "$THEME" = "hue-dark" ]; } && [ -f "$COLOR_OVERRIDES" ]; then
     COLOR_IDX=$(jq -r --arg p "$PROJECT_ROOT" '.[$p] // empty' "$COLOR_OVERRIDES" 2>/dev/null || true)
 fi
 COLOR_IDX=${COLOR_IDX:-$((PHASH % 12))}
@@ -1160,7 +1239,7 @@ esac
 SEP_R=$((BG_R * 40 / 100)); SEP_G=$((BG_G * 40 / 100)); SEP_B=$((BG_B * 40 / 100))
 TXT_R=$((BG_R * 15 / 100)); TXT_G=$((BG_G * 15 / 100)); TXT_B=$((BG_B * 15 / 100))
 
-# Rendering tokens. Keep the default escape spelling/order byte-identical.
+# Rendering tokens. Keep Classic escape spelling/order byte-identical.
 SEP_CH="│"; SEP2_CH="│"; DOT2_CH="·"
 BG1="\033[48;2;${BG_R};${BG_G};${BG_B}m"
 TXT_FG="\033[38;2;${TXT_R};${TXT_G};${TXT_B}m"
@@ -1252,6 +1331,14 @@ case "$THEME" in
         SEG_RIGHT_FG="$CLR_ICE"; _theme_fg SEG_RIGHT_DIM 7883a3; THEME_STYLE=arrow
         SEP2_CH=$'\xee\x82\xb1'; BAR_FILL="━"; BAR_EMPTY="━"
         CAP2_L=""; CAP2_R="\033[38;2;26;27;38m${SEG_JOIN}"
+        ;;
+    tokyo-day)  # Official folke/tokyonight.nvim Day colors, cdc07ac.
+        _theme_palette e1e2e7 3760bf 68709a e1e2e7 3760bf 68709a 587539 8c6c3e c64343 007197
+        _theme_roles 3760bf 7847bd c4c8da d0d5e3 d0d5e3 d0d5e3 d0d5e3
+        _theme_fg SEG_INK e1e2e7; _theme_fg SEG_DIR_FG 2e5857; SEG_BRANCH_FG="$CLR_SAGE"
+        SEG_RIGHT_FG="$TXT_FG"; _theme_fg SEG_RIGHT_DIM 68709a; THEME_STYLE=arrow
+        SEP2_CH=$'\xee\x82\xb1'; BAR_FILL="━"; BAR_EMPTY="━"
+        CAP2_L=""; CAP2_R="\033[38;2;225;226;231m${SEG_JOIN}"
         ;;
     gruvbox)  # Earth tones and hard arrows.
         _theme_palette 282828 ebdbb2 665c54 282828 ebdbb2 837567 b8bb26 fabd2f fb4934 83a598

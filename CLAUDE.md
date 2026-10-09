@@ -200,19 +200,27 @@ Two paths cost more, both bounded and both off the common path. A viewport that 
 
 `statusline.sh --list-themes` is the chooser's source of names. Theme precedence
 is the environment (including an explicitly empty value), then the first line
-of `$XDG_CONFIG_HOME/cc-statusline/theme`, then default; unknown values choose
-default. Whitespace is stripped from the file using bash builtins. Tests isolate
+of `$XDG_CONFIG_HOME/cc-statusline/theme`, then `tokyo-auto`; unknown values and
+the `default` alias choose `tokyo-auto`. With no explicit choice, an existing
+color-overrides file selects `classic` for migration compatibility. Whitespace is stripped from the file using bash builtins. Tests isolate
 the theme file alongside the layout file. The chooser resolves the same dev
 override as the brew wrapper and previews with scratch HOME/config/caches,
 disabled fetchers and pinned time. `install.sh` retains old-tag rollback by
 removing the chooser when that archived tag predates it.
 
 `STATUSLINE_THEME` selects a palette in one block, followed by a derive step
-for background resets, caps and separators. Default tokens must reproduce the
-original bytes, including escape spelling and order. Only `default` and
+for background resets, caps and separators. Classic tokens must reproduce the
+original bytes, including escape spelling and order. Only `classic` and
 `hue-dark` read project color overrides. Flat themes reuse the original line-1
 builder; segmented themes assemble every cap and join before measurement and
 use the same truncation ladder. OSC 8 wrappers remain confined to fixed glyphs.
+
+`tokyo-auto` follows OS appearance, with a private atomic `epoch|dark/light`
+cache and a 60-second TTL. Hot reads use builtin `read` and the existing NOW;
+future or malformed records are stale. Probes use a two-second timeout and
+cache failures as dark. The chooser uses the same `--resolve-theme NAME`
+path. Tests always set `CC_STATUSLINE_APPEARANCE` and a private
+`CC_STATUSLINE_APPEARANCE_CACHE`, never read real OS appearance.
 
 Synthwave's single perl gradient pass runs after all width decisions and
 padding. It adds only zero-width background SGRs and preserves OSC 8 and other

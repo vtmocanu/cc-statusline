@@ -42,6 +42,10 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=fal
 # every fixture's budget (and flip the phone layout on), so drop it here; the
 # phone-layout tests below set it explicitly per run.
 unset COLUMNS LINES STATUSLINE_THEME
+export CC_STATUSLINE_APPEARANCE=dark CC_STATUSLINE_APPEARANCE_CACHE="$SCRATCH/appearance"
+# Baseline assertions protect the unchanged Classic palette. The theme suite
+# independently covers the new default and every selectable palette.
+if [ "${STATUSLINE_TEST_SCOPE:-}" = base ]; then export STATUSLINE_THEME=classic; fi
 # Isolate the layout override file ($XDG_CONFIG_HOME/cc-statusline/layout): the
 # maintainer's own file must not decide which layout the fixtures render.
 export XDG_CONFIG_HOME="$SCRATCH/xdg-empty"
@@ -2911,6 +2915,102 @@ context_hold_tests() {
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
 }
 
+# Classic's literal bytes come from main 108227a, with deterministic inputs.
+classic_golden_tests() {
+    local d="$SCRATCH/classic-golden" layout out err rc
+    mkdir -p "$d/home/.claude"
+    printf 'operational\n' >"$d/svc"; printf 'incident:golden\n' >"$d/gh"; printf 'v99.0.0\n' >"$d/upd"
+    out="$d/out"; err="$d/err"
+    for layout in wide phone; do
+        local -a viewport=()
+        [ "$layout" != phone ] || viewport=(COLUMNS=40)
+        (cd "$d" && env ${viewport[@]+"${viewport[@]}"} HOME="$d/home" XDG_CONFIG_HOME="$d/xdg" \
+            CLAUDE_EFFORT=medium STATUSLINE_THEME=classic STATUSLINE_LAYOUT="$layout" STATUSLINE_WIDTH=130 \
+            STATUSLINE_PROFILE=0 STATUSLINE_TAB_TITLE=0 CC_STATUSLINE_NOW=1700000000 CC_STATUSLINE_RL_KEY="" \
+            CC_STATUSLINE_SESSIONS_DIR="$d/none" CC_STATUSLINE_CTX_CACHE="$d/ctx" CC_STATUSLINE_RL_CACHE="$d/rl" \
+            CC_STATUSLINE_SVC_CACHE="$d/svc" CC_STATUSLINE_GH_CACHE="$d/gh" CC_STATUSLINE_UPDATE_CACHE="$d/upd" \
+            bash "$STATUSLINE" <"$FIXTURES/01-happy-path.json" >"$out" 2>"$err")
+        rc=$?
+        if [ "$rc" = 0 ] && [ ! -s "$err" ] && cmp -s "$out" "$SCRIPT_DIR/golden/classic-$layout.ansi"; then
+            _rl_pass "classic-golden-$layout"
+        else _rl_fail "classic-golden-$layout" "original main bytes changed: $(head -1 "$err")"; fi
+    done
+}
+
+# No OS setting is read: local command shims drive every probe and cache case.
+appearance_tests() {
+    local d="$SCRATCH/appearance-tests" bin cache log out err rc want name record
+    bin="$d/bin"; cache="$d/cache"; log="$d/probes"; out="$d/out"; err="$d/err"
+    mkdir -p "$bin" "$d/minbin"
+    cat >"$bin/uname" <<'OS'
+#!/bin/sh
+printf 'uname\n' >>"$AP_TEST_LOG"
+printf '%s\n' "${AP_TEST_OS:-Darwin}"
+OS
+    cat >"$bin/defaults" <<'PROBE'
+#!/bin/sh
+printf 'probe\n' >>"$AP_TEST_LOG"
+printf '%s\n' "${AP_TEST_ANSWER:-Dark}"
+exit "${AP_TEST_RC:-0}"
+PROBE
+    cp "$bin/defaults" "$bin/gsettings"
+    chmod +x "$bin/uname" "$bin/defaults" "$bin/gsettings"
+    local cmd real
+    for cmd in bash date mkdir chmod mktemp mv rm timeout; do
+        real=$(command -v "$cmd") || continue
+        ln -s "$real" "$d/minbin/$cmd"
+    done
+    ln -s "$bin/uname" "$d/minbin/uname"
+    _ap_run() {
+        want="$1"; name="$2"; shift 2
+        env -u CC_STATUSLINE_APPEARANCE PATH="$bin:$PATH" CC_STATUSLINE_APPEARANCE_CACHE="$cache" \
+            CC_STATUSLINE_NOW=1700000000 AP_TEST_LOG="$log" AP_TEST_OS=Darwin AP_TEST_ANSWER=Dark AP_TEST_RC=0 \
+            "$@" /bin/bash "$STATUSLINE" --resolve-theme tokyo-auto >"$out" 2>"$err"
+        rc=$?
+        if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$(cat "$out")" = "$want" ]; then _rl_pass "$name"
+        else _rl_fail "$name" "wanted $want, got $(cat "$out"), stderr: $(head -1 "$err")"; fi
+    }
+    _ap_cold() { rm -f "$cache"; : >"$log"; _ap_run "$@"; }
+    _ap_cold tokyo-night appearance-force-dark CC_STATUSLINE_APPEARANCE=dark
+    _ap_cold tokyo-day appearance-force-light CC_STATUSLINE_APPEARANCE=light
+    if [ ! -s "$log" ] && [ ! -e "$cache" ]; then _rl_pass appearance-force-no-probe
+    else _rl_fail appearance-force-no-probe "forced appearance probed/wrote a cache"; fi
+    _ap_cold tokyo-night appearance-mac-dark
+    _ap_cold tokyo-day appearance-mac-light AP_TEST_ANSWER=Light
+    _ap_cold tokyo-day appearance-mac-missing-key AP_TEST_RC=1 AP_TEST_ANSWER=''
+    for rc in 5 124 137; do _ap_cold tokyo-night "appearance-mac-failure-$rc" AP_TEST_RC="$rc"; done
+    _ap_cold tokyo-night appearance-linux-dark AP_TEST_OS=Linux AP_TEST_ANSWER="'prefer-dark'"
+    _ap_cold tokyo-day appearance-linux-light AP_TEST_OS=Linux AP_TEST_ANSWER="'prefer-light'"
+    _ap_cold tokyo-day appearance-linux-default AP_TEST_OS=Linux AP_TEST_ANSWER="'default'"
+    _ap_cold tokyo-night appearance-linux-unknown AP_TEST_OS=Linux AP_TEST_ANSWER="'unknown'"
+    _ap_cold tokyo-night appearance-linux-failure AP_TEST_OS=Linux AP_TEST_RC=1
+    _ap_cold tokyo-night appearance-mac-no-tool PATH="$d/minbin"
+    _ap_cold tokyo-night appearance-linux-no-tool PATH="$d/minbin" AP_TEST_OS=Linux
+    printf '1700000000|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-day appearance-cache-hot
+    if [ ! -s "$log" ]; then _rl_pass appearance-cache-no-probe; else _rl_fail appearance-cache-no-probe "hot cache probed"; fi
+    printf '1699999941|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-day appearance-cache-59s
+    printf '1699999940|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-night appearance-cache-60s
+    printf '1700000001|light\n' >"$cache"; : >"$log"
+    _ap_run tokyo-night appearance-cache-future
+    for record in 'garbage' 'x|light' '1700000000|bad' '999999999999999|light' '1700000000|light|extra' $'1700000000|light\nextra' 'a[$(touch '"$d/NEVER_RUN_APPEARANCE"')]|dark'; do
+        printf '%s\n' "$record" >"$cache"; : >"$log"
+        _ap_run tokyo-night appearance-cache-malformed
+        [ -s "$log" ] || _rl_fail appearance-cache-malformed-probe "bad record did not refresh"
+    done
+    if [ ! -e "$d/NEVER_RUN_APPEARANCE" ]; then _rl_pass appearance-cache-no-eval; else _rl_fail appearance-cache-no-eval "cache arithmetic executed data"; fi
+    _ap_cold tokyo-night appearance-failure-cached AP_TEST_RC=124
+    : >"$log"
+    _ap_run tokyo-night appearance-failure-not-reprobed AP_TEST_ANSWER=Light
+    if [ ! -s "$log" ] && [ "$(cat "$cache")" = '1700000000|dark' ]; then _rl_pass appearance-fallback-record
+    else _rl_fail appearance-fallback-record "failure fallback not cached"; fi
+    local mode
+    mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$cache")
+    if [ "$mode" = 600 ]; then _rl_pass appearance-cache-private; else _rl_fail appearance-cache-private "mode $mode"; fi
+}
+
 # Left peer counts and the right update notice use independent backgrounds.
 theme_right_contrast_tests() {
     local d="$SCRATCH/theme-right" repo reg fixture out err theme bg peer_bg idle upd
@@ -2924,12 +3024,13 @@ theme_right_contrast_tests() {
     jq -n --arg cwd "$repo" --argjson pid "$$" \
         '{cwd:$cwd,pid:$pid,sessionId:"theme-idle",status:"idle",name:"idle"}' >"$reg/idle.json"
     printf 'v99.0.0\n' >"$d/update"
-    for theme in tokyo-night gruvbox dracula catppuccin; do
+    for theme in tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin; do
         (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=200 STATUSLINE_HYPERLINKS=0 \
             CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
             CC_STATUSLINE_UPDATE_CACHE="$d/update" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
         case "$theme" in
-            tokyo-night) bg="41;46;66"; peer_bg="41;46;66" ;;
+            tokyo-night|tokyo-auto) bg="41;46;66"; peer_bg="41;46;66" ;;
+            tokyo-day) bg="208;213;227"; peer_bg="$bg" ;;
             gruvbox) bg="214;93;14"; peer_bg="80;73;69" ;;
             dracula) bg="68;71;90"; peer_bg="68;71;90" ;;
             catppuccin) bg="249;226;175"; peer_bg="49;50;68" ;;
@@ -2952,7 +3053,7 @@ theme_tests() {
     export CC_STATUSLINE_RL_KEY CC_STATUSLINE_RL_CACHE
     mkdir -p "$SCRATCH"
     printf '\ntheme matrix and phone sweep\n'
-    local themes="default hue-dark nord phosphor synthwave tokyo-night gruvbox dracula catppuccin"
+    local themes="classic hue-dark nord phosphor synthwave tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin default"
     local theme f w SAFE_WIDTH
     local worker_slots
     worker_slots=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || printf '1')
@@ -3035,7 +3136,7 @@ theme_tests() {
     printf '{"sessionId":"test-session-name","name":"theme-handle"}\n' >"$CC_STATUSLINE_SESSIONS_DIR/handle.json"
     local out="$SCRATCH/theme-contract.out" err="$SCRATCH/theme-contract.err" rc
     local base="" actual name
-    for theme in default tokyo-night gruvbox dracula catppuccin; do
+    for theme in classic tokyo-night tokyo-day tokyo-auto gruvbox dracula catppuccin; do
         (cd "$SCRATCH" && STATUSLINE_THEME="$theme" STATUSLINE_WIDTH=600 STATUSLINE_LAYOUT=wide \
             bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
         rc=$?; name="theme-$theme-content"
@@ -3044,7 +3145,7 @@ theme_tests() {
         # Remove only decoration, preserving all text, dirty markers and alerts.
         actual=$(head -1 "$out" | _strip_ansi | perl -CS -pe \
             's/[\x{e0b0}\x{e0b2}\x{e0b4}\x{e0b6}\x{e0b8}\x{e0ba}\x{e0c0}\x{2502}]//g; s/\s+/ /g; s/^ | $//g')
-        if [ "$theme" = "default" ]; then base="$actual"; fi
+        if [ "$theme" = "classic" ]; then base="$actual"; fi
         if [ "${#fail_reasons[@]}" -gt 0 ]; then _rl_fail "$name" "${fail_reasons[*]}"
         elif [ "$actual" != "$base" ]; then _rl_fail "$name" "content differs: $actual vs $base"
         else _rl_pass "$name"; fi
@@ -3164,16 +3265,31 @@ theme_tests() {
         else _rl_fail "$name" "pace arrows lost: $actual"; fi
     done
 
+    # Auto uses exactly the named palette in both resolved appearances.
+    local appearance resolved auto_base="$SCRATCH/auto-base"
+    for appearance in dark light; do
+        case "$appearance" in dark) resolved=tokyo-night ;; *) resolved=tokyo-day ;; esac
+        for layout in wide phone; do
+            (cd "$SCRATCH" && CC_STATUSLINE_APPEARANCE="$appearance" STATUSLINE_THEME="$resolved" \
+                STATUSLINE_LAYOUT="$layout" bash "$STATUSLINE" <"$fixture" >"$auto_base" 2>"$err")
+            (cd "$SCRATCH" && CC_STATUSLINE_APPEARANCE="$appearance" STATUSLINE_THEME=tokyo-auto \
+                STATUSLINE_LAYOUT="$layout" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
+            if [ "$?" = 0 ] && [ ! -s "$err" ] && cmp -s "$out" "$auto_base"; then _rl_pass "theme-auto-$appearance-$layout"
+            else _rl_fail "theme-auto-$appearance-$layout" "auto differs from $resolved"; fi
+        done
+    done
+
     # Held GPT context uses the theme's dim token in both layouts.
     local tr="$SCRATCH/theme-ctx.jsonl" snap dim layout raw
     for theme in $themes; do
         case "$theme" in
-            default) dim=$'\e[38;2;80;80;80m' ;;
+            classic) dim=$'\e[38;2;80;80;80m' ;;
             hue-dark) dim=$'\e[38;2;100;100;100m' ;;
             nord) dim=$'\e[38;2;96;106;128m' ;;
             phosphor) dim=$'\e[38;2;42;116;60m' ;;
             synthwave) dim=$'\e[38;2;107;91;133m' ;;
-            tokyo-night) dim=$'\e[38;2;96;105;135m' ;;
+            tokyo-night|tokyo-auto|default) dim=$'\e[38;2;96;105;135m' ;;
+            tokyo-day) dim=$'\e[38;2;104;112;154m' ;;
             gruvbox) dim=$'\e[38;2;131;117;103m' ;;
             dracula) dim=$'\e[38;2;98;114;164m' ;;
             catppuccin) dim=$'\e[38;2;124;128;152m' ;;
@@ -3217,7 +3333,7 @@ JQ
             STATUSLINE_THEME="$theme" bash "$STATUSLINE" <"$fixture" >"$out" 2>"$err")
         name="theme-$theme-override-read"
         case "$theme" in
-            default|hue-dark) if [ -s "$SCRATCH/theme-reads" ]; then _rl_pass "$name"; else _rl_fail "$name" "override read missing"; fi ;;
+            classic|hue-dark) if [ -s "$SCRATCH/theme-reads" ]; then _rl_pass "$name"; else _rl_fail "$name" "override read missing"; fi ;;
             *) if [ -s "$SCRATCH/theme-reads" ]; then _rl_fail "$name" "fixed palette read project overrides"; else _rl_pass "$name"; fi ;;
         esac
     done
@@ -3257,7 +3373,7 @@ theme_chooser_tests() {
         rc=$?
     }
     _choose current
-    if [ "$rc" = 0 ] && [ "$(cat "$out")" = 'default (default)' ]; then _rl_pass chooser-current-default
+    if [ "$rc" = 0 ] && [ "$(cat "$out")" = 'tokyo-auto (now: night) (default)' ]; then _rl_pass chooser-current-default
     else _rl_fail chooser-current-default "unexpected current selection"; fi
     _choose set nord
     if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-set
@@ -3266,13 +3382,13 @@ theme_chooser_tests() {
     if [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-current-file
     else _rl_fail chooser-current-file "saved source not reported"; fi
     _choose list
-    if [ "$(wc -l <"$out" | tr -d ' ')" = 9 ] && _has "$(cat "$out")" '● nord (current)'; then _rl_pass chooser-list
+    if [ "$(wc -l <"$out" | tr -d ' ')" = 12 ] && _has "$(cat "$out")" '● nord (current)'; then _rl_pass chooser-list
     else _rl_fail chooser-list "theme list or current marker wrong"; fi
     STATUSLINE_THEME=dracula _choose current
     if [ "$(cat "$out")" = 'dracula (env)' ]; then _rl_pass chooser-current-env
     else _rl_fail chooser-current-env "environment did not win"; fi
     STATUSLINE_THEME=bogus _choose current
-    if [ "$(cat "$out")" = 'default (env)' ]; then _rl_pass chooser-unknown-env
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (env)' ]; then _rl_pass chooser-unknown-env
     else _rl_fail chooser-unknown-env "invalid environment did not select default"; fi
     _choose set bogus
     if [ "$rc" -ne 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-invalid
@@ -3291,7 +3407,7 @@ theme_chooser_tests() {
 
     # Real previews use scratch HOME/cache/fetch seams, including under C locale.
     _choose preview
-    if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$(wc -l <"$out" | tr -d ' ')" = 27 ] \
+    if [ "$rc" = 0 ] && [ ! -s "$err" ] && [ "$(wc -l <"$out" | tr -d ' ')" = 36 ] \
         && ! compgen -G "$d/tmp/cc-statusline-preview.*" >/dev/null; then _rl_pass chooser-preview-all
     else _rl_fail chooser-preview-all "preview contract or cleanup failed: $(head -1 "$err")"; fi
     _choose preview nord
@@ -3337,6 +3453,38 @@ theme_chooser_tests() {
     if cmp -s "$out" "$base"; then _rl_pass theme-file-garbage; else _rl_fail theme-file-garbage "garbage file did not select default"; fi
     printf '\033[31mnord\n' >"$file"; _theme_saved_render
     if cmp -s "$out" "$base"; then _rl_pass theme-file-control-bytes; else _rl_fail theme-file-control-bytes "control bytes selected a theme"; fi
+    STATUSLINE_THEME=tokyo-auto _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-default-alias; else _rl_fail theme-default-alias "default differs from tokyo-auto"; fi
+    rm -f "$file"
+    mkdir -p "$HOME/.claude"
+    printf '{}\n' >"$HOME/.claude/statusline-color-overrides.json"
+    STATUSLINE_THEME=classic _theme_saved_render; cp "$out" "$d/classic-base"
+    _theme_saved_render
+    if cmp -s "$out" "$d/classic-base"; then _rl_pass theme-classic-migration
+    else _rl_fail theme-classic-migration "existing overrides did not retain Classic"; fi
+    STATUSLINE_THEME=default _theme_saved_render
+    if cmp -s "$out" "$base"; then _rl_pass theme-explicit-default-beats-migration
+    else _rl_fail theme-explicit-default-beats-migration "explicit alias did not override migration"; fi
+    printf 'nord\n' >"$file"
+    _theme_saved_render
+    STATUSLINE_THEME=nord _theme_saved_render; cp "$out" "$d/nord-base"
+    _theme_saved_render
+    if cmp -s "$out" "$d/nord-base"; then _rl_pass theme-explicit-file-beats-migration
+    else _rl_fail theme-explicit-file-beats-migration "file did not override migration"; fi
+    rm -f "$HOME/.claude/statusline-color-overrides.json"
+    printf '{}\n' >"$chooser_home/.claude/statusline-color-overrides.json"
+    rm -f "$file"
+    _choose current
+    if [ "$(cat "$out")" = 'classic (default: overrides file)' ]; then _rl_pass chooser-classic-migration
+    else _rl_fail chooser-classic-migration "migration source not reported"; fi
+    STATUSLINE_THEME=default _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (env)' ]; then _rl_pass chooser-explicit-default
+    else _rl_fail chooser-explicit-default "explicit alias did not win"; fi
+    rm -f "$chooser_home/.claude/statusline-color-overrides.json"
+    CC_STATUSLINE_APPEARANCE=light _choose current
+    if [ "$(cat "$out")" = 'tokyo-auto (now: day) (default)' ]; then _rl_pass chooser-auto-day
+    else _rl_fail chooser-auto-day "auto resolved variant not reported"; fi
+    printf 'nord\n' >"$file"
     _choose reset
     if [ "$rc" = 0 ] && [ ! -e "$file" ]; then _rl_pass chooser-reset; else _rl_fail chooser-reset "saved theme not removed"; fi
     _choose --help
@@ -3356,7 +3504,7 @@ theme_chooser_tests() {
     else _rl_fail chooser-save-overridden "override apply warning absent"; fi
     printf '{"statusLine":{"command":"env STATUSLINE_THEME=bogus cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
     _choose current
-    if [ "$(cat "$out")" = 'default (settings)' ]; then _rl_pass chooser-current-settings-unknown
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (settings)' ]; then _rl_pass chooser-current-settings-unknown
     else _rl_fail chooser-current-settings-unknown "invalid settings did not choose default"; fi
     jq -n --arg command "env STATUSLINE_THEME='tokyo-night' cc-statusline" '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
     _choose current
@@ -3368,7 +3516,7 @@ theme_chooser_tests() {
     else _rl_fail chooser-current-settings-not-assignment "quoted command text treated as assignment"; fi
     jq -n --arg command 'STATUSLINE_THEME=$(touch NEVER_EXECUTE_SETTINGS) cc-statusline' '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
     _choose current
-    if [ "$(cat "$out")" = 'default (settings)' ] && [ ! -e "$SCRATCH/NEVER_EXECUTE_SETTINGS" ]; then _rl_pass chooser-current-settings-no-eval
+    if [ "$(cat "$out")" = 'tokyo-auto (now: night) (settings)' ] && [ ! -e "$SCRATCH/NEVER_EXECUTE_SETTINGS" ]; then _rl_pass chooser-current-settings-no-eval
     else _rl_fail chooser-current-settings-no-eval "settings command was executed or expanded"; fi
     printf '{"statusLine":{"command":"cc-statusline","refreshInterval":120}}\n' >"$chooser_home/.claude/settings.json"
     _choose set nord
@@ -3471,7 +3619,7 @@ TITLE
     else _rl_fail chooser-dev-renderer-names "chooser did not use selected renderer's names"; fi
     printf '%s\ngarbage\n' "$dev" >"$cfg/cc-statusline/dev-dir"
     HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" CC_STATUSLINE_DEV_DIR='' "$chooser" list >"$out" 2>"$err"
-    if [ "$?" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 9 ]; then _rl_pass chooser-dev-file-multiline
+    if [ "$?" = 0 ] && [ "$(wc -l <"$out" | tr -d ' ')" = 12 ]; then _rl_pass chooser-dev-file-multiline
     else _rl_fail chooser-dev-file-multiline "malformed dev-dir differs from brew wrapper fallback"; fi
 
     # Exercise the installer archive flow using the exact working-tree scripts
@@ -3486,7 +3634,7 @@ TITLE
     if [ "$?" = 0 ] && [ -x "$prefix/cc-statusline-theme" ]; then _rl_pass chooser-install
     else _rl_fail chooser-install "installer did not package chooser: $(head -1 "$err")"; fi
     HOME="$chooser_home" XDG_CONFIG_HOME="$d/install-config" CC_STATUSLINE_DEV_DIR='' "$prefix/cc-statusline-theme" current >"$out" 2>"$err"
-    if [ "$?" = 0 ] && [ "$(cat "$out")" = 'default (default)' ]; then _rl_pass chooser-installed-sibling
+    if [ "$?" = 0 ] && [ "$(cat "$out")" = 'tokyo-auto (now: night) (default)' ]; then _rl_pass chooser-installed-sibling
     else _rl_fail chooser-installed-sibling "installed chooser cannot resolve sibling renderer"; fi
     # An older archived HEAD without the chooser must still install successfully.
     HOME="$git_home" git -C "$repo" rm -q --cached cc-statusline-theme
@@ -3528,6 +3676,8 @@ cache_timer_tests
 context_hold_tests
 fi
 if [ "${STATUSLINE_TEST_SCOPE:-}" != base ]; then
+classic_golden_tests
+appearance_tests
 theme_right_contrast_tests
 theme_tests
 theme_chooser_tests

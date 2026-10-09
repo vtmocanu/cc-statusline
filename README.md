@@ -154,7 +154,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STATUSLINE_THEME` | `default` | Select a built-in theme (see Themes below). Overrides the saved theme file; unknown or empty values use `default`. |
+| `STATUSLINE_THEME` | `tokyo-auto` | Select a built-in theme (see Themes below). Overrides the saved theme file; unknown or empty values use `tokyo-auto`. `default` is an alias for `tokyo-auto`. |
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line, and a hard cap: when Claude Code reports a narrower viewport (see below), the render follows the viewport instead. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
 | `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
@@ -194,7 +194,7 @@ Run the packaged chooser to change themes on the next render:
 cc-statusline-theme                  # fzf picker, or numbered menu
 cc-statusline-theme preview          # isolated previews of every theme
 cc-statusline-theme set tokyo-night
-cc-statusline-theme current          # theme and source (env, file, or default)
+cc-statusline-theme current          # theme and source (settings, env, file, or default)
 cc-statusline-theme list
 cc-statusline-theme reset
 ```
@@ -207,10 +207,14 @@ without network fetches. The chooser honors the same dev override as the statusl
 The saved choice lives in
 `${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme`. The first line is read
 and whitespace removed. Selection precedence is `STATUSLINE_THEME` environment,
-then the saved file, then `default`. Unknown or empty values select `default`.
+then the saved file, then `tokyo-auto`. Unknown or empty values select `tokyo-auto`.
+`default` is an alias for `tokyo-auto`. With no explicit choice, an existing
+color-overrides file retains `classic`.
 An environment value, even empty or unknown, overrides the file. The chooser
 warns when `statusLine.command` in `~/.claude/settings.json` sets that variable.
-`current` reports the choice effective in the chooser's own environment.
+`current` also recognizes a leading `STATUSLINE_THEME` assignment in that
+command (optionally after `env`), which takes precedence over the chooser's
+shell environment. It never evaluates or expands the command.
 
 You can also set `STATUSLINE_THEME` in your statusline command, for example:
 
@@ -220,18 +224,21 @@ STATUSLINE_THEME=tokyo-night cc-statusline
 
 | Theme | Appearance |
 |-------|------------|
-| `default` | Current project hue, slanted caps, black second line. |
+| `classic` | Current project hue, slanted caps, black second line. |
 | `hue-dark` | Project hue on a dark tint, with vertical edge caps. |
 | `nord` | Transparent backgrounds and a restrained Nordic palette. |
 | `phosphor` | CRT green and ASCII bars, with distinct amber/red alerts. |
 | `synthwave` | Pink, purple, and cyan gradient, with a dusk second line. |
+| `tokyo-auto` | Follows OS dark/light appearance, with a 60-second cache. |
+| `tokyo-day` | Tokyo Night's official Day colors with arrow segments. |
 | `tokyo-night` | Neon on navy, with stepped Powerline arrows. |
 | `gruvbox` | Warm earth tones, hard arrows, and block bars. |
 | `dracula` | Purple and pink segments, with flame joins. |
 | `catppuccin` | Mocha pastel capsules and round bars. |
+| `default` | Alias for `tokyo-auto`. |
 
-The default retains the existing output byte for byte. Project color overrides
-and project hues apply to `default` and `hue-dark`; the other themes use fixed
+Classic retains the existing output byte for byte. Project color overrides
+and project hues apply to `classic` and `hue-dark`; the other themes use fixed
 palettes. All themes keep the same content, status meanings, hyperlinks, and
 adaptive width rules. A theme's caps and separators can change how much detail
 fits at a given width. Powerline caps require a Nerd Font, like the existing icons.
