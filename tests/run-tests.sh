@@ -76,6 +76,7 @@ export CC_STATUSLINE_UPDATE_FETCH="$SCRATCH/no-such-update-fetcher.sh"
 # reads or writes the real per-session snapshot in the runtime dir. The
 # context-hold tests below point each case at its own path.
 export CC_STATUSLINE_CTX_CACHE="$SCRATCH/ctx-snapshot"
+export CC_STATUSLINE_TITLE_CACHE="$SCRATCH/session-titles"
 
 # Pin the clock so rate-limit reset countdowns and pace arrows are
 # deterministic across runs and locales. Fixtures with future resets_at are
@@ -1797,9 +1798,8 @@ github_status_tests() {
 #            so the suite never reads the real registry.
 #   topic    the descriptive session title, read from the stdin .session_name
 #            (Claude Code's /rename value or auto-generated title).
-# These come from different sources and must not bleed into each other: a
-# .session_name must NEVER appear as a handle, and the registry .name must NEVER
-# appear as the topic. Covers both sources, both opt-outs
+# The handle remains registry-only. Auto titles are remembered separately;
+# a user rename retrieves that stored description and never replaces it. Covers both sources, both opt-outs
 # (STATUSLINE_SESSION_NAME / STATUSLINE_TOPIC), coexistence, absence, and
 # control-byte stripping of each user-controlled value.
 session_name_tests() {
@@ -1823,8 +1823,8 @@ session_name_tests() {
     }
     _sess_reg() {  # _sess_reg <sessionId> <name-json>  (name-json may hold $esc)
         rm -rf "$reg"; mkdir -p "$reg"
-        printf '{"pid":123,"sessionId":"%s","name":"%s","nameSource":"derived","status":"idle"}\n' \
-            "$1" "$2" > "$reg/123.json"
+        printf '{"pid":123,"sessionId":"%s","name":"%s","nameSource":"%s","status":"idle"}\n' \
+            "$1" "$2" "${3:-derived}" > "$reg/123.json"
         # A second, non-matching entry proves the sessionId select is real.
         printf '{"pid":456,"sessionId":"other-sid","name":"other-99","status":"idle"}\n' \
             > "$reg/456.json"
@@ -1920,6 +1920,119 @@ session_name_tests() {
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
     elif ! _has "$l1" "safe"; then _rl_fail "$name" "title control byte not stripped cleanly: $l1"
     else _rl_pass "$name"; fi
+    # Auto titles survive a /rename; registry identity is not itself a title.
+    local titles="$SCRATCH/sess-titles" cache old_sig new_sig title longtitle
+    mkdir -p "$titles"
+    _sess_reg sid-auto buddy
+    _sess_run "$out" "$err" "$(_sess_json sid-auto Original-auto-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi); cache="$titles/sid-auto"
+    if [ ! -s "$err" ] && _has "$l1" 'Original-auto-title' && [ "$(cat "$cache")" = Original-auto-title ]; then _rl_pass title-auto-stored
+    else _rl_fail title-auto-stored "title not displayed/stored: $l1"; fi
+    old_sig=$(perl -e 'print join ":", (stat($ARGV[0]))[1,9]' "$cache")
+    _sess_run "$out" "$err" "$(_sess_json sid-auto Original-auto-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    new_sig=$(perl -e 'print join ":", (stat($ARGV[0]))[1,9]' "$cache")
+    if [ ! -s "$err" ] && [ "$old_sig" = "$new_sig" ]; then _rl_pass title-unchanged-no-write
+    else _rl_fail title-unchanged-no-write "unchanged title was republished"; fi
+    _sess_run "$out" "$err" "$(_sess_json sid-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    if [ "$(cat "$cache")" = Original-auto-title ]; then _rl_pass title-empty-preserves-cache
+    else _rl_fail title-empty-preserves-cache "empty frame erased remembered title"; fi
+    _sess_reg sid-auto cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-auto cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && _has "$l1" 'Original-auto-title' && [ "$(cat "$cache")" = Original-auto-title ]; then _rl_pass title-renamed-with-cache
+    else _rl_fail title-renamed-with-cache "rename replaced the auto description: $l1"; fi
+    _sess_reg sid-cold cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-cold cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && ! _has "$l1" '│ cc' && [ ! -e "$titles/sid-cold" ]; then _rl_pass title-renamed-without-cache
+    else _rl_fail title-renamed-without-cache "cold rename rendered/stored description: $l1"; fi
+    _sess_reg sid-mismatch cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-mismatch Different-auto-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-mismatch")" = Different-auto-title ]; then _rl_pass title-user-source-name-mismatch
+    else _rl_fail title-user-source-name-mismatch "nameSource alone incorrectly treated title as rename"; fi
+
+    for title in 'mixed-case' 'MIXED-CASE'; do
+        _sess_reg sid-same Mixed-Case
+        _sess_run "$out" "$err" "$(_sess_json sid-same "$title")" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+        l1=$(head -1 "$out" | _strip_ansi)
+        if [ ! -s "$err" ] && _has "$l1" '@Mixed-Case' && ! _has "$l1" "│ $title"; then _rl_pass title-duplicate-case
+        else _rl_fail title-duplicate-case "duplicate description remains: $l1"; fi
+    done
+    _sess_run "$out" "$err" "$(_sess_json sid-same MIXED-CASE)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_SESSION_NAME=0
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && ! _has "$l1" '@Mixed-Case' && _has "$l1" 'MIXED-CASE'; then _rl_pass title-hidden-handle-keeps-description
+    else _rl_fail title-hidden-handle-keeps-description "hidden handle suppressed title: $l1"; fi
+    _sess_reg sid-unicode 'Équipe'
+    _sess_run "$out" "$err" "$(_sess_json sid-unicode 'éQUIPE')" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@Équipe' && ! _has "$l1" 'éQUIPE'; then _rl_pass title-duplicate-unicode
+    else _rl_fail title-duplicate-unicode "Unicode comparison failed: $l1"; fi
+    _sess_reg sid-glob 'a*'
+    _sess_run "$out" "$err" "$(_sess_json sid-glob abc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" 'abc'; then _rl_pass title-comparison-literal
+    else _rl_fail title-comparison-literal "handle was treated as a glob"; fi
+
+    _sess_reg sid-off buddy
+    _sess_run "$out" "$err" "$(_sess_json sid-off Remember-while-hidden)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_TOPIC=0
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-off")" = Remember-while-hidden ] && ! _has "$(head -1 "$out" | _strip_ansi)" Remember-while-hidden; then _rl_pass title-topic-off-still-remembers
+    else _rl_fail title-topic-off-still-remembers "topic toggle changed storage/display policy"; fi
+    _sess_reg sid-auto cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-auto cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_SESSION_NAME=0
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && ! _has "$l1" '@cc' && _has "$l1" Original-auto-title; then _rl_pass title-hidden-handle-rename-detected
+    else _rl_fail title-hidden-handle-rename-detected "hidden handle disabled rename detection: $l1"; fi
+
+    # Files are untrusted too: strip controls and cap before duplicate checks.
+    _sess_reg sid-cold cc user
+    longtitle=$(printf '%045d' 0)
+    printf 'sa\033fe%s\n' "$longtitle" >"$titles/sid-cold"
+    _sess_run "$out" "$err" "$(_sess_json sid-cold cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" "safe${longtitle:0:36}" && ! _has "$l1" "safe${longtitle:0:37}"; then _rl_pass title-cache-sanitized-capped
+    else _rl_fail title-cache-sanitized-capped "stored title not sanitized/capped: $l1"; fi
+    printf 'CC\n' >"$titles/sid-cold"
+    _sess_run "$out" "$err" "$(_sess_json sid-cold cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && ! _has "$l1" '│ CC'; then _rl_pass title-cached-duplicate-dropped
+    else _rl_fail title-cached-duplicate-dropped "stored duplicate remains: $l1"; fi
+
+    local sid badcache="$SCRATCH/bad-title-cache"
+    for sid in '../escape' 'bad/sid' 'bad.sid' ''; do
+        rm -rf "$badcache"
+        _sess_run "$out" "$err" "$(_sess_json "$sid" Test-title)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$badcache"
+        if [ ! -s "$err" ] && [ ! -e "$badcache" ]; then _rl_pass title-invalid-sid-no-path
+        else _rl_fail title-invalid-sid-no-path "malformed id became a cache path"; fi
+    done
+    _sess_reg sid-change buddy
+    _sess_run "$out" "$err" "$(_sess_json sid-change First-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    _sess_run "$out" "$err" "$(_sess_json sid-change Latest-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-change")" = Latest-auto ]; then _rl_pass title-changed-updated
+    else _rl_fail title-changed-updated "changed auto title was not remembered"; fi
+    local failbin="$SCRATCH/title-failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    _sess_run "$out" "$err" "$(_sess_json sid-change Failed-auto)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" PATH="$failbin:$PATH"
+    if [ ! -s "$err" ] && [ "$(cat "$titles/sid-change")" = Latest-auto ] && ! compgen -G "$titles/.sid-change.*" >/dev/null; then _rl_pass title-atomic-failure
+    else _rl_fail title-atomic-failure "failed publish changed cache or left a temp file"; fi
+    _sess_reg sid-auto cc user
+    _sess_run "$out" "$err" "$(_sess_json sid-auto cc)" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles" STATUSLINE_THEME=tokyo-night
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && _has "$l1" Original-auto-title; then _rl_pass title-renamed-segment-theme
+    else _rl_fail title-renamed-segment-theme "segmented builder lost remembered description"; fi
+    _sess_reg sid-no-transcript cc user
+    local tr="$SCRATCH/title-transcript.jsonl" j
+    printf '{"type":"system","aiTitle":"Forbidden-transcript-title"}\n' >"$tr"
+    j=$(_sess_json sid-no-transcript cc | jq --arg tr "$tr" '.transcript_path=$tr')
+    _sess_run "$out" "$err" "$j" CC_STATUSLINE_SESSIONS_DIR="$reg" CC_STATUSLINE_TITLE_CACHE="$titles"
+    l1=$(head -1 "$out" | _strip_ansi)
+    if [ ! -s "$err" ] && _has "$l1" '@cc' && ! _has "$l1" Forbidden-transcript-title && [ ! -e "$titles/sid-no-transcript" ]; then _rl_pass title-no-transcript-fallback
+    else _rl_fail title-no-transcript-fallback "transcript was used to recover a description"; fi
+
+    local mode
+    mode=$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 0777' "$titles/sid-auto")
+    if [ "$mode" = 600 ]; then _rl_pass title-cache-private; else _rl_fail title-cache-private "cache mode $mode"; fi
+
 }
 
 # ── Env-input hardening tests ──────────────────────────────────────────────
@@ -3459,7 +3572,7 @@ theme_chooser_tests() {
     local -a sentinel_env=("HOME=$sentinel/home" "XDG_CONFIG_HOME=$sentinel/xdg"
         "XDG_RUNTIME_DIR=$sentinel/runtime" "TMPDIR=$d/tmp" "CC_STATUSLINE_DEV_DIR=$REPO_DIR"
         "CHOOSER_SENTINEL_MARKER=$sentinel/home/unexpected-fetch"
-        "CC_STATUSLINE_CTX_CACHE=$sentinel/runtime/ctx")
+        "CC_STATUSLINE_CTX_CACHE=$sentinel/runtime/ctx" "CC_STATUSLINE_TITLE_CACHE=$sentinel/runtime/title")
     local cache_key
     for cache_key in SVC CODEX_SVC GH RL GPT GPT_CREDITS UPDATE; do
         sentinel_env+=("CC_STATUSLINE_${cache_key}_CACHE=$sentinel/runtime/$cache_key"

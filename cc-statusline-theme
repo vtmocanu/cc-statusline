@@ -172,6 +172,7 @@ preview() {
             STATUSLINE_WIDTH="$preview_width" COLUMNS="$preview_width" STATUSLINE_DEBUG=0 STATUSLINE_TAB_TITLE=0 \
             STATUSLINE_PROFILE=0 STATUSLINE_RL_SHARE=0 STATUSLINE_GPT_LIMITS=0 \
             CC_STATUSLINE_RL_KEY="" CC_STATUSLINE_NOW=1700000000 CC_STATUSLINE_CTX_CACHE="$d/ctx" \
+            CC_STATUSLINE_TITLE_CACHE="$d/title-cache" \
             CC_STATUSLINE_SESSIONS_DIR="$d/sessions" CC_STATUSLINE_PROJECTS_DIR="$d/no-projects" \
             CC_STATUSLINE_SVC_CACHE="$d/svc" CC_STATUSLINE_SVC_FETCH="$d/no-fetch" \
             CC_STATUSLINE_CODEX_SVC_CACHE="$d/no-codex-svc" CC_STATUSLINE_CODEX_SVC_FETCH="$d/no-fetch" \

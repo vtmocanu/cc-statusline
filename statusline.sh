@@ -260,21 +260,19 @@ MODE="${MODE//[$'\001'-$'\037\177']/}"
 # Then strip control bytes (a /rename value is user-controlled) and hard-cap the
 # length so a pathological name cannot dominate line 1 at a wide viewport;
 # width-driven truncation on the NAME rung shortens it further on real overflow.
-SESSION_HANDLE=""
+SESSION_HANDLE=""; SESSION_REG_HANDLE=""; SESSION_USER_RENAME=0
+# Read identity even when its display is hidden: the title must still recognize
+# a user rename. Both fields come from the same registry pass, without a tail.
+_SESS_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
+if [ -n "$SESSION_ID" ] && [ -d "$_SESS_DIR" ]; then
+    eval "$(jq -nr --arg sid "$SESSION_ID" --arg title "$SESSION_TITLE" '
+        (first(inputs | objects | select(.sessionId == $sid)) // {})
+        | @sh "SESSION_REG_HANDLE=\(.name | if type == "string" then . else "" end)",
+          @sh "SESSION_USER_RENAME=\(if .nameSource == "user" and .name == $title then "1" else "0" end)"
+        ' "$_SESS_DIR"/*.json 2>/dev/null || true)" 2>/dev/null
+fi
 if [ "${STATUSLINE_SESSION_NAME:-1}" != "0" ]; then
-    # CC_STATUSLINE_SESSIONS_DIR overrides the registry location (test isolation,
-    # mirrors the SVC/RL cache seams), so the suite never reads the real registry.
-    _SESS_DIR="${CC_STATUSLINE_SESSIONS_DIR:-$HOME/.claude/sessions}"
-    if [ -n "$SESSION_ID" ] && [ -d "$_SESS_DIR" ]; then
-        # One jq pass over the (few, tiny) registry files; match on sessionId,
-        # take the first .name. Any failure (no files, unreadable, bad JSON) is
-        # swallowed and leaves the handle empty. The glob is literal when nothing
-        # matches, so jq errors to /dev/null and SESSION_HANDLE stays empty.
-        SESSION_HANDLE=$(jq -r --arg sid "$SESSION_ID" \
-            'select(.sessionId == $sid) | .name // empty' \
-            "$_SESS_DIR"/*.json 2>/dev/null | head -n1 || true)
-    fi
-    SESSION_HANDLE="${SESSION_HANDLE//[$'\001'-$'\037\177']/}"
+    SESSION_HANDLE="${SESSION_REG_HANDLE//[$'\001'-$'\037\177']/}"
     [ "$(_clen "$SESSION_HANDLE")" -gt 40 ] 2>/dev/null && SESSION_HANDLE="$(_head_cp "$SESSION_HANDLE" 40)"
 fi
 FIVE_PCT=${FIVE_PCT:-}; SEVEN_PCT=${SEVEN_PCT:-}
@@ -1175,26 +1173,66 @@ RST="\033[0m"
 PROJECT_ROOT=$(git -C "$CWD_FULL" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_FULL")
 PHASH=$(printf '%s' "${SESSION_ID:-$CWD_FULL}" | cksum | cut -d' ' -f1 || echo "0")
 
-# ── Session topic (Claude Code's native session title) ─────────────────────
-# The descriptive label for line 1, sourced from the stdin .session_name
-# (SESSION_TITLE): the /rename value if set, else Claude Code's auto-generated
-# session title (e.g. "Add session names to status line"), which Claude Code
-# writes to the transcript as .aiTitle and serves here. This replaced an earlier
-# opt-in hook that called Claude Haiku to synthesize the same kind of label; the
-# native title needs no extra API call, credential, or quota. If you upgraded from
-# a version that shipped that hook and still have its UserPromptSubmit entry in
-# settings.json, Claude Code prints "session-topic-capture.sh: No such file or
-# directory" on every prompt (non-blocking): delete that one UserPromptSubmit entry
-# to silence it. The old ~/.claude/session-topics/ cache is dead and safe to remove.
-# Shown bold after
-# the @handle. On by default; STATUSLINE_TOPIC=0 hides it. Control bytes are
-# stripped (same as every other JSON-sourced field: removing the ESC byte
-# neutralizes any CSI/OSC a model-authored title might contain) and the length is
-# capped so it cannot dominate line 1 at a wide viewport; the TOPIC truncation
-# rung shrinks it further on real overflow.
+# ── Session topic (remembered native auto title, no transcript reads) ──────
+# A user rename is identified by the registry's nameSource plus exact raw name
+# equality with stdin .session_name. Preserve the last non-empty auto title,
+# so renaming the addressable handle does not replace its description.
+_session_label_clean() {
+    _SESSION_LABEL="${1//[$'\001'-$'\037\177']/}"
+    if _is_ascii "$_SESSION_LABEL"; then
+        _SESSION_LABEL="${_SESSION_LABEL:0:40}"
+    elif [ "$(_clen "$_SESSION_LABEL")" -gt 40 ] 2>/dev/null; then
+        _SESSION_LABEL="$(_head_cp "$_SESSION_LABEL" 40)"
+    fi
+}
+_same_session_label() {
+    local rc nocase=0
+    if _is_ascii "$1" && _is_ascii "$2"; then
+        shopt -q nocasematch || { shopt -s nocasematch; nocase=1; }
+        [[ "$1" == "$2" ]]; rc=$?
+        [ "$nocase" = 0 ] || shopt -u nocasematch
+        return "$rc"
+    fi
+    printf '%s\0%s' "$1" "$2" | perl -CS -0777 -ne '
+        my ($a, $b) = split /\0/, $_, 2;
+        exit(lc($a) eq lc($b) ? 0 : 1);
+    ' 2>/dev/null
+}
+_session_label_clean "$SESSION_TITLE"
+_TITLE_NATIVE="$_SESSION_LABEL"; _TITLE_DISPLAY="$_TITLE_NATIVE"
+_TITLE_STORED=""; _TITLE_FILE=""
+# Mirror _state_dir for builtin steady-state reads; create/chmod only on writes.
+_TITLE_DIR="${CC_STATUSLINE_TITLE_CACHE:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cc-statusline-${UID}/session-title}"
+case "$SESSION_ID" in
+    ''|*[!A-Za-z0-9_-]*) ;;
+    *) if [ "${#SESSION_ID}" -le 200 ]; then
+        _TITLE_FILE="$_TITLE_DIR/$SESSION_ID"
+        { IFS= read -r _TITLE_STORED; } 2>/dev/null <"$_TITLE_FILE" || true
+        _session_label_clean "$_TITLE_STORED"
+        _TITLE_STORED="$_SESSION_LABEL"
+    fi ;;
+esac
+if [ "$SESSION_USER_RENAME" = 1 ]; then
+    _TITLE_DISPLAY="$_TITLE_STORED"
+elif [ -n "$_TITLE_NATIVE" ] && [ -n "$_TITLE_FILE" ] && [ "$_TITLE_NATIVE" != "$_TITLE_STORED" ]; then
+    # Empty frames never erase a remembered title. Temp + mv is same-directory
+    # atomic publication; mktemp keeps the file private and stale files harmless.
+    if [ -z "${CC_STATUSLINE_TITLE_CACHE:-}" ]; then _state_dir >/dev/null; fi
+    if (umask 077; mkdir -p "$_TITLE_DIR") 2>/dev/null; then
+        _TITLE_TMP=$(mktemp "$_TITLE_DIR/.${SESSION_ID}.XXXXXX" 2>/dev/null) || _TITLE_TMP=""
+        if [ -n "$_TITLE_TMP" ]; then
+            if ! printf '%s\n' "$_TITLE_NATIVE" >"$_TITLE_TMP" \
+                || ! mv -f "$_TITLE_TMP" "$_TITLE_FILE" 2>/dev/null; then
+                rm -f "$_TITLE_TMP" 2>/dev/null
+            fi
+        fi
+    fi
+fi
 if [ "${STATUSLINE_TOPIC:-1}" != "0" ]; then
-    TOPIC="${SESSION_TITLE//[$'\001'-$'\037\177']/}"
-    [ "$(_clen "$TOPIC")" -gt 40 ] 2>/dev/null && TOPIC="$(_head_cp "$TOPIC" 40)"
+    TOPIC="$_TITLE_DISPLAY"
+    # Only a visible handle can duplicate the description. Sanitation and the
+    # 40-codepoint cap happen before comparison, not after layout truncation.
+    if [ -n "$SESSION_HANDLE" ] && _same_session_label "$TOPIC" "$SESSION_HANDLE"; then TOPIC=""; fi
 fi
 
 # The old look is Classic; explicit/unknown choices use the OS-auto default.

@@ -7,6 +7,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- Session descriptions remember the last auto title across a user rename, using a private per-session cache without transcript reads. Descriptions matching the visible handle are hidden case-insensitively; uncached renamed sessions show only the handle.
 - Synthwave uses the bright neon pink/purple/cyan gradient, bold white text and light lilac separators. Fixed service glyphs keep their alert colors on a dark cell for contrast. Picker previews use the same resolved appearance as their Auto hint.
 - The original palette is now `classic`. The new default, `tokyo-auto`, selects Tokyo Night or Tokyo Day from OS appearance with a private 60-second cache. `default` is an alias for `tokyo-auto`; existing color overrides retain Classic until a theme is chosen.
 - The theme picker marks the effective current choice, including an explicit theme in `statusLine.command`, and starts there when fzf supports it. Saved choices report when active and idle sessions redraw, or when settings prevent the saved choice from applying. Preview and test Git repositories disable persistent filesystem monitors.
