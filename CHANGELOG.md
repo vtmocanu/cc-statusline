@@ -7,6 +7,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- The theme picker marks the effective current choice, including an explicit theme in `statusLine.command`, and starts there when fzf supports it. Saved choices report when active and idle sessions redraw, or when settings prevent the saved choice from applying. Preview and test Git repositories disable persistent filesystem monitors.
 - Repo-wide session counts now follow the handle on line 1, or the directory and branch on phones. Counts drop whole when space is tight; only the upgrade notice remains right-aligned.
 
 ### Fixed

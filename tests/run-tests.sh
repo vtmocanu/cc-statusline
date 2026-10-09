@@ -35,6 +35,8 @@ SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 export KUBECONFIG=/dev/null
 unset GIT_DIR GIT_WORK_TREE
+# Disposable repositories must not spawn persistent Git filesystem monitors.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
 # The statusline now narrows SAFE_WIDTH to the viewport when Claude Code exports
 # COLUMNS (v2.1.153+). A runner that happens to export it would silently shrink
 # every fixture's budget (and flip the phone layout on), so drop it here; the
@@ -3264,7 +3266,7 @@ theme_chooser_tests() {
     if [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-current-file
     else _rl_fail chooser-current-file "saved source not reported"; fi
     _choose list
-    if [ "$(wc -l <"$out" | tr -d ' ')" = 9 ] && _has "$(cat "$out")" '* nord'; then _rl_pass chooser-list
+    if [ "$(wc -l <"$out" | tr -d ' ')" = 9 ] && _has "$(cat "$out")" '● nord (current)'; then _rl_pass chooser-list
     else _rl_fail chooser-list "theme list or current marker wrong"; fi
     STATUSLINE_THEME=dracula _choose current
     if [ "$(cat "$out")" = 'dracula (env)' ]; then _rl_pass chooser-current-env
@@ -3343,27 +3345,73 @@ theme_chooser_tests() {
     _choose set nord
     if [ "$rc" = 0 ] && _has "$(cat "$err")" 'overrides the saved theme'; then _rl_pass chooser-settings-warning
     else _rl_fail chooser-settings-warning "settings override warning absent"; fi
+    STATUSLINE_THEME=nord _choose current
+    if [ "$(cat "$out")" = 'dracula (settings)' ]; then _rl_pass chooser-current-settings
+    else _rl_fail chooser-current-settings "settings did not override shell env/file"; fi
+    _choose list
+    if _has "$(cat "$out")" '● dracula (current)'; then _rl_pass chooser-list-settings
+    else _rl_fail chooser-list-settings "settings theme not marked"; fi
+    _choose set nord
+    if _has "$(cat "$out")" 'will not apply until STATUSLINE_THEME is removed'; then _rl_pass chooser-save-overridden
+    else _rl_fail chooser-save-overridden "override apply warning absent"; fi
+    printf '{"statusLine":{"command":"env STATUSLINE_THEME=bogus cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'default (settings)' ]; then _rl_pass chooser-current-settings-unknown
+    else _rl_fail chooser-current-settings-unknown "invalid settings did not choose default"; fi
+    jq -n --arg command "env STATUSLINE_THEME='tokyo-night' cc-statusline" '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'tokyo-night (settings)' ]; then _rl_pass chooser-current-settings-quoted
+    else _rl_fail chooser-current-settings-quoted "quoted setting was not parsed"; fi
+    jq -n --arg command 'echo "STATUSLINE_THEME=dracula"' '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'nord (file)' ]; then _rl_pass chooser-current-settings-not-assignment
+    else _rl_fail chooser-current-settings-not-assignment "quoted command text treated as assignment"; fi
+    jq -n --arg command 'STATUSLINE_THEME=$(touch NEVER_EXECUTE_SETTINGS) cc-statusline' '{statusLine:{command:$command}}' >"$chooser_home/.claude/settings.json"
+    _choose current
+    if [ "$(cat "$out")" = 'default (settings)' ] && [ ! -e "$SCRATCH/NEVER_EXECUTE_SETTINGS" ]; then _rl_pass chooser-current-settings-no-eval
+    else _rl_fail chooser-current-settings-no-eval "settings command was executed or expanded"; fi
+    printf '{"statusLine":{"command":"cc-statusline","refreshInterval":120}}\n' >"$chooser_home/.claude/settings.json"
+    _choose set nord
+    if _has "$(cat "$out")" 'within 120s in idle ones'; then _rl_pass chooser-save-timing
+    else _rl_fail chooser-save-timing "refresh interval absent from save message"; fi
+    _choose reset
+    if _has "$(cat "$out")" 'within 120s in idle ones'; then _rl_pass chooser-reset-timing
+    else _rl_fail chooser-reset-timing "refresh interval absent from reset message"; fi
     : >"$chooser_home/.claude/settings.json"
+    _choose set nord
+    if _has "$(cat "$out")" 'idle sessions update on your next message'; then _rl_pass chooser-save-no-refresh
+    else _rl_fail chooser-save-no-refresh "missing-interval timing wrong"; fi
+    _choose reset
+    if _has "$(cat "$out")" 'idle sessions update on your next message'; then _rl_pass chooser-reset-no-refresh
+    else _rl_fail chooser-reset-no-refresh "missing-interval reset timing wrong"; fi
+    _choose set nord
 
     # Exercise the fzf route with a controlled selection, no terminal needed.
     local fzfbin="$d/fzfbin"
     mkdir -p "$fzfbin"
     cat >"$fzfbin/fzf" <<'FZF'
 #!/bin/sh
+case " $* " in *" --filter= "*) [ "${CHOOSER_FZF_NO_BIND:-0}" = 1 ] && exit 2; exit 1 ;; esac
 printf '%s\n' "$@" >"$CHOOSER_FZF_ARGS"
-cat >/dev/null
-printf 'dracula\n'
+cat >"$CHOOSER_FZF_INPUT"
+printf 'dracula\t● dracula (current)\n'
 FZF
     chmod +x "$fzfbin/fzf"
-    CHOOSER_FZF_ARGS="$d/fzf.args" PATH="$fzfbin:$PATH" _choose
+    CHOOSER_FZF_ARGS="$d/fzf.args" CHOOSER_FZF_INPUT="$d/fzf.input" PATH="$fzfbin:$PATH" _choose
     if [ "$rc" = 0 ] && [ "$(cat "$file")" = dracula ]; then _rl_pass chooser-fzf
     else _rl_fail chooser-fzf "fzf selection not saved"; fi
 
     local fzf_args
     fzf_args=$(cat "$d/fzf.args")
     if _has "$fzf_args" '--layout=reverse' && _has "$fzf_args" '--preview-window=down,2,border-top,noinfo' \
-        && _has "$fzf_args" '--fzf-preview {}'; then _rl_pass chooser-fzf-stacked-panes
+        && _has "$fzf_args" '--fzf-preview {1}'; then _rl_pass chooser-fzf-stacked-panes
     else _rl_fail chooser-fzf-stacked-panes "list/preview layout arguments wrong"; fi
+    if _has "$fzf_args" 'Current: nord (file)' && _has "$fzf_args" '--bind=load:pos(3)' \
+        && _has "$(cat "$d/fzf.input")" '● nord (current)'; then _rl_pass chooser-fzf-current-marker
+    else _rl_fail chooser-fzf-current-marker "current marker/header/initial position wrong"; fi
+    CHOOSER_FZF_NO_BIND=1 CHOOSER_FZF_ARGS="$d/fzf.args" CHOOSER_FZF_INPUT="$d/fzf.input" PATH="$fzfbin:$PATH" _choose
+    if [ "$rc" = 0 ] && ! _has "$(cat "$d/fzf.args")" '--bind='; then _rl_pass chooser-fzf-older-binding
+    else _rl_fail chooser-fzf-older-binding "unsupported initial-position binding did not degrade"; fi
     printf '{"statusLine":{"command":"STATUSLINE_THEME=dracula cc-statusline"}}\n' >"$chooser_home/.claude/settings.json"
     FZF_PREVIEW_COLUMNS=130 COLUMNS=40 _choose --fzf-preview nord
     : >"$chooser_home/.claude/settings.json"
@@ -3383,15 +3431,19 @@ FZF
 #!/usr/bin/env bash
 if [ "${1:-}" != --list-themes ]; then
     printf '%s\n' "${STATUSLINE_TAB_TITLE:-unset}" >"$CHOOSER_TITLE_LOG"
+    printf '%s:%s:%s\n' "${GIT_CONFIG_COUNT:-unset}" "${GIT_CONFIG_KEY_0:-unset}" "${GIT_CONFIG_VALUE_0:-unset}" >"$CHOOSER_MONITOR_LOG"
 fi
 exec bash "$CHOOSER_REAL_RENDERER" "$@"
 TITLE
     chmod +x "$titledev/statusline.sh"
     HOME="$chooser_home" XDG_CONFIG_HOME="$cfg" TMPDIR="$d/tmp" CC_STATUSLINE_DEV_DIR="$titledev" \
-        CHOOSER_TITLE_LOG="$d/title-flag" CHOOSER_REAL_RENDERER="$STATUSLINE" \
+        CHOOSER_TITLE_LOG="$d/title-flag" CHOOSER_MONITOR_LOG="$d/monitor-flag" CHOOSER_REAL_RENDERER="$STATUSLINE" \
         "$chooser" --fzf-preview nord >"$out" 2>"$err"
     if [ "$?" = 0 ] && [ "$(cat "$d/title-flag")" = 0 ] && [ ! -s "$err" ]; then _rl_pass chooser-preview-no-tab-title
     else _rl_fail chooser-preview-no-tab-title "preview did not suppress the terminal title write"; fi
+
+    if [ "$(cat "$d/monitor-flag")" = '1:core.fsmonitor:false' ]; then _rl_pass chooser-preview-no-fsmonitor
+    else _rl_fail chooser-preview-no-fsmonitor "preview did not disable the Git filesystem monitor"; fi
 
     # A PATH containing only existing dependencies forces the numbered menu.
     local menubin="$d/menubin" cmd real
@@ -3401,7 +3453,8 @@ TITLE
         ln -s "$real" "$menubin/$cmd"
     done
     PATH="$menubin" _choose <<< '3'
-    if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ]; then _rl_pass chooser-numbered-menu
+    if [ "$rc" = 0 ] && [ "$(cat "$file")" = nord ] && _has "$(cat "$out")" 'Current: dracula (file)' \
+        && _has "$(cat "$out")" '● dracula (current)'; then _rl_pass chooser-numbered-menu
     else _rl_fail chooser-numbered-menu "numbered selection not saved"; fi
 
     # Both explicit dev override and the dev-dir file resolve the renderer.

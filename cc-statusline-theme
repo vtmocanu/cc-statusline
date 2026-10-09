@@ -33,9 +33,32 @@ valid() {
     for name in "${THEMES[@]}"; do [ "$1" = "$name" ] && return 0; done
     return 1
 }
+# Parse only leading shell assignments (optionally after env), without running
+# or expanding any part of the configured command. Text::ParseWords is core Perl.
+SETTINGS_THEME_SET=0; SETTINGS_THEME=""; REFRESH_INTERVAL=""
+load_settings() {
+    local command parsed
+    command=$(jq -r '.statusLine.command | strings' "$HOME/.claude/settings.json" 2>/dev/null || true)
+    parsed=$(printf '%s' "$command" | perl -MText::ParseWords=shellwords -e '
+        local $/; my $command = <STDIN> // "";
+        my @words = shellwords($command);
+        shift @words if @words && $words[0] =~ m{(?:^|/)env$};
+        my ($found, $value) = (0, "");
+        for my $word (@words) {
+            last unless $word =~ /^[A-Za-z_][A-Za-z0-9_]*=/;
+            if ($word =~ /^STATUSLINE_THEME=(.*)$/s) { ($found, $value) = (1, $1); }
+        }
+        print "1|$value" if $found;
+    ')
+    if [[ "$parsed" = 1\|* ]]; then SETTINGS_THEME_SET=1; SETTINGS_THEME="${parsed#*|}"; fi
+    REFRESH_INTERVAL=$(jq -r '.statusLine.refreshInterval | select(type == "number" and . > 0 and . == floor)' \
+        "$HOME/.claude/settings.json" 2>/dev/null || true)
+}
 current() {
     CURRENT_THEME=default; CURRENT_SOURCE=default
-    if [ "${STATUSLINE_THEME+x}" = x ]; then
+    if [ "$SETTINGS_THEME_SET" = 1 ]; then
+        CURRENT_THEME="$SETTINGS_THEME"; CURRENT_SOURCE=settings
+    elif [ "${STATUSLINE_THEME+x}" = x ]; then
         CURRENT_THEME="$STATUSLINE_THEME"; CURRENT_SOURCE="env"
     elif [ -f "$THEME_FILE" ]; then
         { IFS= read -r CURRENT_THEME <"$THEME_FILE"; } 2>/dev/null || true
@@ -43,11 +66,29 @@ current() {
     fi
     valid "$CURRENT_THEME" || CURRENT_THEME=default
 }
+source_label() {
+    case "$CURRENT_SOURCE" in
+        settings) printf 'settings override' ;;
+        env) printf 'shell env' ;;
+        *) printf '%s' "$CURRENT_SOURCE" ;;
+    esac
+}
+theme_label() {
+    if [ "$1" = "$CURRENT_THEME" ]; then printf '● %s (current)' "$1";
+    else printf '  %s' "$1"; fi
+}
 warn_override() {
-    local command
-    command=$(jq -r '.statusLine.command // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
-    if [[ "$command" =~ (^|[[:space:]])STATUSLINE_THEME= ]]; then
+    if [ "$SETTINGS_THEME_SET" = 1 ]; then
         printf 'warning: statusLine.command sets STATUSLINE_THEME and overrides the saved theme\n' >&2
+    fi
+}
+applies_message() {
+    if [ "$SETTINGS_THEME_SET" = 1 ]; then
+        printf 'Saved theme will not apply until STATUSLINE_THEME is removed from statusLine.command.\n'
+    elif [ -n "$REFRESH_INTERVAL" ]; then
+        printf 'Applies on the next redraw: immediately in active sessions, within %ss in idle ones\n' "$REFRESH_INTERVAL"
+    else
+        printf 'Applies on the next redraw: immediately in active sessions; idle sessions update on your next message\n'
     fi
 }
 PREVIEW_DIR=""; THEME_TMP=""
@@ -64,10 +105,14 @@ save() {
         printf 'error: could not save theme\n' >&2; return 1
     fi
     THEME_TMP=""
-    printf 'Theme: %s (saved, takes effect on the next render)\n' "$1"
+    printf 'Theme: %s (saved)\n' "$1"
+    applies_message
 }
 preview() {
     local theme heading="$1" rendered
+    # Preview repos must not inherit a persistent filesystem monitor.
+    local GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+    export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
     shift
     local -a selected=()
     if [ "$#" -eq 0 ]; then selected=("${THEMES[@]}"); else selected=("$@"); fi
@@ -118,14 +163,34 @@ preview() {
     done
 }
 picker() {
-    local choice command i
+    local choice command i current_pos=1 probe_rc header
+    current
+    header="Current: $CURRENT_THEME ($(source_label))"
+    for ((i=0; i<${#THEMES[@]}; i++)); do
+        [ "${THEMES[$i]}" != "$CURRENT_THEME" ] || current_pos=$((i+1))
+    done
     if command -v fzf >/dev/null 2>&1; then
-        printf -v command '%q --fzf-preview {}' "$SELF"
-        choice=$(printf '%s\n' "${THEMES[@]}" | fzf --prompt='Theme: ' --layout=reverse --preview-window=down,2,border-top,noinfo --preview="$command") || return 0
+        local -a bindings=()
+        # Filter mode validates the binding without opening a terminal. Older
+        # versions reject unsupported actions with 2; 0/1 mean a valid parser.
+        fzf --bind='load:pos(1)' --filter='' </dev/null >/dev/null 2>&1
+        probe_rc=$?
+        [ "$probe_rc" -gt 1 ] || bindings=("--bind=load:pos($current_pos)")
+        printf -v command '%q --fzf-preview {1}' "$SELF"
+        choice=$(
+            for name in "${THEMES[@]}"; do printf '%s\t%s\n' "$name" "$(theme_label "$name")"; done \
+                | fzf --prompt='Theme: ' --header="$header" --delimiter=$'\t' --with-nth=2.. \
+                    --layout=reverse --preview-window=down,2,border-top,noinfo --preview="$command" \
+                    ${bindings[@]+"${bindings[@]}"}
+        ) || return 0
+        choice="${choice%%$'\t'*}"
         [ -n "$choice" ] && save "$choice"
     else
+        printf '%s\n' "$header"
         preview 1 || return 1
-        for ((i=0; i<${#THEMES[@]}; i++)); do printf '%d) %s\n' "$((i+1))" "${THEMES[$i]}"; done
+        for ((i=0; i<${#THEMES[@]}; i++)); do
+            printf '%d) %s\n' "$((i+1))" "$(theme_label "${THEMES[$i]}")"
+        done
         printf 'Choose a theme number (empty to cancel): ' >&2
         IFS= read -r choice || return 0
         [ -n "$choice" ] || return 0
@@ -135,18 +200,18 @@ picker() {
         printf 'error: invalid theme number\n' >&2; return 2
     fi
 }
-[ "${1:-}" = --fzf-preview ] || warn_override
+if [ "${1:-}" != --fzf-preview ]; then load_settings; warn_override; fi
 case "${1:-}" in
     '') picker ;;
     current) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current; printf '%s (%s)\n' "$CURRENT_THEME" "$CURRENT_SOURCE" ;;
     list)
         [ "$#" -eq 1 ] || { usage >&2; exit 2; }; current
         for name in "${THEMES[@]}"; do
-            if [ "$name" = "$CURRENT_THEME" ]; then printf '* %s\n' "$name"; else printf '  %s\n' "$name"; fi
+            printf '%s\n' "$(theme_label "$name")"
         done
         ;;
     set) [ "$#" -eq 2 ] || { usage >&2; exit 2; }; save "$2" ;;
-    reset) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; rm -f "$THEME_FILE" || exit 1; printf 'Saved theme removed\n' ;;
+    reset) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; rm -f "$THEME_FILE" || exit 1; printf 'Saved theme removed\n'; applies_message ;;
     preview) shift; preview 1 "$@" ;;
     --fzf-preview) [ "$#" -eq 2 ] || exit 2; preview 0 "$2" ;;
     *) usage >&2; exit 2 ;;
