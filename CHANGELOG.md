@@ -6,6 +6,14 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v3.7.0] - 2026-10-09
+
+Themes are here. The default is now `tokyo-auto` (Tokyo Night, or Tokyo Day when the OS is in light mode). Pick a theme with `cc-statusline-theme`; run `cc-statusline-theme set classic` for the previous look. Users with `~/.claude/statusline-color-overrides.json` and no theme chosen keep `classic` automatically.
+
+### Added
+- Packaged `cc-statusline-theme` chooser with real renderer previews, an optional fzf picker, numbered-menu fallback, and `list`, `set`, `reset`, `preview`, and `current` commands. Choices are saved atomically under the XDG config directory and take effect on the next render; an explicit `STATUSLINE_THEME` overrides the file.
+- Selectable themes via `STATUSLINE_THEME`: `classic`, `hue-dark`, `nord`, `phosphor`, `synthwave`, `tokyo-night`, `tokyo-day`, `tokyo-auto`, `gruvbox`, `dracula`, `catppuccin`, and the `default` alias. Classic preserves the original output byte for byte. Project color overrides apply only to `classic` and `hue-dark`; every theme retains adaptive wide/phone layouts and distinct status alerts.
+
 ### Changed
 - Session descriptions remember the last auto title across a user rename, using a private per-session cache without transcript reads. Descriptions matching the visible handle are hidden case-insensitively; uncached renamed sessions show only the handle.
 - Synthwave uses the bright neon pink/purple/cyan gradient, bold white text and light lilac separators. Fixed service glyphs keep their alert colors on a dark cell for contrast. Picker previews use the same resolved appearance as their Auto hint.
@@ -15,10 +23,6 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - `install.sh` could fail intermittently with a Git archive error under `pipefail` when tar closed the streaming pipe early. The archive is now written to a private temporary file and extracted in a separate step.
-
-### Added
-- Packaged `cc-statusline-theme` chooser with real renderer previews, an optional fzf picker, numbered-menu fallback, and `list`, `set`, `reset`, `preview`, and `current` commands. Choices are saved atomically under the XDG config directory and take effect on the next render; an explicit `STATUSLINE_THEME` overrides the file.
-- Selectable themes via `STATUSLINE_THEME`: `classic`, `hue-dark`, `nord`, `phosphor`, `synthwave`, `tokyo-night`, `tokyo-day`, `tokyo-auto`, `gruvbox`, `dracula`, `catppuccin`, and the `default` alias. Classic preserves the original output byte for byte. Project color overrides apply only to `classic` and `hue-dark`; every theme retains adaptive wide/phone layouts and distinct status alerts.
 
 ## [v3.6.0] - 2026-10-04
 
@@ -352,7 +356,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.7.0...HEAD
+[v3.7.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.6.0...v3.7.0
 [v3.6.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.1...v3.6.0
 [v3.5.1]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.0...v3.5.1
 [v3.5.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.4.1...v3.5.0
