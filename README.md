@@ -12,8 +12,8 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 
 ## Features
 
-- **Two-line layout** with project-colored top line and dark bottom line
-- **Per-project background color** (12-color palette, hashed from session/cwd, manually overridable)
+- **Selectable themes** with adaptive two-line layouts; Tokyo Auto follows OS appearance, and Classic preserves the original look
+- **Per-project colors** in Classic and Hue Dark (12-color palette, hashed from session/cwd, manually overridable)
 - **Git info**: branch, staged/modified/untracked counts
 - **Kubernetes context**: current `kubectl` context (with timeout to avoid exec-auth hangs)
 - **Session metrics**: model name, effort level (low/medium/high/xhigh/max, the live session value Claude Code reports), elapsed time, Claude session cost in USD, or a GPT-5.6 Sol ChatGPT credit-equivalent estimate (`211.29 cr`, compacted to `2.07k cr` at four digits)
@@ -30,7 +30,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - **Sessions in this repo**: after the `@handle` on line 1 when another Claude Code session works in the same repository, a repo-wide count of every session by state (`⚙` busy, `◷` background shells running, `?` waiting on your answer, `○` idle), with the count your own session belongs to bracketed; disable with `STATUSLINE_PEERS=0`
 - **Session name (`@handle`)**: the addressable name other Claude sessions use to message this one (Claude Code's per-session registry), shown first on line 1; on by default, hide with `STATUSLINE_SESSION_NAME=0`
 - **Session title**: Claude Code's native session name (its `/rename` value or auto-generated title, from `.session_name`) as a descriptive label after the handle; hide with `STATUSLINE_TOPIC=0`
-- **Tab title**: sets the terminal tab title from the session title or directory
+- **Tab title**: sets the terminal tab title from the session title or directory; disable with `STATUSLINE_TAB_TITLE=0`
 - **Width-aware truncation**: K8s context, branch, title, and name shrink first to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2
 
 ## Requirements
@@ -41,6 +41,7 @@ A two-line, ANSI-colored statusline for [Claude Code](https://claude.com/claude-
 - `perl` (for ANSI-aware width measurement)
 - `curl` (for service status)
 - GNU `timeout` (coreutils; not stock on macOS)
+- Optional: [`fzf`](https://github.com/junegunn/fzf) for the interactive theme picker with live previews
 - Optional: a recent official [`codex`](https://github.com/openai/codex) CLI logged in with ChatGPT for `STATUSLINE_GPT_LIMITS=1`
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal for the icons
 
@@ -80,13 +81,16 @@ The install puts `cc-statusline` on your PATH, declares the dependencies, and pr
 }
 ```
 
+Choose a theme with `cc-statusline-theme` (see [Themes](#themes)). The chooser is included in the install.
+
 Upgrades are just `brew upgrade cc-statusline`; no settings change across versions.
 
-Hacking on a clone while keeping the brew setup? Write your working-tree path to `~/.config/cc-statusline/dev-dir` and the `cc-statusline` wrapper runs that copy instead (delete the file to switch back):
+Hacking on a clone while keeping the brew setup? The wrapper reads a working-tree path from `${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/dev-dir`; delete that file to return to the installed copy:
 
 ```bash
-mkdir -p ~/.config/cc-statusline
-echo ~/src/cc-statusline > ~/.config/cc-statusline/dev-dir
+D="${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline"
+mkdir -p "$D"
+printf '%s\n' ~/src/cc-statusline > "$D/dev-dir"
 ```
 
 ### install.sh (any platform, no Homebrew)
@@ -98,6 +102,8 @@ cd cc-statusline
 ```
 
 The installer extracts the chosen ref via `git archive` (so it never mutates your working tree), copies the scripts into `~/.local/share/cc-statusline/`, and prints the JSON snippets you need to paste into `~/.claude/settings.json`.
+
+Choose a theme with `~/.local/share/cc-statusline/cc-statusline-theme`, or the same filename under your custom install prefix (see [Themes](#themes)).
 
 To pin a specific release:
 
@@ -133,13 +139,15 @@ If you'd rather skip `install.sh`, point `statusLine.command` directly at your c
 
 `refreshInterval` (seconds) re-runs the statusline on a timer in addition to activity-driven updates, so idle sessions keep fresh rate-limit reset times, service health, and usage bars. It requires a recent Claude Code version; remove the line to update only on activity. Rate-limit bars specifically stay fresh across *all* your sessions, not just the one being refreshed: each render shares the freshest known account-wide values with the others via a small per-user cache (`STATUSLINE_RL_SHARE=0` to disable). The cache is keyed per account: sessions launched with `CLAUDE_CODE_OAUTH_TOKEN=... claude` get their own cache file (keyed by a hash of the token, never the token itself), so different accounts never see each other's bars.
 
+The clone also includes the chooser: `bash /absolute/path/to/cc-statusline/cc-statusline-theme`.
+
 No hook is needed for the session name or title: line 1 reads both from Claude Code directly (the `@handle` from its per-session registry, the descriptive title from the `.session_name` payload field).
 
 ## Configuration
 
 ### Color overrides
 
-By default each project gets a hashed color from a 12-color palette. To pin a project to a specific color, create `~/.claude/statusline-color-overrides.json`:
+`classic` and `hue-dark` give each project a hashed color from a 12-color palette. To pin a project to a specific color, create `~/.claude/statusline-color-overrides.json`:
 
 ```json
 {
@@ -155,6 +163,8 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STATUSLINE_THEME` | `tokyo-auto` | Select a built-in theme (see Themes below). Overrides the saved theme file; unknown or empty values use `tokyo-auto`. `default` is an alias for `tokyo-auto`. |
+| `CC_STATUSLINE_APPEARANCE` | auto | Force `dark` or `light` for Tokyo Auto, useful for previews and tests. |
+| `CC_STATUSLINE_APPEARANCE_CACHE` | private state dir | Override the appearance cache path for tests or integrations. |
 | `STATUSLINE_WIDTH` | `110` | Maximum visible columns per line, and a hard cap: when Claude Code reports a narrower viewport (see below), the render follows the viewport instead. Lower this if you see line 2 disappearing. |
 | `STATUSLINE_LAYOUT` | `auto` | `phone` or `wide` forces a layout; `auto` picks from the reported viewport width. |
 | `STATUSLINE_PHONE_COLS` | `60` | Viewport width below which `auto` always selects the phone layout. Above it, `auto` still falls back to phone when the wide line 2 measurably does not fit (see below). |
@@ -163,6 +173,7 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `STATUSLINE_CTX` | `1` | Set to `0` to hide the context-fill segment (`ctx NN%`) on the phone/slim layout's line 2. Shown before the rate limits with the same color thresholds; the first line-2 segment to shed as the viewport tightens. The wide layout's context readout is unaffected. |
 | `STATUSLINE_SESSION_NAME` | `1` | Set to `0` to hide the `@handle` (the addressable session name peers message, read from Claude Code's per-session registry) at the start of line 1. |
 | `STATUSLINE_PEERS` | `1` | Set to `0` to hide the repo-wide session counts after the `@handle` on line 1 (see [Sessions in this repo](#sessions-in-this-repo)). |
+| `STATUSLINE_TAB_TITLE` | `1` | Set to `0` to skip the terminal tab-title write to `/dev/tty`. |
 | `STATUSLINE_TOPIC` | `1` | Set to `0` to hide the descriptive session title on line 1 (Claude Code's `/rename` value or auto-generated title, from the `.session_name` payload field). |
 | `STATUSLINE_GITHUB_STATUS` | `1` | Set to `0` to hide the GitHub service-status icon on line 1 after the branch (same glyphs/colors as the Claude icon). Shown only when the current repo has a `github.com` remote; polls `githubstatus.com` every 60s in the background. |
 | `STATUSLINE_HYPERLINKS` | `1` | Set to `0` to disable the OSC 8 hyperlinks on the service-status icons (GitHub plus the active Claude/OpenAI provider). Needs a terminal that supports OSC 8 (Ghostty, iTerm2, Kitty, WezTerm); elsewhere the escape is swallowed and the icon shows as plain text. |
@@ -188,35 +199,48 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 
 ### Themes
 
-Run the packaged chooser to change themes on the next render:
+Run `cc-statusline-theme` to choose interactively. With optional fzf, the
+choices sit above a full-width live preview of the two statusline rows. The
+current theme is marked and selected initially when fzf supports it. Without
+fzf, the chooser shows previews and a numbered menu.
 
 ```bash
-cc-statusline-theme                  # fzf picker, or numbered menu
-cc-statusline-theme preview          # isolated previews of every theme
-cc-statusline-theme set tokyo-night
-cc-statusline-theme current          # theme and source (settings, env, file, or default)
-cc-statusline-theme list
-cc-statusline-theme reset
+cc-statusline-theme                  # choose interactively
+cc-statusline-theme list             # list themes and mark the current choice
+cc-statusline-theme current          # show the theme, resolved variant and source
+cc-statusline-theme set classic      # restore the original look
+cc-statusline-theme reset            # remove the saved choice
+cc-statusline-theme preview          # preview every theme
+cc-statusline-theme preview tokyo-day # preview one theme
 ```
 
-The chooser ships with Homebrew. With `install.sh`, run it from the install
-directory (normally `~/.local/share/cc-statusline/cc-statusline-theme`). fzf is
-optional; previews use the actual renderer with sample data and isolated caches,
-without network fetches. The chooser honors the same dev override as the statusline.
+Homebrew puts the chooser on PATH. With `install.sh`, use
+`~/.local/share/cc-statusline/cc-statusline-theme` (or your custom prefix).
+For a manual clone, use `bash /absolute/path/to/cc-statusline/cc-statusline-theme`.
+Previews use the actual renderer with isolated sample data and caches, without
+network fetches or terminal tab-title changes. The chooser honors the same dev
+override as the statusline.
 
-The saved choice lives in
-`${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme`. The first line is read
-and whitespace removed. Selection precedence is `STATUSLINE_THEME` environment,
-then the saved file, then `tokyo-auto`. Unknown or empty values select `tokyo-auto`.
-`default` is an alias for `tokyo-auto`. With no explicit choice, an existing
-color-overrides file retains `classic`.
-An environment value, even empty or unknown, overrides the file. The chooser
-warns when `statusLine.command` in `~/.claude/settings.json` sets that variable.
-`current` also recognizes a leading `STATUSLINE_THEME` assignment in that
-command (optionally after `env`), which takes precedence over the chooser's
-shell environment. It never evaluates or expands the command.
+Choices are saved atomically to
+`${XDG_CONFIG_HOME:-$HOME/.config}/cc-statusline/theme` and apply on the next
+redraw: immediately in active sessions, or at your configured
+`statusLine.refreshInterval` in idle sessions. Without a refresh interval, idle
+sessions update on your next message. Keep your existing refresh interval.
 
-You can also set `STATUSLINE_THEME` in your statusline command, for example:
+An explicit `STATUSLINE_THEME` assignment in `statusLine.command` wins over the
+saved file. The chooser recognizes leading literal assignments, optionally
+following `env`, without evaluating or expanding the command. Its own shell
+`STATUSLINE_THEME` is next, then the saved file, then `tokyo-auto`. The chooser
+shows that source and warns when settings prevent a saved choice from applying.
+Unknown or empty choices use `tokyo-auto`; `default` is an alias for it. With no
+explicit choice, an existing color-overrides file retains `classic`.
+
+`tokyo-auto` follows the host OS appearance, selecting `tokyo-night` or
+`tokyo-day`; it does not inspect the terminal background. Appearance is cached
+for 60 seconds and refreshed on a subsequent redraw. Missing tools and failed
+probes fall back to Night. `current` and the picker show the resolved variant.
+
+You can also select a theme directly in your statusline command:
 
 ```bash
 STATUSLINE_THEME=tokyo-night cc-statusline
@@ -326,7 +350,7 @@ When more than one Claude Code session works in the same repository, line 1 show
 
 Zero counts are left out, and the whole segment is hidden when a session is alone in its repo. The count your own session belongs to is bracketed (`[⚙N]`, `[◷N]` or `[○N]`), so each session shows where it stands; it is never counted as `?`, since you are already looking at it. "Same repo" follows `git worktree list`, so sessions in linked worktrees at other paths count too. Codex threads attached as session peers are not counted; they are Codex runs, not Claude Code sessions.
 
-The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Every session in the repo shows the same total, but not always the same split: a session waiting on you counts itself as `○` while the others count it as `?`, so with two idle sessions where only A asked something, A shows `[○2]` and B shows `?1 [○1]`. Each statusline also counts at its own redraw, so two sessions can briefly disagree by one; set `refreshInterval` on your `statusLine` so idle sessions redraw (60 seconds is plenty). Counts follow the directory and branch on phones. When space runs out, counts are dropped whole after Kubernetes context on wide layouts and first on phones. Only the upgrade notice stays right-aligned. Disable with `STATUSLINE_PEERS=0`.
+The states come from Claude Code's per-session registry (`~/.claude/sessions/*.json`, the same internal file the `@handle` uses), and `?` is a hint read from the end of each idle session's transcript, not a guarantee. Every session in the repo shows the same total, but not always the same split: a session waiting on you counts itself as `○` while the others count it as `?`, so with two idle sessions where only A asked something, A shows `[○2]` and B shows `?1 [○1]`. Each statusline counts at its own redraw, so two sessions can briefly disagree by one. Idle counts update at the configured `refreshInterval`, or on your next message when it is absent. Counts follow the directory and branch on phones. When space runs out, counts are dropped whole after Kubernetes context on wide layouts and first on phones. Only the upgrade notice stays right-aligned. Disable with `STATUSLINE_PEERS=0`.
 
 ### Per-account usage fetcher
 

@@ -63,6 +63,8 @@ _appearance() {
     case "${CC_STATUSLINE_APPEARANCE:-}" in
         dark|light) APPEARANCE="$CC_STATUSLINE_APPEARANCE"; return ;;
     esac
+    # Mirror _state_dir with readonly UID to avoid id/mkdir/chmod on hot reads.
+    # Keep this default path in sync with _state_dir when changing its layout.
     local cache="${CC_STATUSLINE_APPEARANCE_CACHE:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cc-statusline-${UID}/appearance}"
     local record="" extra="" stamp now="${NOW:-}" os answer rc=0 tmp parent
     if [ -z "$now" ]; then

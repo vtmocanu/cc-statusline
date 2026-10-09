@@ -38,6 +38,7 @@ cc-statusline/
 │   └── statusline-color-overrides.json  Template for ~/.claude/statusline-color-overrides.json
 ├── tests/
 │   ├── run-tests.sh                  Test harness (perl-based ANSI-aware width measurement)
+│   ├── run-install-tests.sh          Deterministic archive/SIGPIPE regression, run by test-fetch in both locales
 │   └── fixtures/*.json               Mock JSON inputs for normal, edge-case, width, model, and session-name renders
 ├── Taskfile.yml                      Validation tasks (shell:* from vtmocanu/task, test, test-c-locale, test-fetch, ci); used locally and by CI
 ├── .github/workflows/ci.yml          GitHub Actions CI: runs the Taskfile tasks on push/PR
@@ -67,7 +68,7 @@ task shell:syntax    # 1. bash -n on all scripts
 task shell:lint      # 2. shellcheck -x -S warning (matches CI)
 task test            # 3. test harness (tests/run-tests.sh)
 task test-c-locale   # 4. test harness under LC_ALL=C (catches wc-m / bash-string-length issues)
-task test-fetch      # 5. fetcher tests (status, usage, GPT credits, update check), in both locales
+task test-fetch      # 5. fetcher and installer tests, in both locales
 ```
 
 The `shell:` tasks come from the reusable `shell.yml` in [github.com/vtmocanu/task](https://github.com/vtmocanu/task): the local checkout at `~/stuff/gitrepos/gh/vtmocanu/task` when developing, the public raw URL in CI (with `TASK_X_REMOTE_TASKFILES=1` and `task --yes`).
@@ -257,6 +258,7 @@ Do NOT conflate the two: `.session_name` is the *title*, never the addressable h
 ## What NOT to do
 
 - **Don't add `Co-Authored-By: Claude` trailers** to commits. The maintainer prefers clean attribution.
+- **Do not change the installed `refreshInterval` during theme work or recommend lowering it.** Theme choices apply on the next redraw; report the existing interval.
 - **Don't use em dashes** in commit messages, code comments, or docs. Prefer commas, colons, or hyphens.
 - **Don't reintroduce a bash width *estimate*.** Width is now measured with `measure_cols` before truncation (the deliberate v2.4.0 rebuild). If you touch truncation, keep it measurement-driven, re-validate every path in both locales, and keep `WIDTH_SLOP=0`. Don't paper over an overflow by bumping `WIDTH_SLOP` or `WIDE_GLYPH_MARGIN`.
 - **Don't wrap truncation-ladder text in OSC 8 hyperlinks, and don't let `measure_cols` count them.** Since v3.1.0 the service-status glyphs are clickable via OSC 8 (`STATUSLINE_HYPERLINKS`, default on). Two invariants hold this together: (1) `measure_cols` (and the harness's `vis_cols`/`_strip_ansi`) strip the OSC 8 wrapper so a hyperlinked glyph stays zero-width, matching what a terminal renders. If you add a new escape family, teach both strippers or the width math will over-count by the URL length. (2) Only fixed glyphs (the status icons) are ever wrapped, never a component the truncation ladder can slice (`DIR`/`BRANCH`/`TOPIC`/`SESSION_HANDLE`/…) or `_head_cp`/`_tail_cp` would cut mid-escape and emit a broken link.
