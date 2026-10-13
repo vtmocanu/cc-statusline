@@ -176,6 +176,18 @@ eval "$(echo "$DATA" | jq -r '
         else 0 end
     ) catch 0)",
     @sh "CTX_SIZE=\(.context_window.context_window_size // 200000)",
+    @sh "CTX_SRC=\(try (
+        .context_window as $c | $c.remaining_percentage as $r
+        | if ($r | type) == "number" then (if $r >= 0 and $r <= 100 then "native" else "unknown" end)
+          elif $r != null then "unknown"
+          elif ($c.context_window_size | type == "number" and . > 0) and ($c.current_usage | type == "object")
+               and ([$c.current_usage | .input_tokens, .cache_creation_input_tokens, .cache_read_input_tokens]
+                    | all(. == null or type == "number")) then "tokens"
+          else "unknown" end
+    ) catch "unknown")",
+    @sh "CTX_SIZE_EXP=\(.context_window.context_window_size
+        | if type == "number" and . > 0 and . < 1e9 and . == floor then tostring else "" end)",
+    @sh "CC_VERSION=\(.version | if type == "string" then . else "" end)",
     @sh "CTX_SHAPE=\(try (
         .context_window as $c | ($c.current_usage) as $u
         | if $u == null then "null"
@@ -231,6 +243,7 @@ CTX_SIZE=$(_gate_int "${CTX_SIZE:-200000}" 200000)
 DURATION_MS=$(_gate_int "${DURATION_MS:-0}" 0)
 AGENT=${AGENT:-}; MODE=${MODE:-}; TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-}; EFFORT_IN=${EFFORT_IN:-}
 CWD_FULL=${CWD_FULL:-~}; SESSION_ID=${SESSION_ID:-}; MODEL_ID=${MODEL_ID:-}
+CTX_SRC=${CTX_SRC:-unknown}; CTX_SIZE_EXP=${CTX_SIZE_EXP:-}; CC_VERSION=${CC_VERSION:-}
 EFFECTIVE_MODEL_ID="$MODEL_ID"
 SESSION_TITLE=${SESSION_TITLE:-}
 PC_OBS=${PC_OBS:-}; PC_WARM=${PC_WARM:-}; PC_TTL=${PC_TTL:-}
@@ -830,6 +843,64 @@ esac
 # test harness). Used by format_reset and pace_arrow.
 _NOW_REAL=$(date +%s)
 NOW=$(_gate_int "${CC_STATUSLINE_NOW:-$_NOW_REAL}" "$_NOW_REAL")
+
+# ── Context export (opt-in, STATUSLINE_CTX_EXPORT=1) ────────────────────────
+# One private JSON record per session for other local tools (README "Context
+# export" documents the schema; keep it stable and bump "v" on a breaking
+# change). Written every render, so ts is publication time and keeps advancing
+# on refreshInterval redraws while idle. used_pct is the displayed value;
+# source says whether it was measured (native/tokens), re-shown by the GPT
+# hold (held) or a display default (unknown). Every string is charset-gated
+# before it reaches printf, so no JSON escaping is needed; a value that fails
+# its gate is written as "" (or null). Synchronous local write: printf plus
+# one mv in a subshell with umask 077, failures silent, no record on any miss,
+# plus a once-a-day foreground sweep of records older than seven days.
+#   CC_STATUSLINE_CTX_EXPORT_DIR   override the directory (test isolation)
+if [ "${STATUSLINE_CTX_EXPORT:-0}" = "1" ] && [[ "$SESSION_ID" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+    _CX_BASE="${XDG_STATE_HOME:-}"
+    [[ "$_CX_BASE" == /* ]] || _CX_BASE="$HOME/.local/state"
+    _CX_DIR="${CC_STATUSLINE_CTX_EXPORT_DIR:-${_CX_BASE%/}/cc-statusline/ctx}"
+    _CX_SRC="$CTX_SRC"; _CX_STALE=false
+    [ "$CTX_STALE" = "1" ] && { _CX_SRC=held; _CX_STALE=true; }
+    _CX_TOK=null
+    case "$_CX_SRC" in native|tokens)
+        if [[ "$CTX_USAGE" =~ ^([0-9]{1,15})\ ([0-9]{1,15})\ ([0-9]{1,15})$ ]]; then
+            _CX_TOK=$((10#${BASH_REMATCH[1]} + 10#${BASH_REMATCH[2]} + 10#${BASH_REMATCH[3]}))
+        fi ;;
+    esac
+    _CX_SIZE="${CTX_SIZE_EXP:-null}"
+    _CX_MID=""; [[ "$MODEL_ID" =~ $_CTX_MODEL_RE ]] && _CX_MID="$MODEL_ID"
+    _CX_EID=""; [[ "$EFFECTIVE_MODEL_ID" =~ $_CTX_MODEL_RE ]] && _CX_EID="$EFFECTIVE_MODEL_ID"
+    _CX_VER=""; [[ "$CC_VERSION" =~ ^[0-9A-Za-z.+-]{1,32}$ ]] && _CX_VER="$CC_VERSION"
+    (
+        umask 077
+        _f="$_CX_DIR/$SESSION_ID.json"; _t="$_f.tmp.$$"
+        trap 'rm -f "$_t"' EXIT
+        { [ -d "$_CX_DIR" ] || mkdir -p "$_CX_DIR"; } \
+            && printf '{"v":1,"session_id":"%s","used_pct":%s,"used_tokens":%s,"context_window_size":%s,"source":"%s","stale":%s,"ts":%s,"model_id":"%s","effective_model_id":"%s","cc_version":"%s"}\n' \
+                "$SESSION_ID" "$PCT" "$_CX_TOK" "$_CX_SIZE" "$_CX_SRC" "$_CX_STALE" "$NOW" \
+                "$_CX_MID" "$_CX_EID" "$_CX_VER" >"$_t" \
+            && mv -f "$_t" "$_f" || exit
+        # Daily GC, best effort, after this session's record is published.
+        # The .gc stamp (an epoch) throttles sweeps to about one a day; it is
+        # written before sweeping, so a failed sweep waits a day, and two
+        # renders racing past an expired stamp merely sweep twice. Retention
+        # is find's -mtime +7 (at least seven days; BSD and GNU round the
+        # boundary differently). A sweep can race a record being refreshed
+        # at that instant and delete it; the next render rewrites it.
+        _s=""
+        { IFS= read -r _s <"$_CX_DIR/.gc"; } 2>/dev/null
+        if ! [[ "$_s" =~ ^[0-9]{1,12}$ ]] || [ "$((10#$_s))" -gt "$NOW" ] \
+            || [ "$((NOW - 10#$_s))" -ge 86400 ]; then
+            _t="$_CX_DIR/.gc.tmp.$$"
+            printf '%s\n' "$NOW" >"$_t" && mv -f "$_t" "$_CX_DIR/.gc" \
+                && cd "$_CX_DIR" \
+                && find . -mindepth 1 -maxdepth 1 -type f ! -name "$SESSION_ID.json" \
+                    \( -name '*.json' -mtime +7 -o \( -name '*.json.tmp.*' -o -name '.gc.tmp.*' \) -mmin +60 \) \
+                    -delete
+        fi
+    ) 2>/dev/null || true
+fi
 
 TOPIC=""  # populated from the native session title (SESSION_TITLE) below
 

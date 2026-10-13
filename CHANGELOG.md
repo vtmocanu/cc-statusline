@@ -6,6 +6,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Opt-in context export (`STATUSLINE_CTX_EXPORT=1`): each render atomically writes a private per-session JSON record (context fill, measured tokens, window size, whether the value is native, computed, held or a default, timestamp, model and Claude Code version) under `${XDG_STATE_HOME:-~/.local/state}/cc-statusline/ctx/`, for other local tools. Schema documented in the README. Records not rewritten for at least seven days are pruned by a best-effort sweep at most about once a day.
+
 ## [v3.7.0] - 2026-10-09
 
 Themes are here. The default is now `tokyo-auto` (Tokyo Night, or Tokyo Day when the OS is in light mode). Pick a theme with `cc-statusline-theme`; run `cc-statusline-theme set classic` for the previous look. Users with `~/.claude/statusline-color-overrides.json` and no theme chosen keep `classic` automatically.

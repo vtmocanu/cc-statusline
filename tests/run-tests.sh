@@ -77,6 +77,10 @@ export CC_STATUSLINE_UPDATE_FETCH="$SCRATCH/no-such-update-fetcher.sh"
 # context-hold tests below point each case at its own path.
 export CC_STATUSLINE_CTX_CACHE="$SCRATCH/ctx-snapshot"
 export CC_STATUSLINE_TITLE_CACHE="$SCRATCH/session-titles"
+# Context export: off unless a test enables it (Claude Code may export the
+# toggle into this shell), and never the real XDG state dir.
+unset STATUSLINE_CTX_EXPORT
+export CC_STATUSLINE_CTX_EXPORT_DIR="$SCRATCH/ctx-export"
 
 # Pin the clock so rate-limit reset countdowns and pace arrows are
 # deterministic across runs and locales. Fixtures with future resets_at are
@@ -3026,6 +3030,204 @@ context_hold_tests() {
     _ctx_pos $S $M $W pos21; _ctx_expect ctx-write-fail-seed 21 0 present
     _ctx_pos $S $M $W pos10 PATH="$failbin:$PATH"; _ctx_expect ctx-write-fail-drops-old 10 0 absent
     _ctx_run "$(_ctx_json $S $M "$tr" $W zero)"; _ctx_expect ctx-write-fail-then-zero 0 0 absent
+
+    # 12. Context export marks a held value as held/stale and never pairs it
+    #     with the transient zero counters; the next native frame is fresh.
+    local xd="$d/export" xf="$d/export/$S.json"
+    _ctx_case export-held
+    _ctx_pos $S $M $W pos21 STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$xd"
+    _ctx_run "$(_ctx_json $S $M "$tr" $W zero)" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$xd"
+    _ctx_expect ctx-export-held-render 21 1 present
+    if jq -e '.used_pct == 21 and .source == "held" and .stale == true and .used_tokens == null and .context_window_size == 872000 and .effective_model_id == "gpt-6.1-sol"' "$xf" >/dev/null 2>&1; then
+        _rl_pass ctx-export-held
+    else _rl_fail ctx-export-held "record: $(cat "$xf" 2>/dev/null)"; fi
+    _ctx_run "$(_ctx_json $S $M "$tr" $W pos21)" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$xd"
+    if jq -e '.used_pct == 21 and .source == "native" and .stale == false and .used_tokens == 181000' "$xf" >/dev/null 2>&1; then
+        _rl_pass ctx-export-held-recovered
+    else _rl_fail ctx-export-held-recovered "record: $(cat "$xf" 2>/dev/null)"; fi
+}
+
+# ── Context export tests ───────────────────────────────────────────────────
+# STATUSLINE_CTX_EXPORT=1 writes one private JSON record per session (README
+# "Context export"). Off by default; the render contract (2 lines, exit 0,
+# empty stderr) holds on every failure path, and a failed publication never
+# replaces or corrupts the previous record.
+ctx_export_tests() {
+    printf '\n'
+    printf 'Context export tests\n'
+    printf '%s\n' "------------------------------------------------------------"
+
+    local d="$SCRATCH/ctxexport" out err rc reason f json mode i
+    mkdir -p "$d"
+    out="$d/out"; err="$d/err"
+    _cx_json() {  # sid context_window-json-or-empty [model id] [version]
+        printf '{"version":"%s","model":{"display_name":"Opus","id":"%s"},"cwd":"/home/test/cx","session_id":"%s"%s}' \
+            "${4:-2.1.296}" "${3:-claude-opus-5-5}" "$1" "${2:+,\"context_window\":$2}"
+    }
+    local NATIVE='{"remaining_percentage":58.4,"used_percentage":41.6,"context_window_size":1000000,"current_usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":20,"cache_read_input_tokens":415000}}'
+    local TOKENS='{"context_window_size":200000,"current_usage":{"input_tokens":1000,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":49000}}'
+    _cx_run() {  # <json> [env...]
+        local json="$1"; shift
+        ( cd "$SCRATCH" && printf '%s' "$json" | env "$@" bash "$STATUSLINE" ) >"$out" 2>"$err"
+        rc=$?
+    }
+    _cx_contract() {  # name: render contract after _cx_run
+        local lines
+        lines=$(wc -l <"$out" | tr -d ' ')
+        reason=""
+        if [ "$rc" -ne 0 ]; then reason="exit $rc"
+        elif [ -s "$err" ]; then reason="non-empty stderr: $(head -1 "$err")"
+        elif [ "$lines" -ne 2 ]; then reason="expected 2 lines, got $lines"; fi
+        if [ -z "$reason" ]; then _rl_pass "$1"; else _rl_fail "$1" "$reason"; fi
+    }
+    _cx_check() {  # name file jq-filter: the record parses and the filter holds
+        if [ -f "$2" ] && jq -e "$3" "$2" >/dev/null 2>&1; then _rl_pass "$1"
+        else _rl_fail "$1" "record: $(head -c 300 "$2" 2>/dev/null || echo missing)"; fi
+    }
+
+    # 1. Off by default (and for any value but 1): nothing is created.
+    _cx_run "$(_cx_json cx-off "$NATIVE")" XDG_STATE_HOME="$d/off" CC_STATUSLINE_CTX_EXPORT_DIR=
+    _cx_contract ctx-export-off-render
+    _cx_run "$(_cx_json cx-off "$NATIVE")" STATUSLINE_CTX_EXPORT=true XDG_STATE_HOME="$d/off" CC_STATUSLINE_CTX_EXPORT_DIR=
+    if [ ! -e "$d/off" ]; then _rl_pass ctx-export-off-default
+    else _rl_fail ctx-export-off-default "created $(find "$d/off" | head -3)"; fi
+
+    # 2. Native reading at the default XDG path: full schema, private modes.
+    _cx_run "$(_cx_json cx-native "$NATIVE")" STATUSLINE_CTX_EXPORT=1 XDG_STATE_HOME="$d/state" \
+        CC_STATUSLINE_CTX_EXPORT_DIR= CC_STATUSLINE_NOW=1700000123
+    _cx_contract ctx-export-native-render
+    f="$d/state/cc-statusline/ctx/cx-native.json"
+    _cx_check ctx-export-native-record "$f" '. == {"v":1,"session_id":"cx-native","used_pct":42,"used_tokens":415030,"context_window_size":1000000,"source":"native","stale":false,"ts":1700000123,"model_id":"claude-opus-5-5","effective_model_id":"claude-opus-5-5","cc_version":"2.1.296"}'
+    if [ "$(wc -l <"$f" | tr -d ' ')" = "1" ]; then _rl_pass ctx-export-one-line
+    else _rl_fail ctx-export-one-line "not one line"; fi
+    mode="$(ls -l "$f" | cut -c1-10) $(ls -ld "$d/state/cc-statusline/ctx" | cut -c1-10) $(ls -ld "$d/state/cc-statusline" | cut -c1-10)"
+    if [ "$mode" = "-rw------- drwx------ drwx------" ]; then _rl_pass ctx-export-modes
+    else _rl_fail ctx-export-modes "modes: $mode"; fi
+    if [ -z "$(find "$d/state" -name '*.tmp.*')" ]; then _rl_pass ctx-export-no-tmp
+    else _rl_fail ctx-export-no-tmp "leftover tmp"; fi
+
+    # 3. ts is publication time: an unchanged reading still advances it.
+    _cx_run "$(_cx_json cx-native "$NATIVE")" STATUSLINE_CTX_EXPORT=1 XDG_STATE_HOME="$d/state" \
+        CC_STATUSLINE_CTX_EXPORT_DIR= CC_STATUSLINE_NOW=1700000200
+    _cx_check ctx-export-ts-advances "$f" '.ts == 1700000200 and .used_pct == 42'
+
+    # 4. A relative XDG_STATE_HOME is invalid per the spec: HOME/.local/state.
+    _cx_run "$(_cx_json cx-rel "$NATIVE")" STATUSLINE_CTX_EXPORT=1 XDG_STATE_HOME=relative/state \
+        CC_STATUSLINE_CTX_EXPORT_DIR=
+    _cx_check ctx-export-relative-xdg "$HOME/.local/state/cc-statusline/ctx/cx-rel.json" '.source == "native"'
+    rm -rf "$SCRATCH/relative"
+
+    # 5. Token fallback (no remaining_percentage) is a measurement too.
+    _cx_run "$(_cx_json cx-tok "$TOKENS")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/seam"
+    _cx_contract ctx-export-tokens-render
+    _cx_check ctx-export-tokens "$d/seam/cx-tok.json" '.source == "tokens" and .used_pct == 25 and .used_tokens == 50000 and .context_window_size == 200000'
+
+    # 6. Display defaults are not readings: missing, null and malformed
+    #    context all render 0% / 200k but export source "unknown".
+    for i in absent:'' \
+             null:'{"remaining_percentage":null,"context_window_size":200000,"current_usage":null}' \
+             string:'{"remaining_percentage":"58","context_window_size":200000}' \
+             range:'{"remaining_percentage":150,"context_window_size":200000}' \
+             badsize:'{"context_window_size":"big","current_usage":{"input_tokens":5}}' \
+             badusage:'{"context_window_size":200000,"current_usage":{"input_tokens":"5"}}'; do
+        _cx_run "$(_cx_json "cx-${i%%:*}" "${i#*:}")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/seam"
+        _cx_contract "ctx-export-unknown-${i%%:*}-render"
+        _cx_check "ctx-export-unknown-${i%%:*}" "$d/seam/cx-${i%%:*}.json" '.source == "unknown" and .used_tokens == null and .stale == false'
+    done
+    _cx_check ctx-export-size-null "$d/seam/cx-absent.json" '.context_window_size == null and .used_pct == 0'
+
+    # 7. Strings that would need JSON escaping fail their gate and become "".
+    _cx_run "$(_cx_json cx-esc "$NATIVE" 'opus\"x' '2.1 \"x')" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/seam"
+    _cx_check ctx-export-gated-strings "$d/seam/cx-esc.json" '.model_id == "" and .effective_model_id == "" and .cc_version == ""'
+
+    # 8. A session id unsafe as a file name writes nothing.
+    rm -rf "$d/badsid"
+    for i in '../x' 'a/b' '' 'a b'; do
+        _cx_run "$(_cx_json "$i" "$NATIVE")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/badsid"
+        _cx_contract "ctx-export-badsid-render-[$i]"
+    done
+    if [ ! -e "$d/badsid" ] && [ ! -e "$d/x.json" ]; then _rl_pass ctx-export-badsid-nothing
+    else _rl_fail ctx-export-badsid-nothing "wrote something"; fi
+
+    # 9. The directory path is a regular file: render intact, nothing written.
+    : >"$d/notadir"
+    _cx_run "$(_cx_json cx-nd "$NATIVE")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/notadir"
+    _cx_contract ctx-export-notadir-render
+    if [ ! -s "$d/notadir" ]; then _rl_pass ctx-export-notadir-untouched
+    else _rl_fail ctx-export-notadir-untouched "file changed"; fi
+
+    # 10. A failed publication keeps the previous valid record and its tmp is
+    #     cleaned up.
+    local failbin="$d/failbin"
+    mkdir -p "$failbin"
+    printf '#!/bin/sh\nexit 1\n' >"$failbin/mv"; chmod +x "$failbin/mv"
+    _cx_run "$(_cx_json cx-keep "$NATIVE")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/keep" CC_STATUSLINE_NOW=1700000001
+    _cx_run "$(_cx_json cx-keep "$TOKENS")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/keep" CC_STATUSLINE_NOW=1700000002 \
+        PATH="$failbin:$PATH"
+    _cx_contract ctx-export-fail-render
+    _cx_check ctx-export-fail-keeps-old "$d/keep/cx-keep.json" '.ts == 1700000001 and .source == "native"'
+    if [ "$(find "$d/keep" -type f -name "*.json*" | wc -l | tr -d " ")" = "1" ]; then _rl_pass ctx-export-fail-no-tmp
+    else _rl_fail ctx-export-fail-no-tmp "leftover: $(ls "$d/keep")"; fi
+
+    # 11. Atomic replace: a reader racing parallel writers always parses a
+    #     complete record.
+    _cx_run "$(_cx_json cx-race "$NATIVE")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/race"
+    json=$(_cx_json cx-race "$NATIVE")
+    for i in 1 2 3 4 5 6 7 8; do
+        ( cd "$SCRATCH" && printf '%s' "$json" | STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/race" \
+            CC_STATUSLINE_NOW=$((1700000000 + i)) bash "$STATUSLINE" >/dev/null 2>&1 ) &
+    done
+    reason=""
+    for i in $(seq 1 60); do
+        jq -e '.session_id == "cx-race"' "$d/race/cx-race.json" >/dev/null 2>&1 || { reason="torn read on pass $i"; break; }
+    done
+    wait
+    if [ -z "$reason" ]; then _rl_pass ctx-export-atomic-race; else _rl_fail ctx-export-atomic-race "$reason"; fi
+
+    # 12. Daily GC: a missing stamp sweeps records far past seven days and old
+    #     temporaries, keeping fresh records, foreign names and this session.
+    local g="$d/gc" old=202001010000
+    _cx_gc_seed() {  # fresh set of files around the sweep
+        rm -rf "$g"; mkdir -p "$g"
+        printf '{}\n' >"$g/old-a.json"; printf '{}\n' >"$g/fresh-b.json"
+        printf 'x\n' >"$g/notes.txt"; printf 'x\n' >"$g/old-c.json.tmp.123"; printf 'x\n' >"$g/.gc.tmp.9"
+        printf '{}\n' >"$g/cx-gc.json"
+        touch -t $old "$g/old-a.json" "$g/notes.txt" "$g/old-c.json.tmp.123" "$g/.gc.tmp.9" "$g/cx-gc.json"
+    }
+    _cx_gc_run() {  # now [extra env]
+        local now="$1"; shift
+        _cx_run "$(_cx_json cx-gc "$NATIVE")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$g" \
+            CC_STATUSLINE_NOW="$now" "$@"
+    }
+    _cx_gc_seed
+    _cx_gc_run 1700000000; _cx_contract ctx-export-gc-render
+    if [ ! -e "$g/old-a.json" ] && [ ! -e "$g/old-c.json.tmp.123" ] && [ ! -e "$g/.gc.tmp.9" ] \
+        && [ -f "$g/fresh-b.json" ] && [ -f "$g/notes.txt" ]; then _rl_pass ctx-export-gc-sweep
+    else _rl_fail ctx-export-gc-sweep "left: $(ls -A "$g" | tr '\n' ' ')"; fi
+    _cx_check ctx-export-gc-own-record "$g/cx-gc.json" '.ts == 1700000000'
+    if [ "$(cat "$g/.gc")" = "1700000000" ]; then _rl_pass ctx-export-gc-stamp
+    else _rl_fail ctx-export-gc-stamp "stamp: $(cat "$g/.gc" 2>/dev/null)"; fi
+    # Within a day the stamp throttles; a day later it sweeps again.
+    printf '{}\n' >"$g/old-d.json"; touch -t $old "$g/old-d.json"
+    _cx_gc_run 1700086399
+    if [ -f "$g/old-d.json" ]; then _rl_pass ctx-export-gc-throttled
+    else _rl_fail ctx-export-gc-throttled "swept within a day"; fi
+    _cx_gc_run 1700086400
+    if [ ! -e "$g/old-d.json" ] && [ "$(cat "$g/.gc")" = "1700086400" ]; then _rl_pass ctx-export-gc-next-day
+    else _rl_fail ctx-export-gc-next-day "not swept after a day"; fi
+    # A future or malformed stamp is expired.
+    for i in future:1800000000 junk:abc; do
+        printf '{}\n' >"$g/old-e.json"; touch -t $old "$g/old-e.json"
+        printf '%s\n' "${i#*:}" >"$g/.gc"
+        _cx_gc_run 1700100000
+        if [ ! -e "$g/old-e.json" ]; then _rl_pass "ctx-export-gc-stamp-${i%%:*}"
+        else _rl_fail "ctx-export-gc-stamp-${i%%:*}" "not swept"; fi
+    done
+    # A symlink is never followed or removed.
+    : >"$d/gc-target"; ln -sf "$d/gc-target" "$g/link.json"; rm -f "$g/.gc"
+    _cx_gc_run 1700200000
+    if [ -L "$g/link.json" ] && [ -e "$d/gc-target" ]; then _rl_pass ctx-export-gc-symlink
+    else _rl_fail ctx-export-gc-symlink "symlink or target removed"; fi
 }
 
 synthwave_cell_tests() {
@@ -3827,6 +4029,7 @@ effort_tests
 update_check_tests
 cache_timer_tests
 context_hold_tests
+ctx_export_tests
 fi
 if [ "${STATUSLINE_TEST_SCOPE:-}" != base ]; then
 classic_golden_tests

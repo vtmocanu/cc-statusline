@@ -194,6 +194,8 @@ The key is the project root (resolved via `git rev-parse --show-toplevel`); the 
 | `CC_STATUSLINE_RL_KEY` | auto | Override the rate-limits cache account key (a label like `work`). Normally auto-detected from the session's `CLAUDE_CODE_OAUTH_TOKEN` (hashed, read from the parent `claude` process's exec-time environment since Claude Code consumes the variable). Set empty to force the shared unsuffixed cache. |
 | `STATUSLINE_GLYPH_MARGIN` | `3` | Columns reserved for Nerd Font glyphs that render double-width in some terminals. Set to `0` on a known mono-width font to reclaim them. |
 | `STATUSLINE_PROFILE` | `1` | Set to `0` to hide the account/profile badge (see below). |
+| `STATUSLINE_CTX_EXPORT` | `0` | Set to `1` to write a per-session context record for other local tools (see [Context export](#context-export)). |
+| `CC_STATUSLINE_CTX_EXPORT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/cc-statusline/ctx` | Override the context export directory. |
 | `STATUSLINE_DEBUG` | unset | Set to `1` to write stderr to `/tmp/statusline-debug.log`. |
 | `CC_STATUSLINE_PREFIX` | `~/.local/share/cc-statusline` | Install prefix for `install.sh`. |
 
@@ -379,6 +381,31 @@ The display is a **ChatGPT credit-equivalent usage estimate**, not billed dollar
 GPT sessions have been observed to report one context window with every usage counter at zero (used 0%, remaining 100%) between two normal readings. For a GPT effective model, independent of `STATUSLINE_GPT_LIMITS`, exactly that shape shows the session's last valid context percentage in dim gray instead of `0%`, in both layouts; the capacity stays the current value. The last value is kept in a small private per-session file in the runtime directory. It is stored only when the transcript shows the matching assistant response after its last compact boundary, and it is used only while the session id, models, transcript path, and window size still match, the transcript is the same file (same device and inode, not shorter, and the last 4 KB before the recorded size unchanged; earlier edits to the same file are not detected, since the transcript is assumed to be append-only), and its last compact boundary is unchanged. A null or missing usage, any other zero-like shape, a `/clear` (new session id), a `/compact`, or a switch to a Claude model drops it, so a new session or one without a prior reading shows the native `0%`. Genuine decreases, including a real `0%` with input tokens, are always shown as reported.
 
 Detection currently covers raw `gpt-*`, `claude-ocx-native--gpt-*`, `clodex:openai-oauth:gpt-*`, and `anthropic-openai-oauth__gpt-*` IDs, including a `[1m]` suffix. A short opaque alias such as `sol` cannot identify its provider by itself and is not detected. `clodex:openai:*` API-key routes are deliberately excluded because ChatGPT plan limits do not describe API-key usage.
+
+### Context export
+
+Off by default. With `STATUSLINE_CTX_EXPORT=1` (for example in the `statusLine.command` or the `env` block of `settings.json`), every render writes one JSON record for its session to `${XDG_STATE_HOME:-~/.local/state}/cc-statusline/ctx/<session_id>.json`, so other local tools can read a session's context fill without parsing transcripts. The directory is created mode 700 and each record mode 600; it is replaced atomically (temporary file, then rename), so a reader never sees a partial record. The write is synchronous and local, adds no network or background process, and any failure is silent: the statusline still renders and the previous record stays in place.
+
+One line of JSON, schema version 1:
+
+```json
+{"v":1,"session_id":"5dd91f6e-…","used_pct":42,"used_tokens":415030,"context_window_size":1000000,"source":"native","stale":false,"ts":1791874402,"model_id":"claude-opus-5-5","effective_model_id":"claude-opus-5-5","cc_version":"2.1.296"}
+```
+
+| Field | Meaning |
+|---|---|
+| `v` | Schema version. Bumped only on a breaking change; new fields may be added within a version, so ignore unknown fields. |
+| `session_id` | Claude Code's session id (also the file name). Ids outside `[A-Za-z0-9._-]` (max 128) are never written. |
+| `used_pct` | Context fill as displayed, integer 0 to 100. |
+| `used_tokens` | Input + cache-creation + cache-read tokens of the last response (output excluded), or `null` when not measured. |
+| `context_window_size` | Window size in tokens from Claude Code, or `null` when it sent no valid size. |
+| `source` | `native` (Claude Code's percentage), `tokens` (computed from token counts), `held` (a GPT pane re-showing its last value during an all-zero report), or `unknown` (no usable reading; `used_pct` is a display default). |
+| `stale` | `true` exactly when `source` is `held`. |
+| `ts` | Epoch seconds of this render (publication time, not when the API reported). Idle sessions keep advancing it on `refreshInterval` redraws. |
+| `model_id`, `effective_model_id` | Model on stdin and the one actually serving (they differ on GPT agent panes); `""` when not a plain id. |
+| `cc_version` | Claude Code version, or `""`. |
+
+Treat `used_pct` as an exact current reading only when `source` is `native` or `tokens` and `0 <= now - ts < 180`; a fresh `held` or `unknown` record is still not exact. Records are not a liveness signal: a file outlives its session. While the export is on, a best-effort sweep at most about once a day (throttled by a `.gc` stamp in the directory) deletes records not rewritten for at least seven days (the exact boundary follows the platform `find -mtime` rounding). A record being refreshed at the instant of a sweep can be deleted too; the next render of that session writes it again. After turning the export off, delete the directory yourself.
 
 ### Update indicator
 
