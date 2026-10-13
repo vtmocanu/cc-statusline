@@ -180,9 +180,10 @@ eval "$(echo "$DATA" | jq -r '
         .context_window as $c | $c.remaining_percentage as $r
         | if ($r | type) == "number" then (if $r >= 0 and $r <= 100 then "native" else "unknown" end)
           elif $r != null then "unknown"
-          elif ($c.context_window_size | type == "number" and . > 0) and ($c.current_usage | type == "object")
+          elif ($c.context_window_size | type == "number" and . > 0 and . < 1e9 and . == floor)
+               and ($c.current_usage | type == "object")
                and ([$c.current_usage | .input_tokens, .cache_creation_input_tokens, .cache_read_input_tokens]
-                    | all(. == null or type == "number")) then "tokens"
+                    | all(type == "number" and . >= 0 and . < 1e15 and . == floor)) then "tokens"
           else "unknown" end
     ) catch "unknown")",
     @sh "CTX_SIZE_EXP=\(.context_window.context_window_size

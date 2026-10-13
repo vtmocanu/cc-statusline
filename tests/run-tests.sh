@@ -3129,7 +3129,15 @@ ctx_export_tests() {
              string:'{"remaining_percentage":"58","context_window_size":200000}' \
              range:'{"remaining_percentage":150,"context_window_size":200000}' \
              badsize:'{"context_window_size":"big","current_usage":{"input_tokens":5}}' \
-             badusage:'{"context_window_size":200000,"current_usage":{"input_tokens":"5"}}'; do
+             badusage:'{"context_window_size":200000,"current_usage":{"input_tokens":"5"}}' \
+             emptyusage:'{"context_window_size":200000,"current_usage":{}}' \
+             nullusage:'{"context_window_size":200000,"current_usage":{"input_tokens":null,"cache_creation_input_tokens":null,"cache_read_input_tokens":null}}' \
+             partial:'{"context_window_size":200000,"current_usage":{"input_tokens":5,"cache_read_input_tokens":5}}' \
+             negative:'{"context_window_size":200000,"current_usage":{"input_tokens":-5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}' \
+             fraction:'{"context_window_size":200000,"current_usage":{"input_tokens":1.5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}' \
+             huge:'{"context_window_size":200000,"current_usage":{"input_tokens":1e16,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}' \
+             fracsize:'{"context_window_size":200000.5,"current_usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}' \
+             hugesize:'{"context_window_size":1e9,"current_usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}'; do
         _cx_run "$(_cx_json "cx-${i%%:*}" "${i#*:}")" STATUSLINE_CTX_EXPORT=1 CC_STATUSLINE_CTX_EXPORT_DIR="$d/seam"
         _cx_contract "ctx-export-unknown-${i%%:*}-render"
         _cx_check "ctx-export-unknown-${i%%:*}" "$d/seam/cx-${i%%:*}.json" '.source == "unknown" and .used_tokens == null and .stale == false'

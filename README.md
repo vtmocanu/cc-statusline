@@ -389,7 +389,7 @@ Off by default. With `STATUSLINE_CTX_EXPORT=1` (for example in the `statusLine.c
 One line of JSON, schema version 1:
 
 ```json
-{"v":1,"session_id":"5dd91f6e-…","used_pct":42,"used_tokens":415030,"context_window_size":1000000,"source":"native","stale":false,"ts":1791874402,"model_id":"claude-opus-5-5","effective_model_id":"claude-opus-5-5","cc_version":"2.1.296"}
+{"v":1,"session_id":"5dd91f6e-954e-4692-8ff6-9cdd1940804d","used_pct":42,"used_tokens":415030,"context_window_size":1000000,"source":"native","stale":false,"ts":1791874402,"model_id":"claude-opus-5-5","effective_model_id":"claude-opus-5-5","cc_version":"2.1.296"}
 ```
 
 | Field | Meaning |
