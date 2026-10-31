@@ -273,6 +273,17 @@ run_ucase "out-of-range utilization clamped to 100" \
     '{"five_hour":{"utilization":999,"resets_at":"2026-07-14T19:50:00Z"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}' \
     "100|1784058600|83|1784404800|$UNOW"
 
+run_ucase "usage: absent 5h preserves weekly data" \
+    '{"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}' \
+    "||83|1784404800|$UNOW"
+run_ucase "usage: null 5h preserves weekly zero" \
+    '{"five_hour":null,"seven_day":{"utilization":0,"resets_at":"2026-07-18T20:00:00Z"}}' \
+    "||0|1784404800|$UNOW"
+run_uuntouched "usage: partial 5h fails closed" \
+    '{"five_hour":{"resets_at":"2026-07-14T19:50:00Z"},"seven_day":{"utilization":83,"resets_at":"2026-07-18T20:00:00Z"}}'
+run_uuntouched "usage: absent weekly fails closed" \
+    '{"five_hour":null}'
+
 run_uuntouched "usage: non-JSON error page leaves cache intact" \
     '<html>502</html>'
 
@@ -339,6 +350,29 @@ elif [ -f "$ucache.backoff" ]; then
     printf '  FAIL  usage: header probe wrote a snapshot but still backed off\n'; FAIL=$((FAIL + 1))
 else
     printf '  PASS  usage: 429 falls back to the Messages header probe\n'; PASS=$((PASS + 1))
+fi
+
+# A successful weekly-only response must replace, not merge, the old 5h pair.
+printf 'HTTP/2 200\r\nanthropic-ratelimit-unified-7d-reset: 1784109600\r\nanthropic-ratelimit-unified-7d-utilization: 0.43\r\n' >"$uhdr"
+printf '%s\n' "$seed" >"$ucache"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" CC_STATUSLINE_USAGE_HTTP=429 \
+    CC_STATUSLINE_USAGE_HDRS="$uhdr" CC_STATUSLINE_RL_CACHE="$ucache" \
+    CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" = "||43|1784109600|$UNOW" ] && [ ! -e "$ucache.backoff" ]; then
+    printf '  PASS  usage: weekly-only headers replace stale 5h\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  usage: weekly-only headers did not replace stale 5h\n'; FAIL=$((FAIL + 1))
+fi
+# A reset without utilization is malformed, not an absent 5h window.
+printf 'anthropic-ratelimit-unified-5h-reset: 1784068200\r\n' >>"$uhdr"
+printf '%s\n' "$seed" >"$ucache"
+printf 'dummy-token' | CC_STATUSLINE_USAGE_DATA="$udata" CC_STATUSLINE_USAGE_HTTP=429 \
+    CC_STATUSLINE_USAGE_HDRS="$uhdr" CC_STATUSLINE_RL_CACHE="$ucache" \
+    CC_STATUSLINE_NOW="$UNOW" bash "$UFETCH"
+if [ "$(head -1 "$ucache")" = "$seed" ] && [ -e "$ucache.backoff" ]; then
+    printf '  PASS  usage: partial 5h header pair fails closed\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL  usage: partial 5h header pair accepted\n'; FAIL=$((FAIL + 1))
 fi
 
 # STATUSLINE_RL_PROBE=0 opts out of the probe entirely: cache untouched, backoff set.
@@ -434,6 +468,39 @@ run_guntouched "JSON-RPC error fails closed" \
     '{"id":2,"error":{"code":-32000,"message":"not logged in"}}'
 run_guntouched "malformed response fails closed" '<html>bad gateway</html>'
 
+# Optional official credit balance uses the same selected snapshot and fetch.
+for balance in '"1234.50"' '"0"' '"0.000001"' '"54906.0662120000"' '"0.123456789012345678"'; do
+    value="${balance//\"/}"
+    run_gcase "credit-only balance $value" \
+        "{\"result\":{\"rateLimits\":{\"credits\":{\"hasCredits\":false,\"unlimited\":false,\"balance\":$balance}}}}" \
+        "||||||$GNOW|$value"
+done
+for credits in 'null' '{}' '{"hasCredits":true,"unlimited":true,"balance":"12"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":12}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"-1"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"NaN"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"1e3"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"1|2"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"12\n"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"12\t"}' \
+    '{"hasCredits":"true","unlimited":false,"balance":"12"}' \
+    '{"hasCredits":true,"balance":"12"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"1234567890123456789"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":"0.1234567890123456789"}' \
+    '{"hasCredits":true,"unlimited":false,"balance":null}'; do
+    run_gcase "invalid/unlimited credits preserve windows: $credits" \
+        "{\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":7,\"windowDurationMins\":300},\"credits\":$credits}}}" \
+        "7||18000||||$GNOW"
+done
+run_gcase "verified live balance preserves ten fractional digits" \
+    '{"id":2,"result":{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":65,"windowDurationMins":10080,"resetsAt":1789451535},"credits":{"hasCredits":true,"unlimited":false,"balance":"54906.0662120000"}}}}}' \
+    "|||65|1789451535|604800|$GNOW|54906.0662120000"
+run_gcase "default balance selected, not legacy or named balance" \
+    '{"result":{"rateLimits":{"credits":{"hasCredits":true,"unlimited":false,"balance":"99"}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":7,"windowDurationMins":300},"credits":{"hasCredits":true,"unlimited":false,"balance":"0"}},"other":{"credits":{"hasCredits":true,"unlimited":false,"balance":"88"}}}}}' \
+    "7||18000||||$GNOW|0"
+run_guntouched "invalid credit-only snapshot fails closed" \
+    '{"result":{"rateLimits":{"credits":{"hasCredits":false,"unlimited":false,"balance":"invalid"}}}}'
+
 # Fake app server: proves initialize -> initialized -> rateLimits/read ordering.
 gfake="$SCRATCH/fake-codex"
 cat >"$gfake" <<'EOF'
@@ -495,6 +562,40 @@ echo "------------------------------------------------------------"
 _cr_begin "flat documented rates"
 _cr_row flat gpt-5.6-sol 1000000 0 1000000 1000000 >"$crmain"
 _cr_run; _cr_expect "ok|610000000|$CRNOW"
+
+_cr_begin "GPT-6.1 Sol standard rates"
+_cr_row sol61 gpt-6.1-sol 1000000 0 1000000 1000000 >"$crmain"
+_cr_run; _cr_expect "ok|302500000|$CRNOW"
+
+_cr_begin "GPT-6.1 Sol routed identities and mixed models"
+_cr_row sol56 gpt-5.6-sol 1000000 0 0 0 >"$crmain"
+_cr_row sol61 'gpt-6.1-sol[1m]' 1000000 0 0 0 >>"$crmain"
+_cr_row routed61 clodex:openai-oauth:gpt-6.1-sol 0 0 1000000 0 >>"$crmain"
+_cr_row native61 claude-ocx-native--gpt-6.1-sol 0 0 0 1000000 >>"$crmain"
+_cr_row proxy61 anthropic-openai-oauth__gpt-6.1-sol 1000000 0 0 0 >>"$crmain"
+_cr_run; _cr_expect "ok|452500000|$CRNOW"
+
+_cr_begin "GPT-6.1 Sol fast purchased-credit multiplier"
+_cr_row fast61 gpt-6.1-sol 1000000 0 1000000 1000000 | jq '.message.usage.speed = "fast"' >"$crmain"
+_cr_run; _cr_expect "ok|605000000|$CRNOW"
+
+_cr_begin "GPT-6.1 Sol ultrafast purchased-credit multiplier"
+_cr_row ultra61 gpt-6.1-sol 1000000 0 1000000 1000000 | jq '.message.usage.speed = "ultrafast"' >"$crmain"
+_cr_run; _cr_expect "ok|1815000000|$CRNOW"
+
+_cr_begin "GPT-6.1 Sol unknown speed fails closed"
+_cr_row unknown61 gpt-6.1-sol 1000 0 0 0 | jq '.message.usage.speed = "future"' >"$crmain"
+_cr_run; _cr_expect "unavailable||$CRNOW"
+
+_cr_begin "GPT-6.1 Sol duplicate final snapshot"
+_cr_row dup61 gpt-6.1-sol 0 0 0 0 >"$crmain"
+_cr_row dup61 gpt-6.1-sol 1000 0 200 300 >>"$crmain"
+_cr_row dup61 gpt-6.1-sol 1000 0 200 300 >>"$crmain"
+_cr_run; _cr_expect "ok|125500|$CRNOW"
+
+_cr_begin "GPT-6.1 Sol cache creation remains unsupported"
+_cr_row write61 gpt-6.1-sol 1000 1 0 100 >"$crmain"
+_cr_run; _cr_expect "unavailable||$CRNOW"
 
 _cr_begin "duplicate id keeps final snapshot once"
 _cr_row dup gpt-5.6-sol 0 0 0 0 >"$crmain"

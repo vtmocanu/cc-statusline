@@ -91,6 +91,14 @@ environment of the ancestor `claude` process: `/proc/PID/environ` on Linux,
 - `CC_STATUSLINE_RL_KEY=<label>` overrides detection entirely for setups the
   scan can't see through; empty forces the shared cache.
 
+## Claude 5h windows are optional
+
+A successful account response may omit 5h while retaining weekly limits. The
+statusline hides absent 5h windows, including during refresh of an authoritative
+weekly-only cache, instead of filling them from older native two-window data.
+Zero usage is not absence. Partial/malformed windows and responses without weekly
+data preserve the last valid cache. This does not assume universal 5h removal.
+
 ## GPT limits follow the official Codex CLI login
 
 `STATUSLINE_GPT_LIMITS=1` reads `account/rateLimits/read` from the locally
@@ -122,11 +130,14 @@ Claude Code's native `cost.total_cost_usd` applies Claude model prices to GPT
 token counts, so GPT renders suppress it. The replacement `cr` value is a
 ChatGPT credit-equivalent usage estimate, not billed dollars and not proof that
 credits were deducted while plan usage remained included. It is scoped to the
-GPT-5.6 Sol rates published on 2026-09-10: 100/M uncached input, 10/M cached
-input, and 500/M output. Unknown models are skipped. Because the ChatGPT table
-does not define cache-write accounting, any recognized response with nonzero
-`cache_creation_input_tokens` makes the whole session estimate unavailable.
-No API long-context multiplier or USD conversion is applied.
+published GPT-5.6 Sol rates (100/10/500 credits per million input/cached/output
+tokens) and GPT-6.1 Sol rates (50/2.5/250). GPT-6.1 Fast/Ultrafast use 2x/6x
+purchased-credit multipliers, not included-subscription usage multipliers.
+Missing speed means Standard; unknown speeds fail closed. Unknown models are
+skipped. Codex has no separate cache-write charge, but a nonzero proxy
+`cache_creation_input_tokens` remains unsupported because its relationship to
+reported input is unverified, making the whole estimate unavailable.
+No API long-context multiplier or USD conversion is applied. The separate `N cr` value is the official available account credit balance from the same Codex login snapshot, not session usage or proof of deductions. Missing, malformed, unlimited, and stale balances are hidden, including values outside the supported nonnegative decimal format (up to 18 integer and 18 fractional digits). Zero is displayed explicitly. The estimate toggle does not hide the balance; disabling GPT limits does.
 
 GPT context hold: a GPT session (`gpt-6.1-sol`, 872k window) was captured
 sending 21%, then a context window whose four `current_usage` counters and both

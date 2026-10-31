@@ -287,6 +287,57 @@ rate_limit_cache_tests() {
     printf '%s\n' "------------------------------------------------------------"
 
     local cache out err l2 name
+    local scenario seed expected json width
+    for scenario in native-weekly native-unshared native-replaces-legacy fetched-weekly-fresh fetched-weekly-stale keyed-weekly-stale weekly-fallback both-windows; do
+        name="claude-$scenario"; cache="$SCRATCH/$name.cache"
+        out="$SCRATCH/$name.out"; err="$SCRATCH/$name.err"
+        json=$(_rl_json 15 1700010000 2 1700010000)
+        seed=""; expected=83
+        case "$scenario" in
+            native-weekly|native-unshared|native-replaces-legacy)
+                json=$(printf '%s' "$json" | jq '.rate_limits |= {seven_day: {used_percentage: 83, resets_at: 1700200000}}')
+                [ "$scenario" = native-replaces-legacy ] && seed='88|1700018000|40|1700200000' ;;
+            fetched-weekly-fresh) seed='||83|1700200000|1699999990' ;;
+            fetched-weekly-stale|keyed-weekly-stale) seed='||83|1700200000|1699000000' ;;
+            weekly-fallback) seed='||83|1700200000'; json=$(_rl_json_norl) ;;
+            both-windows) expected=2 ;;
+        esac
+        if [ "$scenario" = keyed-weekly-stale ]; then
+            cache="$SCRATCH/$name-state/cc-statusline-$(id -u)/rate-limits-weekly"
+            mkdir -p "${cache%/*}"
+        fi
+        # Exercise the existing candidate measurement on both wide and phone
+        # layouts without changing any width or truncation rules.
+        for width in 130 46; do
+            rm -f "$cache"
+            [ -n "$seed" ] && printf '%s\n' "$seed" >"$cache"
+            (
+                cd "$SCRATCH" || exit 1
+                export STATUSLINE_WIDTH="$width" CC_STATUSLINE_RL_CACHE="$cache"
+                if [ "$scenario" = keyed-weekly-stale ]; then
+                    export CC_STATUSLINE_RL_CACHE="" CC_STATUSLINE_RL_KEY=weekly
+                    export XDG_RUNTIME_DIR="$SCRATCH/$name-state"
+                elif [ "$scenario" = native-unshared ]; then
+                    export STATUSLINE_RL_SHARE=0
+                fi
+                printf '%s' "$json" | bash "$STATUSLINE"
+            ) >"$out" 2>"$err"
+            l2=$(_rl_l2 "$out")
+            if [ -s "$err" ]; then _rl_fail "$name-$width" "non-empty stderr: $(head -1 "$err")"
+            elif ! _has "$l2" "$expected%" || ! _has "$l2" "7d"; then
+                _rl_fail "$name-$width" "weekly data missing: $l2"
+            elif [ "$scenario" != both-windows ] && _has "$l2" "5h"; then
+                _rl_fail "$name-$width" "absent 5h resurrected: $l2"
+            elif [ "$scenario" = both-windows ] && ! _has "$l2" "5h"; then
+                _rl_fail "$name-$width" "present 5h hidden: $l2"
+            elif [ "$scenario" != both-windows ] && [ "$scenario" != native-unshared ] \
+                && [[ "$(head -1 "$cache")" != '||83|1700200000'* ]]; then
+                _rl_fail "$name-$width" "weekly cache lost absence: $(head -1 "$cache")"
+            elif [ "$(wc -l <"$out" | tr -d ' ')" != 2 ] || [ "$(sed -n '2p' "$out" | vis_cols)" -gt "$width" ]; then
+                _rl_fail "$name-$width" "invalid output shape or width"
+            else _rl_pass "$name-$width"; fi
+        done
+    done
 
     # 1. Cache strictly fresher (later 5h reset) than stdin -> cache displayed,
     #    and the fresher cache is NOT clobbered by the staler stdin.
@@ -692,8 +743,8 @@ gpt_rate_limit_tests() {
     elif [ "$w" -gt 45 ]; then _rl_fail "$name" "phone GPT pace width $w exceeds 45"
     else _rl_pass "$name"; fi
 
-    # Claude keeps its historical both-window contract. A partial Anthropic
-    # payload is treated as no rates, even though GPT explicitly supports one.
+    # Claude still requires weekly data. A five-hour-only Anthropic payload
+    # remains hidden; weekly-only payloads are covered by the Claude tests.
     name="claude-partial-stays-hidden"
     printf '%s' '{"model":{"display_name":"Claude Opus 5","id":"claude-opus-5"},"cwd":"/home/test/rl","context_window":{"remaining_percentage":50,"context_window_size":1000000},"cost":{"total_duration_ms":300000},"session_id":"claude-partial","rate_limits":{"five_hour":{"used_percentage":42,"resets_at":1700009660}}}' >"$SCRATCH/claude-partial.json"
     (cd "$SCRATCH" && STATUSLINE_RL_SHARE=0 bash "$STATUSLINE" <"$SCRATCH/claude-partial.json") >"$out" 2>"$err"
@@ -792,8 +843,8 @@ gpt_rate_limit_tests() {
         _rl_fail "$name" "transcript API-key route used ChatGPT limits: $l2"
     else _rl_pass "$name"; fi
 
-    # Token-derived profile labels still work in a transcript-only GPT pane, but
-    # the separated account-key resolution must not run any Claude limit fetch.
+    # Claude profile labels must not identify a transcript-corrected Codex pane.
+    # Detection must still avoid all Claude rate-limit work.
     name="gpt-token-profile-without-claude-fetch"
     phome="$SCRATCH/gpt-profile-home"; state="$SCRATCH/gpt-profile-state"
     mkdir -p "$phome/.claude" "$state"
@@ -810,12 +861,40 @@ gpt_rate_limit_tests() {
         CC_STATUSLINE_RL_FETCH="$fake" bash "$STATUSLINE" <"$SCRATCH/gpt-transcript.json") >"$out" 2>"$err"
     l2=$(_rl_l2 "$out")
     if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr: $(head -1 "$err")"
-    elif ! _has "$l2" "GPTTOK" || _has "$l2" "CLAUDE"; then
-        _rl_fail "$name" "GPT token profile key was not preserved: $l2"
+    elif _has "$l2" "GPTTOK" || _has "$l2" "CLAUDE"; then
+        _rl_fail "$name" "Claude profile leaked into a Codex pane: $l2"
     elif ! _stays_absent "$hits" "$statedir/rate-limits-$tokhash" \
         "$statedir/rate-limits-$tokhash.fetching"; then
         _rl_fail "$name" "GPT profile resolution triggered Claude rate-limit work"
     else _rl_pass "$name"; fi
+
+    # Profile suppression follows the effective Codex model, not the limits toggle.
+    # Keep the actual Claude profile visible on wide and phone Claude renders.
+    local profile_case profile_json profile_expected profile_limits profile_columns
+    for profile_case in claude-wide claude-phone gpt-wide gpt-phone gpt-limits-off transcript-limits-off; do
+        profile_limits=1; profile_columns=200; profile_expected=""
+        case "$profile_case" in
+            claude-wide) profile_json="$(_gpt_json claude-opus-4-6)"; profile_expected=CLAUDE ;;
+            claude-phone) profile_json="$(_gpt_json claude-opus-4-6)"; profile_expected=CLAUDE; profile_columns=60 ;;
+            gpt-wide) profile_json="$(_gpt_json gpt-5.6-sol)" ;;
+            gpt-phone) profile_json="$(_gpt_json gpt-5.6-sol)"; profile_columns=60 ;;
+            gpt-limits-off) profile_json="$(_gpt_json gpt-5.6-sol)"; profile_limits=0 ;;
+            transcript-limits-off) profile_json="$(cat "$SCRATCH/gpt-transcript.json")"; profile_limits=0 ;;
+        esac
+        name="profile-$profile_case"
+        (cd "$SCRATCH" && printf '%s' "$profile_json" \
+            | env HOME="$phome" STATUSLINE_PROFILE=1 STATUSLINE_GPT_LIMITS="$profile_limits" \
+              COLUMNS="$profile_columns" STATUSLINE_WIDTH=200 \
+              CC_STATUSLINE_RL_CACHE="$ccache" CC_STATUSLINE_GPT_CACHE="$cache" \
+              bash "$STATUSLINE") >"$out" 2>"$err"
+        l2=$(_rl_l2 "$out")
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr"
+        elif [ -n "$profile_expected" ] && ! _has "$l2" "$profile_expected"; then
+            _rl_fail "$name" "Claude profile was lost: $l2"
+        elif [ -z "$profile_expected" ] && { _has "$l2" "CLAUDE" || _has "$l2" "GPTTOK"; }; then
+            _rl_fail "$name" "Claude profile shown for Codex: $l2"
+        else _rl_pass "$name"; fi
+    done
 
     # Fresh transcript-derived units render as a compact, rounded ChatGPT credit
     # estimate in the former dollar-cost position.
@@ -851,6 +930,61 @@ gpt_rate_limit_tests() {
     elif _has "$l2" "0.00 cr" || _has "$l2" " cr"; then
         _rl_fail "$name" "fresh zero-usage session showed credits: $l2"
     else _rl_pass "$name"; fi
+
+    # Official available balance is independent from the session estimate.
+    # Isolated existing cache seam, pinned clock, all fetchers remain disabled.
+    local balcase record expected model columns limits estimate_toggle
+    : >"$SCRATCH/balance-transcript.jsonl"
+    for balcase in combined live-precision zero tiny boundary credit-only stale future invalid negative exponent oversized absent phone disabled api claude estimate-off; do
+        record="|||65|1700361000|604800|1699999990|1234.50"
+        expected="1.23k cr"; model=gpt-5.6-sol; columns=200; limits=1; estimate_toggle=1
+        case "$balcase" in
+            live-precision) record="|||65|1700361000|604800|1699999990|54906.0662120000"; expected="54.91k cr" ;;
+            tiny) record="|||65|1700361000|604800|1699999990|0.000000000000000001"; expected="<0.01 cr" ;;
+            boundary) record="|||65|1700361000|604800|1699999990|999.995"; expected="1.00k cr" ;;
+            zero) record="|||65|1700361000|604800|1699999990|0"; expected="0 cr" ;;
+            credit-only) record="||||||1699999990|1234.50" ;;
+            stale) record="|||65|1700361000|604800|1699999000|1234.50"; expected="" ;;
+            future) record="|||65|1700361000|604800|1700000001|1234.50"; expected="" ;;
+            invalid) record="|||65|1700361000|604800|1699999990|bad"; expected="" ;;
+            negative) record="|||65|1700361000|604800|1699999990|-1"; expected="" ;;
+            exponent) record="|||65|1700361000|604800|1699999990|1e3"; expected="" ;;
+            oversized) record="|||65|1700361000|604800|1699999990|1234567890123456789"; expected="" ;;
+            absent) record="|||65|1700361000|604800|1699999990"; expected="" ;;
+            phone) columns=46; expected="" ;;
+            disabled) limits=0; expected="" ;;
+            api) model=clodex:openai:gpt-5.6-sol; expected="" ;;
+            claude) model=claude-opus-4-6; expected="" ;;
+            estimate-off) estimate_toggle=0 ;;
+        esac
+        printf '%s\n' "$record" >"$cache"
+        printf 'ok|211289540|1699999990\n' >"$crcache"
+        name="gpt-balance-$balcase"
+        (cd "$SCRATCH" && _gpt_json "$model" \
+            | jq --arg path "$SCRATCH/balance-transcript.jsonl" '. + {transcript_path: $path}' \
+            | env COLUMNS="$columns" STATUSLINE_WIDTH=200 STATUSLINE_GPT_LIMITS="$limits" \
+              STATUSLINE_GPT_CREDITS="$estimate_toggle" CC_STATUSLINE_GPT_CACHE="$cache" \
+              CC_STATUSLINE_GPT_CREDITS_CACHE="$crcache" CC_STATUSLINE_RL_CACHE="$ccache" \
+              bash "$STATUSLINE") >"$out" 2>"$err"
+        l2=$(_rl_l2 "$out"); w=$(sed -n '2p' "$out" | vis_cols)
+        if [ -s "$err" ]; then _rl_fail "$name" "non-empty stderr"
+        elif [ "$(wc -l <"$out")" -ne 2 ]; then _rl_fail "$name" "expected two output lines"
+        elif [ "$w" -gt "$((columns - 1))" ]; then _rl_fail "$name" "width overflow: $w"
+        elif [ -n "$expected" ] && ! _has "$l2" "$expected"; then
+            _rl_fail "$name" "missing $expected: $l2"
+        elif [ -z "$expected" ] && _has "$l2" "1.23k cr"; then
+            _rl_fail "$name" "unexpected balance: $l2"
+        elif _has "$l2" "bal "; then
+            _rl_fail "$name" "unexpected balance label: $l2"
+        elif [ "$balcase" = combined ] && ! _has "$l2" "211.29 cr · 1.23k cr"; then
+            _rl_fail "$name" "session estimate was lost: $l2"
+        elif [ "$balcase" = estimate-off ] && _has "$l2" "211.29 cr"; then
+            _rl_fail "$name" "estimate toggle was ignored: $l2"
+        elif { [ "$balcase" = invalid ] || [ "$balcase" = zero ]; } && ! _has "$l2" "65%"; then
+            _rl_fail "$name" "valid window was lost: $l2"
+        else _rl_pass "$name"; fi
+    done
+    printf '|||65|1700361000|604800|1699999990\n' >"$cache"
 
     # Restore a positive cache for the width-tier checks below.
     printf 'ok|211289540|1699999990\n' >"$crcache"

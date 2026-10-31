@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Estimates GPT-5.6 Sol usage in published ChatGPT credits by streaming the
+# Estimates GPT-5.6/6.1 Sol usage in published ChatGPT credits by streaming the
 # current session transcript and its subagent transcripts. This is not billed
 # dollars and does not imply credits were deducted while plan usage is included.
 #
-# Rates verified 2026-09-10 at https://learn.chatgpt.com/docs/pricing:
-#   100 credits / 1M input tokens
-#    10 credits / 1M cached input tokens
-#   500 credits / 1M output tokens
-# The published ChatGPT table does not define cache-write pricing. If any
-# recognized row reports nonzero cache_creation_input_tokens, the whole session
-# estimate fails closed instead of importing unrelated API pricing or guessing.
+# Standard rates at https://learn.chatgpt.com/docs/pricing:
+#   GPT-5.6 Sol: 100 input, 10 cached input, 500 output credits / 1M tokens.
+#   GPT-6.1 Sol: 50 input, 2.5 cached input, 250 output credits / 1M tokens.
+# Codex has no separate cache-write charge. Nonzero proxy cache-creation counts
+# remain unsupported because their relationship to input tokens is unverified.
+# GPT-6.1 speed modes apply 1x/2x/6x purchased-credit rates. Unknown speeds fail
+# closed rather than substituting included-subscription usage multipliers.
 #
 # Cache line format:
 #   ok|TOKEN_RATE_UNITS|FETCHED_EPOCH
@@ -82,7 +82,13 @@ units=$(jq -r '
     | ($message.model // "") as $raw_model
     | select(($raw_model | type) == "string")
     | ($raw_model | normalized_model) as $model
-    | select($model == "gpt-5.6-sol")
+    | select($model == "gpt-5.6-sol" or $model == "gpt-6.1-sol")
+    | (if $model == "gpt-6.1-sol" then [50, 2.5, 250] else [100, 10, 500] end) as $rates
+    | (if $model != "gpt-6.1-sol" then 1
+       elif ($message.usage.speed // "standard") == "standard" then 1
+       elif $message.usage.speed == "fast" then 2
+       elif $message.usage.speed == "ultrafast" then 6
+       else error("unsupported speed") end) as $speed
     | if (($message.id | type) != "string"
           or ($message.id | test("^[A-Za-z0-9._:-]+$") | not))
       then error("invalid message id") else . end
@@ -93,13 +99,14 @@ units=$(jq -r '
        ($usage.input_tokens | token_count),
        ($usage.cache_creation_input_tokens | token_count),
        ($usage.cache_read_input_tokens | token_count),
-       ($usage.output_tokens | token_count)]
+       ($usage.output_tokens | token_count),
+       ($rates[0] * $speed), ($rates[1] * $speed), ($rates[2] * $speed)]
     | @tsv
 ' "${files[@]}" 2>/dev/null | awk -F '\t' '
-    NF != 5 { bad=1; exit }
+    NF != 8 { bad=1; exit }
     $3 != 0 { bad=1; exit }
     {
-        value=($2+$3)*100+$4*10+$5*500
+        value=($2+$3)*$6+$4*$7+$5*$8
         if (!($1 in seen) || value > seen[$1]) {
             total += value - (($1 in seen) ? seen[$1] : 0)
             seen[$1]=value

@@ -20,6 +20,7 @@
 #
 # Cache line format (a superset of the statusline's 4-field format):
 #   FIVE_PCT|FIVE_RESET|SEVEN_PCT|SEVEN_RESET|FETCHED_EPOCH
+# An absent 5h window uses an empty pair (||SEVEN_PCT|SEVEN_RESET|FETCHED_EPOCH).
 # The 5th field marks the line AUTHORITATIVE: while it is fresh the statusline
 # displays it unconditionally instead of comparing against the stdin snapshot.
 # On any failure (no credential, network, HTTP error, parse) the cache is left
@@ -124,10 +125,16 @@ if [ "${http:-}" != "200" ] && [ -n "${http:-}" ] && [ "${STATUSLINE_RL_PROBE:-1
         _pct() { awk -v v="$1" 'BEGIN { if (v == "" || v + 0 != v) exit 1
                                         p = int(v * 100); if (p < 0) p = 0; if (p > 100) p = 100
                                         printf "%d", p }'; }
-        h_fp=$(_pct "$(_hdr 5h-utilization)") && h_sp=$(_pct "$(_hdr 7d-utilization)") \
-            && h_fr=$(_hdr 5h-reset) && h_sr=$(_hdr 7d-reset) || true
+        h_fu=$(_hdr 5h-utilization); h_fr=$(_hdr 5h-reset)
+        h_fp=""; h_sp=""
+        # An absent 5h pair is valid, not a zero-usage window. A partial or
+        # malformed pair still fails closed; the weekly pair remains required.
+        if { [ -z "$h_fu" ] && [ -z "$h_fr" ]; } || h_fp=$(_pct "$h_fu"); then
+            h_sp=$(_pct "$(_hdr 7d-utilization)") || h_sp=""
+        fi
+        h_sr=$(_hdr 7d-reset)
         cand="${h_fp:-}|${h_fr:-}|${h_sp:-}|${h_sr:-}"
-        if [[ "$cand" =~ ^[0-9]{1,3}\|[0-9]{1,12}\|[0-9]{1,3}\|[0-9]{1,12}$ ]]; then
+        if [[ "$cand" =~ ^([0-9]{1,3}\|[0-9]{1,12}|\|)\|[0-9]{1,3}\|[0-9]{1,12}$ ]]; then
             NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
             [[ "$NOW" =~ ^[0-9]{1,12}$ ]] || exit 0
             if printf '%s|%s\n' "$cand" "$NOW" > "$TMP_FILE" 2>/dev/null; then
@@ -155,22 +162,24 @@ esac
 
 # Parse + validate in one jq pass. Percentages are floored to ints and clamped
 # to [0,100]; ISO resets_at convert to epoch (UTC forms only: fractional
-# seconds stripped, +00:00 normalized to Z). Any missing/mistyped field or a
-# non-UTC offset makes jq fail or emit nothing, and the cache stays untouched
-# (fail closed, like the network path). An HTTP error body ({"error": ...})
-# fails the same way since the fields are absent.
+# seconds stripped, +00:00 normalized to Z). An absent/null five_hour is a
+# supported weekly-only snapshot, stored with an empty 5h pair. Malformed
+# windows, missing weekly data and non-UTC offsets leave the cache untouched.
+# An HTTP error body fails the same way since the weekly fields are absent.
 parsed=$(echo "$data" | jq -r '
     def iso2epoch: tostring | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601;
     def pct: numbers | floor | [., 0] | max | [., 100] | min;
-    (.five_hour.utilization | pct) as $fp
+    (if .five_hour == null then ["", ""]
+     else [(.five_hour.utilization | pct), (.five_hour.resets_at | iso2epoch)]
+          | select(length == 2) end) as $five
+  | $five[0] as $fp | $five[1] as $fr
   | (.seven_day.utilization | pct) as $sp
-  | (.five_hour.resets_at | iso2epoch) as $fr
   | (.seven_day.resets_at | iso2epoch) as $sr
   | "\($fp)|\($fr)|\($sp)|\($sr)"
 ' 2>/dev/null) || exit 0
 # Belt-and-braces shape check: exactly the 4-field format the statusline
 # validates on read (3-digit pct cap, 12-digit epoch cap).
-[[ "$parsed" =~ ^[0-9]{1,3}\|[0-9]{1,12}\|[0-9]{1,3}\|[0-9]{1,12}$ ]] || exit 0
+[[ "$parsed" =~ ^([0-9]{1,3}\|[0-9]{1,12}|\|)\|[0-9]{1,3}\|[0-9]{1,12}$ ]] || exit 0
 
 NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
 [[ "$NOW" =~ ^[0-9]{1,12}$ ]] || exit 0
