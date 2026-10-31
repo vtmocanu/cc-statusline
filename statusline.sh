@@ -604,9 +604,9 @@ _rl_write() {
     fi
     RL_TMP=""
 }
-# Resolve the account key independently from Claude rate-limit processing: the
-# profile badge still needs the token-derived key in a GPT session, even though
-# that session must skip every Anthropic cache/compare/fetch operation below.
+# Resolve the account key before Claude rate-limit processing. Claude profile
+# badges can use this token-derived key; Codex-detected panes hide that badge and
+# skip every Anthropic cache/compare/fetch operation below when GPT limits are on.
 _rl_token() {
     local tok="${CLAUDE_CODE_OAUTH_TOKEN:-}" pid=$$ i
     if [ -z "$tok" ]; then
@@ -656,10 +656,10 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; 
     if [[ "$FIVE_RESET_TS"  =~ ^[0-9]{1,12}$ ]]; then STDIN_FR=$FIVE_RESET_TS;  else STDIN_FR=0; fi
     if [[ "$SEVEN_RESET_TS" =~ ^[0-9]{1,12}$ ]]; then STDIN_SR=$SEVEN_RESET_TS; else STDIN_SR=0; fi
     STDIN_RL=0
-    [ -n "$FIVE_PCT" ] && [ -n "$SEVEN_PCT" ] && STDIN_RL=1
+    [ -n "$SEVEN_PCT" ] && STDIN_RL=1
 
-    # Read + validate the cache line; any non-numeric field voids the whole line
-    # (treated as absent, overwritten on the next write). A 5th field is the
+    # Read + validate the cache line; an empty 5h pair means absent, while
+    # malformed pairs or non-numeric weekly fields void the line. A 5th field is the
     # FETCHED_EPOCH stamp written by claude-usage-fetch.sh: while fresh it makes
     # the line AUTHORITATIVE (fetched from the account's own API view), so it is
     # displayed unconditionally instead of freshness-compared against stdin,
@@ -673,7 +673,8 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; 
         # digits, an epoch <=12), so the arithmetic compare below can never
         # overflow and spew "integer expected" to stderr on a tampered cache;
         # anything longer voids the whole line (absent, overwritten next write).
-        if [[ "$C_FP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_FR" =~ ^[0-9]{1,12}$ ]] \
+        if { { [[ "$C_FP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_FR" =~ ^[0-9]{1,12}$ ]]; } \
+             || { [ -z "$C_FP" ] && [ -z "$C_FR" ]; }; } \
             && [[ "$C_SP" =~ ^[0-9]{1,3}$ ]] && [[ "$C_SR" =~ ^[0-9]{1,12}$ ]]; then
             CACHE_RL=1
             # Defense in depth: a numerically valid but out-of-range percentage
@@ -681,7 +682,8 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; 
             # re-clamp the cached percentages to [0,100] exactly like the stdin
             # values above. Resets accept any epoch; format_reset already caps
             # the displayed countdown.
-            C_FP=$(_clamp_pct "$C_FP"); C_SP=$(_clamp_pct "$C_SP")
+            [ -n "$C_FP" ] && C_FP=$(_clamp_pct "$C_FP")
+            C_SP=$(_clamp_pct "$C_SP")
         fi
     fi
     # Authoritative while the fetch stamp is fresh (default 300s; negative ages
@@ -755,14 +757,25 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; 
             FIVE_PCT=""; FIVE_RESET_TS=""
             SEVEN_PCT=""; SEVEN_RESET_TS=""
         fi
+    elif [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ] \
+        && [ -z "$FIVE_PCT" ] && [ -n "$C_FP" ]; then
+        # Missing native 5h is not proof of freshness. Replace a two-window
+        # snapshot only after its 5h expires and weekly data is no older.
+        if [ "$C_FR" -le "$RL_NOW" ] \
+            && [ "$(_rl_cmp 0 0 "$STDIN_SR" "$SEVEN_PCT" 0 0 "$C_SR" "$C_SP")" != 2 ]; then
+            _rl_write "$RL_CACHE" "" "" "$SEVEN_PCT" "$STDIN_SR"
+        else
+            FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
+            SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
+        fi
     elif [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ]; then
-        case "$(_rl_cmp "$STDIN_FR" "$FIVE_PCT" "$STDIN_SR" "$SEVEN_PCT" \
-                        "$C_FR" "$C_FP" "$C_SR" "$C_SP")" in
+        case "$(_rl_cmp "$STDIN_FR" "${FIVE_PCT:-0}" "$STDIN_SR" "$SEVEN_PCT" \
+                        "${C_FR:-0}" "${C_FP:-0}" "$C_SR" "$C_SP")" in
             2)  # cache is fresher: display it (all four values together)
                 FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
                 SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR" ;;
             1)  # stdin is fresher: keep it and refresh the cache
-                _rl_write "$RL_CACHE" "$FIVE_PCT" "$STDIN_FR" "$SEVEN_PCT" "$STDIN_SR" ;;
+                _rl_write "$RL_CACHE" "$FIVE_PCT" "${FIVE_PCT:+$STDIN_FR}" "$SEVEN_PCT" "$STDIN_SR" ;;
             *)  : ;;  # identical: keep stdin, no write
         esac
     elif [ "$CACHE_RL" = "1" ]; then
@@ -772,7 +785,7 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; 
         SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
     elif [ "$STDIN_RL" = "1" ]; then
         # No usable cache yet: seed it from stdin.
-        _rl_write "$RL_CACHE" "$FIVE_PCT" "$STDIN_FR" "$SEVEN_PCT" "$STDIN_SR"
+        _rl_write "$RL_CACHE" "$FIVE_PCT" "${FIVE_PCT:+$STDIN_FR}" "$SEVEN_PCT" "$STDIN_SR"
     fi
 fi
 
@@ -999,6 +1012,7 @@ fi
 # never falls back to Claude's stdin/cache percentages: stale or missing Codex
 # data means no rate segment until a successful fetch lands.
 GPT_ACTIVE=0
+GPT_BALANCE=""
 if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL_ID"; then
     GPT_ACTIVE=1
     FIVE_PCT=""; FIVE_RESET_TS=""
@@ -1006,9 +1020,9 @@ if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL
 
     GPT_CACHE="${CC_STATUSLINE_GPT_CACHE:-$(_state_dir)/rate-limits-gpt}"
     GPT_FP=""; GPT_FR=""; GPT_FD=""; GPT_SP=""; GPT_SR=""; GPT_SD=""
-    GPT_AT=""; GPT_EXTRA=""; GPT_CACHE_OK=0; GPT_HAS_WINDOW=0
+    GPT_AT=""; GPT_BAL=""; GPT_EXTRA=""; GPT_CACHE_OK=0; GPT_HAS_WINDOW=0
     if [ -f "$GPT_CACHE" ]; then
-        IFS='|' read -r GPT_FP GPT_FR GPT_FD GPT_SP GPT_SR GPT_SD GPT_AT GPT_EXTRA <"$GPT_CACHE" 2>/dev/null || true
+        IFS='|' read -r GPT_FP GPT_FR GPT_FD GPT_SP GPT_SR GPT_SD GPT_AT GPT_BAL GPT_EXTRA <"$GPT_CACHE" 2>/dev/null || true
         GPT_FIELDS_OK=1
         if [ -n "$GPT_FP" ]; then
             [[ "$GPT_FP" =~ ^[0-9]{1,3}$ ]] || GPT_FIELDS_OK=0
@@ -1036,7 +1050,10 @@ if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL
         fi
         [ -z "$GPT_EXTRA" ] || GPT_FIELDS_OK=0
         [[ "$GPT_AT" =~ ^[0-9]{1,12}$ ]] || GPT_FIELDS_OK=0
-        [ "$GPT_FIELDS_OK" = "1" ] && [ "$GPT_HAS_WINDOW" = "1" ] && GPT_CACHE_OK=1
+        # Balance validation is independent: a bad optional field cannot discard windows.
+        [[ "$GPT_BAL" =~ ^[0-9]{1,18}(\.[0-9]{1,18})?$ ]] || GPT_BAL=""
+        [ "$GPT_FIELDS_OK" = "1" ] \
+            && { [ "$GPT_HAS_WINDOW" = "1" ] || [ -n "$GPT_BAL" ]; } && GPT_CACHE_OK=1
     fi
 
     GPT_AGE=9999
@@ -1046,6 +1063,7 @@ if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL
         if [ "$GPT_AGE" -lt 0 ] 2>/dev/null; then
             GPT_AGE=9999
         elif [ "$GPT_AGE" -lt "$GPT_TTL" ] 2>/dev/null; then
+            GPT_BALANCE="$GPT_BAL"
             FIVE_PCT=$(_clamp_pct "$GPT_FP"); FIVE_RESET_TS="$GPT_FR"; FIVE_DURATION="$GPT_FD"
             SEVEN_PCT=$(_clamp_pct "$GPT_SP"); SEVEN_RESET_TS="$GPT_SR"; SEVEN_DURATION="$GPT_SD"
         fi
@@ -1072,10 +1090,10 @@ if [ "${STATUSLINE_GPT_LIMITS:-0}" = "1" ] && _is_gpt_model_id "$EFFECTIVE_MODEL
     fi
 fi
 
-# ── GPT-5.6 Sol credit-equivalent estimate (opt-in with GPT limits) ─────────
+# ── GPT-5.6/6.1 Sol credit-equivalent estimate (opt-in with GPT limits) ─────────
 # The helper streams this session's main transcript plus subagent JSONL files,
 # deduplicates repeated assistant response ids, and applies only the published
-# ChatGPT credit rates for recognized GPT-5.6 Sol identities. It runs in the
+# ChatGPT credit rates for recognized GPT-5.6/6.1 Sol identities. It runs in the
 # background; a render only reads this session-keyed private cache.
 GPT_CREDITS_UNITS=""
 if [ "$GPT_ACTIVE" = "1" ] && [ "${STATUSLINE_GPT_CREDITS:-1}" != "0" ] \
@@ -1185,13 +1203,16 @@ fi
 # that hash instead: add a profiles entry keyed by the hash to label a token
 # account. Requires STATUSLINE_RL_SHARE enabled (the scan runs there).
 #
+# Hidden on Codex-detected effective models, including transcript corrections,
+# independently of STATUSLINE_GPT_LIMITS: this label identifies a Claude account.
 # Disabled if STATUSLINE_PROFILE=0, the mapping file is absent, or
 # `enabled: false` is set in the JSON.
 PROFILE_LABEL=""
 PROFILE_COLOR=""
 PROFILE_FILE="${HOME}/.claude/profile-labels.json"
 CLAUDE_STATE="${HOME}/.claude.json"
-if [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && [ -r "$CLAUDE_STATE" ]; then
+if ! _is_gpt_model_id "$EFFECTIVE_MODEL_ID" \
+    && [ "${STATUSLINE_PROFILE:-1}" != "0" ] && [ -r "$PROFILE_FILE" ] && [ -r "$CLAUDE_STATE" ]; then
     # Note: use `!= false` not `// true` — jq's `//` treats false as absent,
     # so `.enabled // true` would return true even when enabled is false.
     PROFILE_ENABLED=$(jq -r '.enabled != false' "$PROFILE_FILE" 2>/dev/null)
@@ -1765,7 +1786,8 @@ esac
 # field because Claude Code prices GPT tokens with Claude rates; it shows the
 # transcript-derived "N.NN cr" estimate when available instead. Both forms are
 # built here so measure_cols includes their real width. STATUSLINE_COST controls
-# only Claude dollars; STATUSLINE_GPT_CREDITS controls GPT credits.
+# only Claude dollars; STATUSLINE_GPT_CREDITS controls the GPT session estimate.
+# The official available balance follows STATUSLINE_GPT_LIMITS independently.
 COST_SEG=""
 if [ "$GPT_ACTIVE" != "1" ] && [ "${STATUSLINE_COST:-1}" != "0" ] \
     && [ "$(LC_ALL=C awk -v c="$COST_USD" 'BEGIN{print (c>0)?1:0}' 2>/dev/null)" = "1" ]; then
@@ -1781,6 +1803,22 @@ elif [ "$GPT_ACTIVE" = "1" ] && [ -n "$GPT_CREDITS_UNITS" ]; then
     }' 2>/dev/null)
     [[ "$CREDITS_FMT" =~ ^[0-9]+\.[0-9]{2}[kMBT]?$ ]] \
         && COST_SEG=" ${DOT2} ${L2_TXT}${CREDITS_FMT} cr${B2}"
+fi
+
+# Official account balance stays separate from the session usage estimate.
+# Both are measured as part of COST_SEG and dropped together on phone layouts.
+if [ -n "$GPT_BALANCE" ]; then
+    BALANCE_FMT=$(LC_ALL=C awk -v b="$GPT_BALANCE" 'BEGIN {
+        if      (b == 0)             printf "0"
+        else if (b < 0.005)          printf "<0.01"
+        else if (b >= 999995000000)  printf "%.2fT", b / 1000000000000
+        else if (b >= 999995000)     printf "%.2fB", b / 1000000000
+        else if (b >= 999995)        printf "%.2fM", b / 1000000
+        else if (b >= 999.995)       printf "%.2fk", b / 1000
+        else                        printf "%.2f", b
+    }' 2>/dev/null)
+    { [[ "$BALANCE_FMT" = '<0.01' ]] || [[ "$BALANCE_FMT" =~ ^(0|[0-9]+\.[0-9]{2}[kMBT]?)$ ]]; } \
+        && COST_SEG+=" ${DOT2} ${L2_TXT}${BALANCE_FMT} cr${B2}"
 fi
 
 L2C="${RST}${CAP2_L}${BG2} ${L2_TXT}${NF_MODEL} ${MODEL} ${DOT2} ${EFFORT_CLR}${EFFORT}${B2}"
@@ -1802,12 +1840,11 @@ RATE_READY=0
 if [ "$GPT_ACTIVE" = "1" ]; then
     { [ -n "${FIVE_PCT:-}" ] || [ -n "${SEVEN_PCT:-}" ]; } && RATE_READY=1
 else
-    [ -n "${FIVE_PCT:-}" ] && [ -n "${SEVEN_PCT:-}" ] && RATE_READY=1
+    [ -n "${SEVEN_PCT:-}" ] && RATE_READY=1
 fi
 if [ "$RATE_READY" = "1" ]; then
-    # Each Codex window is optional. Claude's normal two-window path assembles
-    # exactly the same strings as before, while a weekly-only GPT snapshot still
-    # gets a useful rate segment.
+    # Codex windows and Claude's 5h window are optional. Present windows use
+    # the same measured candidates, including weekly-only snapshots.
     if [ -n "${FIVE_PCT:-}" ]; then
         FIVE_CLR=$(pct_color "$FIVE_PCT")
         [ "$PACE_ON" = "1" ] && FIVE_ARROW=$(pace_arrow "$FIVE_PCT" "$FIVE_RESET_TS" "$FIVE_DURATION" "$NOW")
@@ -2226,8 +2263,8 @@ fi
 # segments: account, optional context, and whichever 5h/7d windows are present.
 # The tiers below feed the SAME widest-that-fits selection used for the wide
 # render, so the countdowns drop before the percentages and the pace arrows
-# survive longest (they are the alert). Model, effort, elapsed, cost, context
-# and cache are dropped: on a phone they cost more columns than they earn.
+# survive longest (they are the alert). Model, effort, elapsed, cost, credit
+# readouts and cache are dropped; context is optional and shed before rate limits.
 # ↻ costs one column and stops the countdown reading as a second percentage.
 _apply_phone_l2() {
     L2C="${RST}${CAP2_L}${BG2}"

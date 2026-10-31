@@ -6,6 +6,18 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v3.9.0] - 2026-10-31
+
+Codex credit balance and GPT-6.1 usage estimates, with provider-aware profile badges and optional Claude 5h limits.
+
+### Added
+- GPT-6.1 Sol session credit-equivalent estimates at published model-specific rates, including fractional cached-input pricing and Fast/Ultrafast purchased-credit multipliers. Mixed GPT-5.6/6.1 sessions retain per-response pricing and response-ID deduplication.
+- Official Codex available account credit balance (`N cr`) beside the existing GPT session credit-equivalent estimate when `STATUSLINE_GPT_LIMITS=1`. Reuses the read-only Codex snapshot and private cache, supports zero and credit-only snapshots, hides stale/malformed/unlimited balances independently of valid rate windows, and drops both credit readouts on phone layouts. High-precision balances are preserved in the cache and compacted for display (`54906.0662120000` becomes `54.91k cr`).
+
+### Changed
+- Hide Claude 5h limits when successful account usage JSON or response headers omit that window, preserving weekly-only rendering and genuine 0% windows. Fresh authoritative snapshots hide absent 5h windows; unkeyed sessions resume freshness comparison after TTL, while keyed sessions retain account-isolated fallback. Native weekly-only data cannot clobber an unexpired or newer two-window cache. Malformed/partial responses preserve the last valid cache.
+- Hide Claude account/profile badges on Codex-detected sessions, including transcript-corrected GPT and when GPT limits are disabled. Claude session badges remain unchanged.
+
 ## [v3.8.0] - 2026-10-13
 
 Opt-in context export: other local tools can read each session's context fill from a small private JSON file.
@@ -363,7 +375,8 @@ Initial public release. Imported from a private mackup repo where the script liv
 - Terminal tab title set from the topic or directory.
 - Width-aware truncation of K8s context, branch, and topic to keep line 1 under the soft limit before Claude Code's `cli-truncate` drops line 2.
 
-[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/vtmocanu/cc-statusline/compare/v3.9.0...HEAD
+[v3.9.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.8.0...v3.9.0
 [v3.8.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.7.0...v3.8.0
 [v3.7.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.6.0...v3.7.0
 [v3.6.0]: https://github.com/vtmocanu/cc-statusline/compare/v3.5.1...v3.6.0

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Fetches ChatGPT/Codex plan usage through the official Codex app server and
-# writes the normalized windows into the separate GPT rate-limit cache read by
+# writes normalized windows and available credits to the GPT cache read by
 # statusline.sh. No inference request is made: account/rateLimits/read is a
 # read-only usage snapshot, and Codex owns OAuth storage and token refresh.
 #
 # Cache line format:
 #   FIVE_PCT|FIVE_RESET|FIVE_DURATION_SECONDS|SEVEN_PCT|SEVEN_RESET|
-#   SEVEN_DURATION_SECONDS|FETCHED_EPOCH
-# Either window triple may be empty. Windows are classified by duration, never
+#   SEVEN_DURATION_SECONDS|FETCHED_EPOCH[|AVAILABLE_CREDITS]
+# Optional balance is a finite nonnegative decimal string (up to 18 integer and
+# 18 fractional digits). Unlimited or malformed credits are hidden independently.
+# Either or both window triples may be empty when a balance is available. Windows are classified by duration, never
 # by primary/secondary position, and retain the exact reported duration for the
 # pace projection. A failed read leaves the last good cache intact.
 #
@@ -111,11 +113,15 @@ parsed=$(printf '%s' "$data" | jq -r '
         | first // null;
     (.result.rateLimitsByLimitId.codex // .result.rateLimits // null) as $snapshot
     | if ($snapshot | type) != "object" then error("missing codex limits") else . end
+    | ((try ($snapshot.credits
+        | select(type == "object" and .unlimited == false and (.hasCredits | type) == "boolean")
+        | .balance | select(type == "string")
+        | select(test("\\A[0-9]{1,18}(\\.[0-9]{1,18})?\\z"))) catch null) // null) as $balance
     | [$snapshot.primary, $snapshot.secondary]
       | map(select(type == "object")) as $windows
     | ($windows | by_duration(285; 315)) as $five
     | ($windows | by_duration(9576; 10584)) as $seven
-    | if $five == null and $seven == null then empty
+    | if $five == null and $seven == null and $balance == null then empty
       else
         (if $five == null then "" else ($five.usedPercent | pct | tostring) end) as $fp
       | (if $five == null then "" else ($five.resetsAt | reset) end) as $fr
@@ -123,12 +129,12 @@ parsed=$(printf '%s' "$data" | jq -r '
       | (if $seven == null then "" else ($seven.usedPercent | pct | tostring) end) as $sp
       | (if $seven == null then "" else ($seven.resetsAt | reset) end) as $sr
       | (if $seven == null then "" else ($seven.windowDurationMins * 60 | tostring) end) as $sd
-      | "\($fp)|\($fr)|\($fd)|\($sp)|\($sr)|\($sd)"
+      | "\($fp)|\($fr)|\($fd)|\($sp)|\($sr)|\($sd)|\($balance // "")"
       end
 ' 2>/dev/null) || _fail
 [ -n "$parsed" ] || _fail
 
-IFS='|' read -r FIVE_PCT FIVE_RESET FIVE_DURATION SEVEN_PCT SEVEN_RESET SEVEN_DURATION extra <<EOF
+IFS='|' read -r FIVE_PCT FIVE_RESET FIVE_DURATION SEVEN_PCT SEVEN_RESET SEVEN_DURATION BALANCE extra <<EOF
 $parsed
 EOF
 [ -z "${extra:-}" ] || _fail
@@ -155,12 +161,15 @@ if [ -n "$SEVEN_PCT" ]; then
 elif [ -n "$SEVEN_RESET" ] || [ -n "$SEVEN_DURATION" ]; then
     VALID=0
 fi
-{ [ "$VALID" = "1" ] && { [ -n "$FIVE_PCT" ] || [ -n "$SEVEN_PCT" ]; }; } || _fail
+{ [ "$VALID" = "1" ] && { [ -n "$FIVE_PCT" ] || [ -n "$SEVEN_PCT" ] || [ -n "$BALANCE" ]; }; } || _fail
 
 NOW="${CC_STATUSLINE_NOW:-$(date +%s)}"
 [[ "$NOW" =~ ^[0-9]{1,12}$ ]] || _fail
 
-if printf '%s|%s\n' "$parsed" "$NOW" >"$TMP_FILE" 2>/dev/null; then
+WINDOWS="${FIVE_PCT}|${FIVE_RESET}|${FIVE_DURATION}|${SEVEN_PCT}|${SEVEN_RESET}|${SEVEN_DURATION}"
+RECORD="${WINDOWS}|${NOW}"
+[ -n "$BALANCE" ] && RECORD+="|${BALANCE}"
+if printf '%s\n' "$RECORD" >"$TMP_FILE" 2>/dev/null; then
     chmod 600 "$TMP_FILE" 2>/dev/null || true
     if mv -f "$TMP_FILE" "$CACHE_FILE" 2>/dev/null; then
         rm -f "$BACKOFF_FILE" 2>/dev/null || true
