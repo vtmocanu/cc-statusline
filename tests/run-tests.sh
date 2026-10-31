@@ -287,20 +287,31 @@ rate_limit_cache_tests() {
     printf '%s\n' "------------------------------------------------------------"
 
     local cache out err l2 name
-    local scenario seed expected json width
-    for scenario in native-weekly native-unshared native-replaces-legacy fetched-weekly-fresh fetched-weekly-stale keyed-weekly-stale weekly-fallback both-windows; do
+    local scenario seed expected json width expect_five expected_cache
+    for scenario in native-weekly native-unshared native-replaces-legacy fetched-weekly-fresh fetched-weekly-stale keyed-weekly-stale weekly-fallback both-windows stale-native-weekly newer-native-unexpired; do
         name="claude-$scenario"; cache="$SCRATCH/$name.cache"
         out="$SCRATCH/$name.out"; err="$SCRATCH/$name.err"
         json=$(_rl_json 15 1700010000 2 1700010000)
-        seed=""; expected=83
+        seed=""; expected=83; expect_five=0; expected_cache="||83|1700200000"
         case "$scenario" in
             native-weekly|native-unshared|native-replaces-legacy)
                 json=$(printf '%s' "$json" | jq '.rate_limits |= {seven_day: {used_percentage: 83, resets_at: 1700200000}}')
-                [ "$scenario" = native-replaces-legacy ] && seed='88|1700018000|40|1700200000' ;;
+                [ "$scenario" = native-replaces-legacy ] && seed='88|1699999900|40|1700200000' ;;
             fetched-weekly-fresh) seed='||83|1700200000|1699999990' ;;
-            fetched-weekly-stale|keyed-weekly-stale) seed='||83|1700200000|1699000000' ;;
+            fetched-weekly-stale)
+                seed='||83|1700200000|1699000000'
+                json=$(_rl_json 55 1700009000 90 1700200000)
+                expected=90; expect_five=1; expected_cache='55|1700009000|90|1700200000' ;;
+            keyed-weekly-stale) seed='||83|1700200000|1699000000' ;;
+            stale-native-weekly|newer-native-unexpired)
+                seed='55|1700009000|35|1800000000'
+                json=$(_rl_json 0 0 30 1800000000)
+                json=$(printf '%s' "$json" | jq 'del(.rate_limits.five_hour)')
+                [ "$scenario" = newer-native-unexpired ] \
+                    && json=$(printf '%s' "$json" | jq '.rate_limits.seven_day.used_percentage = 40')
+                expected=35; expect_five=1; expected_cache="$seed" ;;
             weekly-fallback) seed='||83|1700200000'; json=$(_rl_json_norl) ;;
-            both-windows) expected=2 ;;
+            both-windows) expected=2; expect_five=1; expected_cache='15|1700010000|2|1700010000' ;;
         esac
         if [ "$scenario" = keyed-weekly-stale ]; then
             cache="$SCRATCH/$name-state/cc-statusline-$(id -u)/rate-limits-weekly"
@@ -326,12 +337,12 @@ rate_limit_cache_tests() {
             if [ -s "$err" ]; then _rl_fail "$name-$width" "non-empty stderr: $(head -1 "$err")"
             elif ! _has "$l2" "$expected%" || ! _has "$l2" "7d"; then
                 _rl_fail "$name-$width" "weekly data missing: $l2"
-            elif [ "$scenario" != both-windows ] && _has "$l2" "5h"; then
+            elif [ "$expect_five" = 0 ] && _has "$l2" "5h"; then
                 _rl_fail "$name-$width" "absent 5h resurrected: $l2"
-            elif [ "$scenario" = both-windows ] && ! _has "$l2" "5h"; then
+            elif [ "$expect_five" = 1 ] && ! _has "$l2" "5h"; then
                 _rl_fail "$name-$width" "present 5h hidden: $l2"
-            elif [ "$scenario" != both-windows ] && [ "$scenario" != native-unshared ] \
-                && [[ "$(head -1 "$cache")" != '||83|1700200000'* ]]; then
+            elif [ "$scenario" != native-unshared ] \
+                && [[ "$(head -1 "$cache")" != "$expected_cache"* ]]; then
                 _rl_fail "$name-$width" "weekly cache lost absence: $(head -1 "$cache")"
             elif [ "$(wc -l <"$out" | tr -d ' ')" != 2 ] || [ "$(sed -n '2p' "$out" | vis_cols)" -gt "$width" ]; then
                 _rl_fail "$name-$width" "invalid output shape or width"

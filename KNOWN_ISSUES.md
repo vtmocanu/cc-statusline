@@ -94,8 +94,10 @@ environment of the ancestor `claude` process: `/proc/PID/environ` on Linux,
 ## Claude 5h windows are optional
 
 A successful account response may omit 5h while retaining weekly limits. The
-statusline hides absent 5h windows, including during refresh of an authoritative
-weekly-only cache, instead of filling them from older native two-window data.
+statusline hides absent 5h windows while an authoritative weekly-only snapshot
+is fresh. After TTL, unkeyed sessions resume data freshness comparison; keyed
+sessions retain only their own fetched cache. Native weekly-only data cannot
+replace a two-window cache until its 5h expires and weekly data is no older.
 Zero usage is not absence. Partial/malformed windows and responses without weekly
 data preserve the last valid cache. This does not assume universal 5h removal.
 

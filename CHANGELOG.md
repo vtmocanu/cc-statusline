@@ -15,7 +15,7 @@ Codex credit balance and GPT-6.1 usage estimates, with provider-aware profile ba
 - Official Codex available account credit balance (`N cr`) beside the existing GPT session credit-equivalent estimate when `STATUSLINE_GPT_LIMITS=1`. Reuses the read-only Codex snapshot and private cache, supports zero and credit-only snapshots, hides stale/malformed/unlimited balances independently of valid rate windows, and drops both credit readouts on phone layouts. High-precision balances are preserved in the cache and compacted for display (`54906.0662120000` becomes `54.91k cr`).
 
 ### Changed
-- Hide Claude 5h limits when successful account usage JSON or response headers omit that window, preserving weekly-only rendering and genuine 0% windows. Stale native data cannot resurrect an absent 5h window from an authoritative weekly-only snapshot; malformed/partial responses preserve the last valid cache.
+- Hide Claude 5h limits when successful account usage JSON or response headers omit that window, preserving weekly-only rendering and genuine 0% windows. Fresh authoritative snapshots hide absent 5h windows; unkeyed sessions resume freshness comparison after TTL, while keyed sessions retain account-isolated fallback. Native weekly-only data cannot clobber an unexpired or newer two-window cache. Malformed/partial responses preserve the last valid cache.
 - Hide Claude account/profile badges on Codex-detected sessions, including transcript-corrected GPT and when GPT limits are disabled. Claude session badges remain unchanged.
 
 ## [v3.8.0] - 2026-10-13

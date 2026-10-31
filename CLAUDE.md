@@ -139,7 +139,7 @@ For an urgent patch (CI broken, security issue): follow the same recipe but bump
 
 ## Optional Claude 5h window
 
-Claude caches retain the four-field native / five-field authoritative format, with an empty first pair for absent 5h (`||SEVEN_PCT|SEVEN_RESET|FETCHED_EPOCH`). Successful usage JSON and header probes accept weekly-only responses; weekly data stays required, and malformed/partial windows preserve the prior cache. Native weekly-only snapshots replace legacy two-window snapshots whole. Stamped authoritative weekly-only caches remain fallback after TTL so stale native data cannot resurrect 5h; account-keyed sessions still never use native cross-account data. Preserve real 0% windows and measured wide/phone rendering.
+Claude caches retain the four-field native / five-field authoritative format, with an empty first pair for absent 5h (`||SEVEN_PCT|SEVEN_RESET|FETCHED_EPOCH`). Successful usage JSON and header probes accept weekly-only responses; weekly data stays required, and malformed/partial windows preserve the prior cache. Native weekly-only snapshots replace two-window snapshots only after the cached 5h reset expires and their weekly reset/usage tuple is no older. Authoritative omission applies while the fetch stamp is fresh; unkeyed sessions resume normal native/cache freshness comparison after TTL. Account-keyed sessions still use only their own stamped fetched cache, even stale, never native cross-account data. Preserve real 0% windows and measured wide/phone rendering.
 
 ## Official Codex credit balance
 

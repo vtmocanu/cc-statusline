@@ -757,15 +757,17 @@ if [ "${STATUSLINE_RL_SHARE:-1}" != "0" ] && [ "$GPT_EFFECTIVE_EARLY" != "1" ]; 
             FIVE_PCT=""; FIVE_RESET_TS=""
             SEVEN_PCT=""; SEVEN_RESET_TS=""
         fi
-    elif [ "$CACHE_RL" = "1" ] && [ -z "$C_FP" ] && [[ "$C_AT" =~ ^[0-9]{1,12}$ ]]; then
-        # A successful account fetch explicitly omitted 5h. Even after its TTL,
-        # stale native data must not resurrect that window while fetching again.
-        FIVE_PCT=""; FIVE_RESET_TS=""
-        SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
-    elif [ "$STDIN_RL" = "1" ] && [ -z "$FIVE_PCT" ] && [ -n "$C_FP" ]; then
-        # A native weekly-only snapshot replaces an older, non-authoritative
-        # two-window snapshot whole, rather than filling its absent 5h pair.
-        _rl_write "$RL_CACHE" "" "" "$SEVEN_PCT" "$STDIN_SR"
+    elif [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ] \
+        && [ -z "$FIVE_PCT" ] && [ -n "$C_FP" ]; then
+        # Missing native 5h is not proof of freshness. Replace a two-window
+        # snapshot only after its 5h expires and weekly data is no older.
+        if [ "$C_FR" -le "$RL_NOW" ] \
+            && [ "$(_rl_cmp 0 0 "$STDIN_SR" "$SEVEN_PCT" 0 0 "$C_SR" "$C_SP")" != 2 ]; then
+            _rl_write "$RL_CACHE" "" "" "$SEVEN_PCT" "$STDIN_SR"
+        else
+            FIVE_PCT="$C_FP"; FIVE_RESET_TS="$C_FR"
+            SEVEN_PCT="$C_SP"; SEVEN_RESET_TS="$C_SR"
+        fi
     elif [ "$CACHE_RL" = "1" ] && [ "$STDIN_RL" = "1" ]; then
         case "$(_rl_cmp "$STDIN_FR" "${FIVE_PCT:-0}" "$STDIN_SR" "$SEVEN_PCT" \
                         "${C_FR:-0}" "${C_FP:-0}" "$C_SR" "$C_SP")" in
@@ -1815,7 +1817,7 @@ if [ -n "$GPT_BALANCE" ]; then
         else if (b >= 999.995)       printf "%.2fk", b / 1000
         else                        printf "%.2f", b
     }' 2>/dev/null)
-    [[ "$BALANCE_FMT" =~ ^(0|\<0\.01|[0-9]+\.[0-9]{2}[kMBT]?)$ ]] \
+    { [[ "$BALANCE_FMT" = '<0.01' ]] || [[ "$BALANCE_FMT" =~ ^(0|[0-9]+\.[0-9]{2}[kMBT]?)$ ]]; } \
         && COST_SEG+=" ${DOT2} ${L2_TXT}${BALANCE_FMT} cr${B2}"
 fi
 
